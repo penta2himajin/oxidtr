@@ -357,6 +357,115 @@ fn extract_int(expr: &Expr) -> Option<i64> {
     }
 }
 
+/// Get the bound for a specific field on a sig, if one exists.
+pub fn bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Option<BoundKind> {
+    let constraints = constraints_for_sig(ir, sig_name);
+    for c in &constraints {
+        if let ConstraintInfo::CardinalityBound { field_name: fname, bound, .. } = c {
+            if fname == field_name {
+                return Some(bound.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Check if a quantifier expression uses `disj` on a binding that iterates a specific sig's field.
+/// Returns a list of (sig_name, field_name) pairs where `disj` implies uniqueness.
+pub fn disj_fields(ir: &OxidtrIR) -> Vec<(String, String)> {
+    let mut results = Vec::new();
+    for c in &ir.constraints {
+        collect_disj_fields(&c.expr, &mut results);
+    }
+    results.sort();
+    results.dedup();
+    results
+}
+
+fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
+    match expr {
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                if b.disj {
+                    // If domain is sig.field, extract (sig, field)
+                    if let Expr::FieldAccess { base, field } = &b.domain {
+                        if let Expr::VarRef(sig) = base.as_ref() {
+                            results.push((sig.clone(), field.clone()));
+                        }
+                    }
+                    // If domain is just a VarRef (sig name), the disj applies to the sig iteration
+                    // This doesn't directly map to a field, but we note it for doc comments
+                }
+            }
+            collect_disj_fields(body, results);
+        }
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_disj_fields(left, results);
+            collect_disj_fields(right, results);
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            collect_disj_fields(inner, results);
+        }
+        Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
+    }
+}
+
+/// Classify a body expression as pre-condition or post-condition.
+/// Returns true if the expression is a pre-condition (references only input params).
+pub fn is_pre_condition(expr: &Expr, param_names: &[String]) -> bool {
+    match expr {
+        Expr::Comparison { op: CompareOp::In, .. } => {
+            // Membership checks are typically pre-conditions
+            true
+        }
+        Expr::Comparison { left, right, .. } => {
+            // If both sides only reference params, it's a pre-condition
+            expr_only_refs_params(left, param_names) && expr_only_refs_params(right, param_names)
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            is_pre_condition(left, param_names) && is_pre_condition(right, param_names)
+        }
+        Expr::Quantifier { body, .. } => {
+            is_pre_condition(body, param_names)
+        }
+        Expr::Not(inner) => is_pre_condition(inner, param_names),
+        _ => {
+            // Field accesses on params are pre-conditions (param guards)
+            expr_only_refs_params(expr, param_names)
+        }
+    }
+}
+
+/// Check if an expression only references parameter names (no state fields).
+fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
+    match expr {
+        Expr::VarRef(name) => param_names.contains(name),
+        Expr::IntLiteral(_) => true,
+        Expr::FieldAccess { base, .. } => {
+            // Field access on a param is still a param reference (e.g., a.balance)
+            expr_only_refs_params(base, param_names)
+        }
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner) => {
+            expr_only_refs_params(inner, param_names)
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            expr_only_refs_params(left, param_names) && expr_only_refs_params(right, param_names)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            // Quantifier vars are local, check domain and body
+            let mut extended_params: Vec<String> = param_names.to_vec();
+            for b in bindings {
+                extended_params.extend(b.vars.clone());
+            }
+            bindings.iter().all(|b| expr_only_refs_params(&b.domain, param_names))
+                && expr_only_refs_params(body, &extended_params)
+        }
+    }
+}
+
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,

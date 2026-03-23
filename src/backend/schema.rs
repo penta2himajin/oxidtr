@@ -10,6 +10,7 @@ use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> GeneratedFile {
     let constraints = analyze::analyze(ir);
+    let disj_fields = analyze::disj_fields(ir);
     let mut out = String::new();
 
     // Collect enum parents and variants
@@ -45,7 +46,7 @@ pub fn generate(ir: &OxidtrIR) -> GeneratedFile {
         if s.is_enum {
             generate_enum_schema(&mut out, s, children.get(s.name.as_str()), &ir.structures, &constraints);
         } else {
-            generate_struct_schema(&mut out, s, &constraints);
+            generate_struct_schema(&mut out, s, &constraints, &disj_fields);
         }
         writeln!(out, "    }}{comma}").unwrap();
     }
@@ -62,7 +63,8 @@ pub fn generate(ir: &OxidtrIR) -> GeneratedFile {
 fn generate_struct_schema(
     out: &mut String,
     s: &StructureNode,
-    _constraints: &[analyze::ConstraintInfo],
+    constraints: &[analyze::ConstraintInfo],
+    disj_fields: &[(String, String)],
 ) {
     writeln!(out, "    \"{}\": {{", s.name).unwrap();
     writeln!(out, "      \"type\": \"object\",").unwrap();
@@ -77,7 +79,9 @@ fn generate_struct_schema(
     writeln!(out, "      \"properties\": {{").unwrap();
     for (i, f) in s.fields.iter().enumerate() {
         let comma = if i < s.fields.len() - 1 { "," } else { "" };
-        write_field_schema(out, f);
+        let bounds = field_bounds(constraints, &s.name, &f.name);
+        let is_disj = disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name);
+        write_field_schema_with_bounds(out, f, &bounds, is_disj);
         writeln!(out, "        }}{comma}").unwrap();
     }
     writeln!(out, "      }},").unwrap();
@@ -89,6 +93,77 @@ fn generate_struct_schema(
         .collect();
     let req_json: Vec<String> = required.iter().map(|r| format!("\"{r}\"")).collect();
     writeln!(out, "      \"required\": [{}]", req_json.join(", ")).unwrap();
+}
+
+/// Bounds for a field extracted from constraints.
+struct FieldBounds {
+    min_items: Option<usize>,
+    max_items: Option<usize>,
+}
+
+fn field_bounds(constraints: &[analyze::ConstraintInfo], sig_name: &str, field_name: &str) -> FieldBounds {
+    let mut min_items = None;
+    let mut max_items = None;
+    for c in constraints {
+        if let analyze::ConstraintInfo::CardinalityBound { sig_name: s, field_name: f, bound } = c {
+            if s == sig_name && f == field_name {
+                match bound {
+                    analyze::BoundKind::Exact(n) => { min_items = Some(*n); max_items = Some(*n); }
+                    analyze::BoundKind::AtMost(n) => { max_items = Some(*n); }
+                    analyze::BoundKind::AtLeast(n) => { min_items = Some(*n); }
+                }
+            }
+        }
+    }
+    FieldBounds { min_items, max_items }
+}
+
+fn write_field_schema_with_bounds(out: &mut String, f: &IRField, bounds: &FieldBounds, is_disj: bool) {
+    writeln!(out, "        \"{}\": {{", f.name).unwrap();
+
+    // Map field (A -> B): use object with additionalProperties
+    if let Some(vt) = &f.value_type {
+        writeln!(out, "          \"type\": \"object\",").unwrap();
+        writeln!(out, "          \"additionalProperties\": {{ \"$ref\": \"#/definitions/{vt}\" }}").unwrap();
+        return;
+    }
+
+    match f.mult {
+        Multiplicity::One => {
+            writeln!(out, "          \"$ref\": \"#/definitions/{}\"", f.target).unwrap();
+        }
+        Multiplicity::Lone => {
+            writeln!(out, "          \"oneOf\": [").unwrap();
+            writeln!(out, "            {{ \"$ref\": \"#/definitions/{}\" }},", f.target).unwrap();
+            writeln!(out, "            {{ \"type\": \"null\" }}").unwrap();
+            writeln!(out, "          ]").unwrap();
+        }
+        Multiplicity::Set => {
+            writeln!(out, "          \"type\": \"array\",").unwrap();
+            writeln!(out, "          \"uniqueItems\": true,").unwrap();
+            if let Some(n) = bounds.min_items {
+                writeln!(out, "          \"minItems\": {n},").unwrap();
+            }
+            if let Some(n) = bounds.max_items {
+                writeln!(out, "          \"maxItems\": {n},").unwrap();
+            }
+            writeln!(out, "          \"items\": {{ \"$ref\": \"#/definitions/{}\" }}", f.target).unwrap();
+        }
+        Multiplicity::Seq => {
+            writeln!(out, "          \"type\": \"array\",").unwrap();
+            // Feature 6: disj implies uniqueItems for Seq fields
+            if is_disj {
+                writeln!(out, "          \"uniqueItems\": true,").unwrap();
+            }
+            if let Some(n) = bounds.min_items {
+                writeln!(out, "          \"minItems\": {n},").unwrap();
+            }
+            if let Some(n) = bounds.max_items {
+                writeln!(out, "          \"maxItems\": {n},").unwrap();
+            }
+            writeln!(out, "          \"items\": {{ \"$ref\": \"#/definitions/{}\" }}", f.target).unwrap();
+        }
+    }
 }
 
 fn write_field_schema(out: &mut String, f: &IRField) {

@@ -130,6 +130,180 @@ fn bean_validation_empty_for_unrelated_field() {
         "expected no @Min/@Max validation for age field");
 }
 
+// ── Feature 5: Boundary value analysis ──────────────────────────────────────
+
+#[test]
+fn bounds_for_field_exact() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = 3 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let bound = analyze::bounds_for_field(&ir, "Team", "members");
+    assert_eq!(bound, Some(analyze::BoundKind::Exact(3)));
+}
+
+#[test]
+fn bounds_for_field_at_most() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact MaxSize { all t: Team | #t.members <= 5 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let bound = analyze::bounds_for_field(&ir, "Team", "members");
+    assert_eq!(bound, Some(analyze::BoundKind::AtMost(5)));
+}
+
+#[test]
+fn bounds_for_field_at_least() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact MinSize { all t: Team | #t.members >= 2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let bound = analyze::bounds_for_field(&ir, "Team", "members");
+    assert_eq!(bound, Some(analyze::BoundKind::AtLeast(2)));
+}
+
+#[test]
+fn bounds_for_field_none_when_no_constraint() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let bound = analyze::bounds_for_field(&ir, "Team", "members");
+    assert_eq!(bound, None);
+}
+
+// ── Feature 5: Boundary fixtures in Rust backend ────────────────────────────
+
+#[test]
+fn rust_boundary_fixtures_generated() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact MaxSize { all t: Team | #t.members <= 5 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let fixtures = files.iter().find(|f| f.path == "fixtures.rs").unwrap();
+    assert!(fixtures.content.contains("pub fn boundary_team()"), "missing boundary fixture");
+    assert!(fixtures.content.contains("pub fn invalid_team()"), "missing invalid fixture");
+}
+
+#[test]
+fn rust_boundary_tests_generated() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact MaxSize { all t: Team | #t.members <= 5 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let tests = files.iter().find(|f| f.path == "tests.rs").unwrap();
+    assert!(tests.content.contains("fn boundary_max_size"), "missing boundary test");
+    assert!(tests.content.contains("fn invalid_max_size"), "missing invalid test");
+}
+
+// ── Feature 6: disj → @unique annotation ────────────────────────────────────
+
+#[test]
+fn rust_unique_annotation_on_disj_constraint() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: User | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let invariants = files.iter().find(|f| f.path == "invariants.rs").unwrap();
+    assert!(invariants.content.contains("@unique"), "missing @unique annotation for disj constraint");
+}
+
+#[test]
+fn ts_unique_annotation_on_disj_constraint() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: User | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let invariants = files.iter().find(|f| f.path == "invariants.ts").unwrap();
+    assert!(invariants.content.contains("@unique"), "missing @unique annotation for disj constraint in TS");
+}
+
+// ── Feature 7: pre/post condition separation ────────────────────────────────
+
+#[test]
+fn rust_pre_post_separation_in_operations() {
+    let model = parser::parse(
+        "sig Account { balance: one Account }\npred withdraw[a: one Account, amount: one Account] { a.balance = a.balance }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let ops = files.iter().find(|f| f.path == "operations.rs").unwrap();
+    // Body expression references only param names, should be @pre
+    assert!(ops.content.contains("@pre"), "missing @pre tag in operations");
+}
+
+#[test]
+fn ts_pre_post_separation_in_operations() {
+    let model = parser::parse(
+        "sig Account { balance: one Account }\npred withdraw[a: one Account, amount: one Account] { a.balance = a.balance }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let ops = files.iter().find(|f| f.path == "operations.ts").unwrap();
+    assert!(ops.content.contains("@pre"), "missing @pre tag in TS operations");
+}
+
+#[test]
+fn is_pre_condition_for_param_comparison() {
+    use oxidtr::parser::ast::*;
+    let expr = Expr::Comparison {
+        op: CompareOp::Eq,
+        left: Box::new(Expr::FieldAccess {
+            base: Box::new(Expr::VarRef("a".to_string())),
+            field: "balance".to_string(),
+        }),
+        right: Box::new(Expr::FieldAccess {
+            base: Box::new(Expr::VarRef("a".to_string())),
+            field: "balance".to_string(),
+        }),
+    };
+    let params = vec!["a".to_string(), "amount".to_string()];
+    assert!(analyze::is_pre_condition(&expr, &params));
+}
+
+// ── Mine tests: verify features don't confuse mine ──────────────────────────
+
+#[test]
+fn mine_handles_boundary_fixture_functions() {
+    // Verify that mine doesn't create extra sigs from boundary/invalid fixture functions
+    let src = r#"
+pub struct Team {
+    pub members: Vec<User>,
+}
+pub struct User {
+    pub name: String,
+}
+"#;
+    let mined = oxidtr::mine::rust_extractor::extract(src);
+    assert_eq!(mined.sigs.len(), 2, "should only have Team and User sigs, not boundary/invalid");
+}
+
+#[test]
+fn schema_concrete_min_max_items() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact TeamLimit { all t: Team | #t.members <= 10 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    assert!(file.content.contains("\"maxItems\": 10"),
+        "schema should have maxItems: 10:\n{}", file.content);
+}
+
+#[test]
+fn schema_concrete_min_items() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact TeamMin { all t: Team | #t.members >= 3 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    assert!(file.content.contains("\"minItems\": 3"),
+        "schema should have minItems: 3:\n{}", file.content);
+}
+
 #[test]
 fn schema_self_hosting() {
     let source = std::fs::read_to_string("models/oxidtr.als").expect("read model");

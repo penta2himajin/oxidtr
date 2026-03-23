@@ -2,7 +2,7 @@ use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::Multiplicity;
+use crate::parser::ast::{Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::fmt::Write;
 
@@ -104,21 +104,37 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 }
 
 fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
+    // Singleton: one sig → Kotlin object
+    if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        writeln!(out, "object {}", s.name).unwrap();
+        return;
+    }
+
     if s.fields.is_empty() {
         writeln!(out, "data class {}(val placeholder: Unit = Unit)", s.name).unwrap();
     } else {
         writeln!(out, "data class {}(", s.name).unwrap();
         for (i, f) in s.fields.iter().enumerate() {
-            let type_str = mult_to_kt_type(&f.target, &f.mult);
+            let type_str = if let Some(vt) = &f.value_type {
+                format!("Map<{}, {}>", f.target, vt)
+            } else {
+                mult_to_kt_type(&f.target, &f.mult)
+            };
             let comma = if i < s.fields.len() - 1 { "," } else { "" };
             // Bean Validation annotations
             let validations = analyze::bean_validations_for_field(ir, &s.name, &f.name);
             let mut annotations = Vec::new();
             for v in &validations {
                 match v {
-                    analyze::BeanValidation::Size { fact_name, .. } => {
-                        // No integer literals in Alloy AST; use comment-based annotation
-                        annotations.push(format!("/* @Size see fact: {fact_name} */"));
+                    analyze::BeanValidation::Size { min, max, fact_name } => {
+                        if min.is_some() || max.is_some() {
+                            let mut parts = Vec::new();
+                            if let Some(n) = min { parts.push(format!("min = {n}")); }
+                            if let Some(n) = max { parts.push(format!("max = {n}")); }
+                            annotations.push(format!("@Size({})", parts.join(", ")));
+                        } else {
+                            annotations.push(format!("/* @Size see fact: {fact_name} */"));
+                        }
                     }
                     analyze::BeanValidation::MinMax { fact_name } => {
                         annotations.push(format!("/* @Min/@Max see fact: {fact_name} */"));
@@ -161,7 +177,11 @@ fn generate_sealed_class(out: &mut String, s: &StructureNode, ctx: &JvmContext) 
                 if let Some(fields) = fields {
                     writeln!(out, "data class {}(", v).unwrap();
                     for (i, f) in fields.iter().enumerate() {
-                        let type_str = mult_to_kt_type(&f.target, &f.mult);
+                        let type_str = if let Some(vt) = &f.value_type {
+                            format!("Map<{}, {}>", f.target, vt)
+                        } else {
+                            mult_to_kt_type(&f.target, &f.mult)
+                        };
                         let comma = if i < fields.len() - 1 { "," } else { "" };
                         writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
                     }
@@ -221,7 +241,15 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
             .collect::<Vec<_>>()
             .join(", ");
 
-        writeln!(out, "/** Invariant derived from Alloy fact. */").unwrap();
+        // Feature 6: add @unique annotation when disj is used
+        if expr_uses_disj(&constraint.expr) {
+            writeln!(out, "/**").unwrap();
+            writeln!(out, " * Invariant derived from Alloy fact.").unwrap();
+            writeln!(out, " * @unique Elements must be distinct (disj).").unwrap();
+            writeln!(out, " */").unwrap();
+        } else {
+            writeln!(out, "/** Invariant derived from Alloy fact. */").unwrap();
+        }
         writeln!(out, "fun {fn_name}({param_str}): Boolean {{").unwrap();
         writeln!(out, "    return {body}").unwrap();
         writeln!(out, "}}").unwrap();
@@ -298,17 +326,24 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             .collect::<Vec<_>>()
             .join(", ");
 
-        // KDoc from body expressions
+        // KDoc from body expressions with pre/post separation (Feature 7)
         if !op.body.is_empty() {
+            let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
             writeln!(out, "/**").unwrap();
             for expr in &op.body {
                 let desc = analyze::describe_expr(expr);
-                writeln!(out, " * @pre {desc}").unwrap();
+                let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
+                writeln!(out, " * @{tag} {desc}").unwrap();
             }
             writeln!(out, " */").unwrap();
         }
 
-        writeln!(out, "fun {}({params}) {{", op.name).unwrap();
+        let return_str = match &op.return_type {
+            Some(rt) => format!(": {}", kt_return_type(&rt.type_name, &rt.mult)),
+            None => String::new(),
+        };
+
+        writeln!(out, "fun {}({params}){return_str} {{", op.name).unwrap();
         writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
@@ -362,6 +397,67 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // Boundary value tests (Feature 5)
+    for constraint in &ir.constraints {
+        let fact_name = match &constraint.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        let fn_name = format!("assert{fact_name}");
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+
+        let has_boundary = params.iter().any(|(_, tname)| {
+            ir.structures.iter().any(|s| {
+                s.name == *tname && !s.is_enum && s.fields.iter().any(|f| {
+                    matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                        && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                })
+            })
+        });
+
+        if has_boundary {
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    fun `boundary {fact_name}`() {{").unwrap();
+            for (pname, tname) in &params {
+                let has_b = ir.structures.iter().any(|s| {
+                    s.name == *tname && s.fields.iter().any(|f| {
+                        matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                            && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                    })
+                });
+                if has_b {
+                    writeln!(out, "        val {pname}: List<{tname}> = listOf(boundary{tname}())").unwrap();
+                } else {
+                    writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+                }
+            }
+            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
+            writeln!(out, "        assertTrue({fn_name}({args}))").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    fun `invalid {fact_name}`() {{").unwrap();
+            for (pname, tname) in &params {
+                let has_b = ir.structures.iter().any(|s| {
+                    s.name == *tname && s.fields.iter().any(|f| {
+                        matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                            && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                    })
+                });
+                if has_b {
+                    writeln!(out, "        val {pname}: List<{tname}> = listOf(invalid{tname}())").unwrap();
+                } else {
+                    writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+                }
+            }
+            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
+            writeln!(out, "        assertFalse({fn_name}({args}))").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     // Cross-tests
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
         writeln!(out, "    // --- Cross-tests: fact x operation ---").unwrap();
@@ -387,6 +483,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
+
+fn expr_uses_disj(expr: &crate::parser::ast::Expr) -> bool {
+    use crate::parser::ast::Expr;
+    match expr {
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| b.disj) || expr_uses_disj(body)
+        }
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            expr_uses_disj(left) || expr_uses_disj(right)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            expr_uses_disj(inner)
+        }
+        Expr::FieldAccess { base, .. } => expr_uses_disj(base),
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
 
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;
@@ -425,15 +539,107 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();
         writeln!(out, "fun default{}(): {} = {}(", s.name, s.name, s.name).unwrap();
         for (i, f) in s.fields.iter().enumerate() {
-            let val = kt_default_value(&f.target, &f.mult);
+            let val = if f.value_type.is_some() {
+                "emptyMap()".to_string()
+            } else {
+                kt_default_value(&f.target, &f.mult)
+            };
             let comma = if i < s.fields.len() - 1 { "," } else { "" };
             writeln!(out, "    {} = {val}{comma}", f.name).unwrap();
         }
         writeln!(out, ")").unwrap();
         writeln!(out).unwrap();
+
+        // Boundary value fixtures (Feature 5)
+        let has_bounds = s.fields.iter().any(|f| {
+            matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+        });
+        if has_bounds {
+            writeln!(out, "/** Factory: create {} at cardinality boundary */", s.name).unwrap();
+            writeln!(out, "fun boundary{}(): {} = {}(", s.name, s.name, s.name).unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+                let val = if f.value_type.is_some() {
+                    "emptyMap()".to_string()
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                    if let Some(bound) = analyze::bounds_for_field(ir, &s.name, &f.name) {
+                        let count = match &bound {
+                            analyze::BoundKind::Exact(n) => *n,
+                            analyze::BoundKind::AtMost(n) => *n,
+                            analyze::BoundKind::AtLeast(n) => *n,
+                        };
+                        kt_boundary_value(&f.target, &f.mult, count)
+                    } else {
+                        kt_default_value(&f.target, &f.mult)
+                    }
+                } else {
+                    kt_default_value(&f.target, &f.mult)
+                };
+                writeln!(out, "    {} = {val}{comma}", f.name).unwrap();
+            }
+            writeln!(out, ")").unwrap();
+            writeln!(out).unwrap();
+
+            writeln!(out, "/** Factory: create {} that violates cardinality constraint */", s.name).unwrap();
+            writeln!(out, "fun invalid{}(): {} = {}(", s.name, s.name, s.name).unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+                let val = if f.value_type.is_some() {
+                    "emptyMap()".to_string()
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                    if let Some(bound) = analyze::bounds_for_field(ir, &s.name, &f.name) {
+                        let violation = match &bound {
+                            analyze::BoundKind::Exact(n) => n + 1,
+                            analyze::BoundKind::AtMost(n) => n + 1,
+                            analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
+                        };
+                        kt_boundary_value(&f.target, &f.mult, violation)
+                    } else {
+                        kt_default_value(&f.target, &f.mult)
+                    }
+                } else {
+                    kt_default_value(&f.target, &f.mult)
+                };
+                writeln!(out, "    {} = {val}{comma}", f.name).unwrap();
+            }
+            writeln!(out, ")").unwrap();
+            writeln!(out).unwrap();
+        }
     }
 
     out
+}
+
+fn kt_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String {
+    match mult {
+        Multiplicity::Set => {
+            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
+            if items.is_empty() {
+                "emptySet()".to_string()
+            } else {
+                format!("setOf({})", items.join(", "))
+            }
+        }
+        Multiplicity::Seq => {
+            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
+            if items.is_empty() {
+                "emptyList()".to_string()
+            } else {
+                format!("listOf({})", items.join(", "))
+            }
+        }
+        _ => kt_default_value(target, mult),
+    }
+}
+
+fn kt_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::One => type_name.to_string(),
+        Multiplicity::Lone => format!("{type_name}?"),
+        Multiplicity::Set => format!("Set<{type_name}>"),
+        Multiplicity::Seq => format!("List<{type_name}>"),
+    }
 }
 
 fn kt_default_value(target: &str, mult: &Multiplicity) -> String {

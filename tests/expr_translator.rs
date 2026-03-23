@@ -103,6 +103,7 @@ fn make_ir_two_sigs(
             name: field_name.to_string(),
             mult,
             target: sig_b.to_string(),
+            value_type: None,
         }],
     };
     OxidtrIR {
@@ -123,6 +124,7 @@ fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> Oxi
             name: field_name.to_string(),
             mult,
             target: sig_name.to_string(),
+            value_type: None,
         }],
     };
     OxidtrIR {

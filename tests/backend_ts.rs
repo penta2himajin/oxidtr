@@ -186,3 +186,51 @@ fn ts_tests_empty_array_for_sig_without_fields() {
     assert!(tests.contains("Token[] = []"),
         "test should use empty array for Token (no fields):\n{tests}");
 }
+
+// ── Feature 1: Fun return type in TS ────────────────────────────────────────
+
+#[test]
+fn ts_fun_return_type_one() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun getRole[u: one User]: one Role { u }
+    "#);
+    let ops = find_file(&files, "operations.ts");
+    assert!(ops.contains("): M.Role {"), "should have return type M.Role:\n{ops}");
+}
+
+#[test]
+fn ts_fun_return_type_lone() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun findRole[u: one User]: lone Role { u }
+    "#);
+    let ops = find_file(&files, "operations.ts");
+    assert!(ops.contains("): M.Role | null {"), "should have return type M.Role | null:\n{ops}");
+}
+
+// ── Feature 2: Singleton support in TS ──────────────────────────────────────
+
+#[test]
+fn ts_singleton_const_object() {
+    let files = generate_from("one sig Config {}");
+    let models = find_file(&files, "models.ts");
+    assert!(models.contains("export const Config: Config = {};"),
+        "should generate const object for singleton:\n{models}");
+}
+
+// ── Feature 4: Product → Map type in TS ─────────────────────────────────────
+
+#[test]
+fn ts_product_field_to_map() {
+    let files = generate_from(r#"
+        sig Config { settings: one Key -> Value }
+        sig Key {}
+        sig Value {}
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(models.contains("Map<Key, Value>"),
+        "product field should map to Map:\n{models}");
+}

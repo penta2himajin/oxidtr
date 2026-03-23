@@ -7,7 +7,8 @@ use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
 pub struct IRField {
     pub name: String,
     pub mult: Multiplicity,
-    pub target: String, // refers to StructureNode name
+    pub target: String, // refers to StructureNode name (key type for maps)
+    pub value_type: Option<String>, // Some(B) for map fields (A -> B)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -208,7 +208,14 @@ impl<'a> Parser<'a> {
         self.expect(&Token::Colon)?;
         let mult = self.parse_multiplicity()?;
         let target = self.expect_ident()?;
-        Ok(FieldDecl { name, mult, target })
+        // Check for `->` (product/map type): `field: A -> B`
+        let value_type = if self.peek() == Token::Arrow {
+            self.next(); // consume ->
+            Some(self.expect_ident()?)
+        } else {
+            None
+        };
+        Ok(FieldDecl { name, mult, target, value_type })
     }
 
     fn parse_multiplicity(&mut self) -> Result<Multiplicity, ParseError> {

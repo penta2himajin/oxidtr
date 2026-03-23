@@ -43,6 +43,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
             name: f.name.clone(),
             mult: f.mult.clone(),
             target: f.target.clone(),
+            value_type: f.value_type.clone(),
         })
         .collect();
 

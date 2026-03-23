@@ -78,16 +78,54 @@ fn parse_record(line: &str) -> Option<(String, Vec<MinedField>)> {
     let name: String = rest[..paren].trim().to_string();
     if name.is_empty() { return None; }
 
-    let close = rest.find(')')?;
+    // Find matching close paren (skipping nested parens from annotations)
+    let close = find_matching_paren(rest, paren)?;
     let params_str = &rest[paren + 1..close];
     if params_str.trim().is_empty() {
         return Some((name, vec![]));
     }
 
-    let fields: Vec<MinedField> = params_str.split(',')
+    let fields: Vec<MinedField> = split_top_level_commas(params_str)
+        .iter()
         .filter_map(|p| parse_java_param(p.trim()))
         .collect();
     Some((name, fields))
+}
+
+fn find_matching_paren(s: &str, open_pos: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (i, ch) in s[open_pos..].char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 { return Some(open_pos + i); }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for ch in s.chars() {
+        match ch {
+            '(' => { depth += 1; current.push(ch); }
+            ')' => { depth -= 1; current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 fn parse_record_implements(line: &str) -> Option<(String, String)> {
@@ -121,6 +159,9 @@ fn parse_enum(line: &str) -> Option<String> {
 }
 
 fn parse_java_param(param: &str) -> Option<MinedField> {
+    // Strip @Annotation(...) patterns but preserve block comments (e.g., /* @Nullable */)
+    let cleaned = strip_java_annotations(param);
+    let param = cleaned.trim();
     // "Type name" or "List<Type> name" or "Type /* @Nullable */ name"
     let parts: Vec<&str> = param.split_whitespace().collect();
     if parts.len() < 2 { return None; }
@@ -151,6 +192,11 @@ fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
     let t = strip_block_comments(t);
     let t = t.trim();
 
+    // Map<K, V> → set of K (V info lost)
+    if let Some(inner) = strip_wrapper(t, "Map<", ">") {
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
+    }
     // Set<T> → set
     if let Some(inner) = strip_wrapper(t, "Set<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());
@@ -164,6 +210,59 @@ fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
     (MinedMultiplicity::One, t.to_string())
+}
+
+fn strip_java_annotations(s: &str) -> String {
+    let mut result = s.to_string();
+    let mut search_from = 0;
+    loop {
+        let at_pos = match result[search_from..].find('@') {
+            Some(p) => search_from + p,
+            None => break,
+        };
+        // Skip @ inside block comments (e.g., /* @Nullable */)
+        let before = &result[..at_pos];
+        let open_comment = before.rfind("/*");
+        let close_comment = before.rfind("*/");
+        let in_comment = match (open_comment, close_comment) {
+            (Some(o), Some(c)) => o > c,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if in_comment {
+            search_from = at_pos + 1;
+            continue;
+        }
+        let rest = &result[at_pos + 1..];
+        let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        if name_end == 0 { search_from = at_pos + 1; continue; }
+        let after_name = &rest[name_end..];
+        if after_name.starts_with('(') {
+            let mut depth = 0;
+            let mut end = 0;
+            for (i, ch) in after_name.chars().enumerate() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 { end = i + 1; break; }
+                    }
+                    _ => {}
+                }
+            }
+            if end > 0 {
+                let remove_end = at_pos + 1 + name_end + end;
+                result = format!("{}{}", &result[..at_pos], &result[remove_end..]);
+                // Don't advance search_from since we removed content
+            } else {
+                search_from = at_pos + 1;
+            }
+        } else {
+            let remove_end = at_pos + 1 + name_end;
+            result = format!("{}{}", &result[..at_pos], &result[remove_end..]);
+        }
+    }
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn strip_block_comments(s: &str) -> String {

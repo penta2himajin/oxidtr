@@ -34,6 +34,17 @@ pub fn extract(source: &str) -> MinedModel {
             }
         }
 
+        // object Foo → singleton sig (one sig)
+        if let Some(name) = parse_object_decl(trimmed) {
+            sigs.push(MinedSig {
+                name,
+                fields: vec![],
+                is_abstract: false,
+                parent: None,
+                source_location: format!("line {}", line_num + 1),
+            });
+        }
+
         // data object Foo : Parent() → child sig (unit)
         if let Some((name, parent)) = parse_data_object(trimmed) {
             sigs.push(MinedSig {
@@ -99,12 +110,26 @@ fn collect_until_close_paren(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
 ) -> String {
     let mut full = first_line.to_string();
+    // Track paren depth to handle nested parens (e.g., @Size(min = 0, max = 0))
+    let mut depth: i32 = full.chars().filter(|&c| c == '(').count() as i32
+        - full.chars().filter(|&c| c == ')').count() as i32;
+    if depth <= 0 { return full; }
     for (_ln, line) in lines.by_ref() {
         full.push_str(" ");
         full.push_str(line.trim());
-        if line.contains(')') { break; }
+        depth += line.chars().filter(|&c| c == '(').count() as i32;
+        depth -= line.chars().filter(|&c| c == ')').count() as i32;
+        if depth <= 0 { break; }
     }
     full
+}
+
+fn parse_object_decl(line: &str) -> Option<String> {
+    // Match "object Foo" but not "data object Foo" (handled separately)
+    if line.starts_with("data object ") { return None; }
+    let rest = line.strip_prefix("object ")?;
+    let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { None } else { Some(name) }
 }
 
 fn parse_data_class(line: &str) -> Option<String> {
@@ -162,14 +187,39 @@ fn extract_constructor_params(line: &str) -> Vec<MinedField> {
     if open >= close { return vec![]; }
 
     let params = &line[open..close];
-    params.split(',')
+    // Split on commas, but not commas inside parentheses (e.g., @Size(min = 0, max = 0))
+    split_top_level_commas(params)
+        .iter()
         .filter_map(|p| parse_kt_param(p.trim()))
         .collect()
+}
+
+fn split_top_level_commas(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    for ch in s.chars() {
+        match ch {
+            '(' => { depth += 1; current.push(ch); }
+            ')' => { depth -= 1; current.push(ch); }
+            ',' if depth == 0 => {
+                parts.push(current.clone());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current);
+    }
+    parts
 }
 
 fn parse_kt_param(param: &str) -> Option<MinedField> {
     // Strip block comments (e.g., /* @Size see fact: ... */) before parsing
     let cleaned = strip_block_comments(param);
+    // Strip @Annotation(...) patterns (e.g., @Size(min = 0, max = 0))
+    let cleaned = strip_annotations(&cleaned);
     let param = cleaned.trim();
     // "val name: Type" or "val name: Type?"
     let rest = param.strip_prefix("val ").or_else(|| param.strip_prefix("var "))?;
@@ -179,6 +229,44 @@ fn parse_kt_param(param: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim();
     let (mult, target) = kt_type_to_mult(type_str);
     Some(MinedField { name, mult, target })
+}
+
+fn strip_annotations(s: &str) -> String {
+    let mut result = s.to_string();
+    // Remove @Annotation(...) patterns — handles nested parens
+    while let Some(at_pos) = result.find('@') {
+        // Find the annotation name
+        let rest = &result[at_pos + 1..];
+        let name_end = rest.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(rest.len());
+        if name_end == 0 { break; }
+        let after_name = &rest[name_end..];
+        if after_name.starts_with('(') {
+            // Find matching close paren
+            let mut depth = 0;
+            let mut end = 0;
+            for (i, ch) in after_name.chars().enumerate() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 { end = i + 1; break; }
+                    }
+                    _ => {}
+                }
+            }
+            if end > 0 {
+                let remove_end = at_pos + 1 + name_end + end;
+                result = format!("{}{}", &result[..at_pos], &result[remove_end..]);
+            } else {
+                break;
+            }
+        } else {
+            // Annotation without parens: just @Name
+            let remove_end = at_pos + 1 + name_end;
+            result = format!("{}{}", &result[..at_pos], &result[remove_end..]);
+        }
+    }
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn strip_block_comments(s: &str) -> String {
@@ -198,6 +286,15 @@ fn kt_type_to_mult(kt_type: &str) -> (MinedMultiplicity, String) {
     // T? → lone
     if let Some(inner) = t.strip_suffix('?') {
         return (MinedMultiplicity::Lone, inner.to_string());
+    }
+    // Map<K, V> → set of K (V info lost)
+    if let Some(inner) = strip_wrapper(t, "Map<", ">") {
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "MutableMap<", ">") {
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
     }
     // Set<T> → set
     if let Some(inner) = strip_wrapper(t, "Set<", ">") {

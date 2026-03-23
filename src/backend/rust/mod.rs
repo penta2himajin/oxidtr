@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::Multiplicity;
+use crate::parser::ast::{Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -83,8 +83,15 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     let needs_btreeset = ir.structures.iter().any(|s| {
         s.fields.iter().any(|f| f.mult == Multiplicity::Set)
     });
-    if needs_btreeset {
-        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+    // Check if any field uses map type → need BTreeMap import
+    let needs_btreemap = ir.structures.iter().any(|s| {
+        s.fields.iter().any(|f| f.value_type.is_some())
+    });
+    if needs_btreeset || needs_btreemap {
+        let mut imports = Vec::new();
+        if needs_btreemap { imports.push("BTreeMap"); }
+        if needs_btreeset { imports.push("BTreeSet"); }
+        writeln!(out, "use std::collections::{{{}}};", imports.join(", ")).unwrap();
         writeln!(out).unwrap();
     }
 
@@ -179,7 +186,11 @@ fn generate_enum(
                     let needs_box = f.target == s.name;
                     let is_self_ref = needs_box
                         || self_ref_fields.contains(&(v.clone(), f.name.clone()));
-                    let type_str = multiplicity_to_type(&f.target, &f.mult, is_self_ref);
+                    let type_str = if let Some(vt) = &f.value_type {
+                        format!("BTreeMap<{}, {}>", f.target, vt)
+                    } else {
+                        multiplicity_to_type(&f.target, &f.mult, is_self_ref)
+                    };
                     writeln!(out, "        {}: {type_str},", f.name).unwrap();
                 }
                 writeln!(out, "    }},").unwrap();
@@ -197,6 +208,18 @@ fn generate_struct(
     self_ref_fields: &HashSet<(String, String)>,
     use_serde: bool,
 ) {
+    // Singleton: one sig → unit struct + INSTANCE constant
+    if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if use_serde {
+            writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
+        } else {
+            writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]").unwrap();
+        }
+        writeln!(out, "pub struct {};", s.name).unwrap();
+        writeln!(out, "pub const {}_INSTANCE: {} = {};", to_snake_case(&s.name).to_uppercase(), s.name, s.name).unwrap();
+        return;
+    }
+
     if use_serde {
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
     } else {
@@ -208,7 +231,11 @@ fn generate_struct(
         writeln!(out, "pub struct {} {{", s.name).unwrap();
         for f in &s.fields {
             let is_self_ref = self_ref_fields.contains(&(s.name.clone(), f.name.clone()));
-            let type_str = multiplicity_to_type(&f.target, &f.mult, is_self_ref);
+            let type_str = if let Some(vt) = &f.value_type {
+                format!("BTreeMap<{}, {}>", f.target, vt)
+            } else {
+                multiplicity_to_type(&f.target, &f.mult, is_self_ref)
+            };
             writeln!(out, "    pub {}: {type_str},", f.name).unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -241,9 +268,10 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
     writeln!(out, "use crate::models::*;").unwrap();
 
-    // Check if any operation parameter uses Set multiplicity
+    // Check if any operation parameter or return type uses Set multiplicity
     let needs_btreeset = ir.operations.iter().any(|op| {
         op.params.iter().any(|p| p.mult == Multiplicity::Set)
+            || op.return_type.as_ref().map_or(false, |r| r.mult == Multiplicity::Set)
     });
     if needs_btreeset {
         writeln!(out, "use std::collections::BTreeSet;").unwrap();
@@ -267,13 +295,40 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             .collect::<Vec<_>>()
             .join(", ");
 
-        writeln!(out, "pub fn {fn_name}({params}) {{").unwrap();
+        let return_str = match &op.return_type {
+            Some(rt) => {
+                let t = rust_return_type(&rt.type_name, &rt.mult);
+                format!(" -> {t}")
+            }
+            None => String::new(),
+        };
+
+        // Doc comments with pre/post separation (Feature 7)
+        if !op.body.is_empty() {
+            let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
+            for expr in &op.body {
+                let desc = analyze::describe_expr(expr);
+                let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
+                writeln!(out, "/// @{tag}: {desc}").unwrap();
+            }
+        }
+
+        writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
         writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
 
     out
+}
+
+fn rust_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::One => type_name.to_string(),
+        Multiplicity::Lone => format!("Option<{type_name}>"),
+        Multiplicity::Set => format!("BTreeSet<{type_name}>"),
+        Multiplicity::Seq => format!("Vec<{type_name}>"),
+    }
 }
 
 fn generate_invariants(ir: &OxidtrIR) -> String {
@@ -316,6 +371,10 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
             .join(", ");
 
         writeln!(out, "/// Invariant derived from Alloy fact.").unwrap();
+        // Feature 6: add @unique annotation when disj is used
+        if expr_uses_disj(&constraint.expr) {
+            writeln!(out, "/// @unique Elements must be distinct (disj).").unwrap();
+        }
         writeln!(out, "#[allow(dead_code)]").unwrap();
         writeln!(out, "pub fn {fn_name}({param_str}) -> bool {{").unwrap();
         writeln!(out, "    {body}").unwrap();
@@ -328,6 +387,24 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
 
 fn collect_sig_names(ir: &OxidtrIR) -> std::collections::HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
+}
+
+fn expr_uses_disj(expr: &crate::parser::ast::Expr) -> bool {
+    use crate::parser::ast::Expr;
+    match expr {
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| b.disj) || expr_uses_disj(body)
+        }
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            expr_uses_disj(left) || expr_uses_disj(right)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            expr_uses_disj(inner)
+        }
+        Expr::FieldAccess { base, .. } => expr_uses_disj(base),
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
 }
 
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
@@ -424,6 +501,77 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // Boundary value tests — use boundary fixtures with invariants (Feature 5)
+    for constraint in &ir.constraints {
+        let fact_name = match &constraint.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        let fn_name = format!("assert_{}", to_snake_case(&fact_name));
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+
+        // Check if any param type has boundary fixtures
+        let has_boundary = params.iter().any(|(_, tname)| {
+            ir.structures.iter().any(|s| {
+                s.name == *tname && !s.is_enum && s.fields.iter().any(|f| {
+                    matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                        && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                })
+            })
+        });
+
+        if has_boundary {
+            let test_name = format!("boundary_{}", to_snake_case(&fact_name));
+            writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    fn {test_name}() {{").unwrap();
+            for (pname, tname) in &params {
+                let snake = to_snake_case(tname);
+                let has_b = ir.structures.iter().any(|s| {
+                    s.name == *tname && s.fields.iter().any(|f| {
+                        matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                            && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                    })
+                });
+                if has_b {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![boundary_{snake}()];").unwrap();
+                } else if has_fixture.contains(tname) {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
+            }
+            let args = params.iter().map(|(p, _)| format!("&{p}")).collect::<Vec<_>>().join(", ");
+            writeln!(out, "        assert!({fn_name}({args}), \"boundary values should satisfy invariant\");").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+
+            // Negative test
+            let test_name = format!("invalid_{}", to_snake_case(&fact_name));
+            writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    fn {test_name}() {{").unwrap();
+            for (pname, tname) in &params {
+                let snake = to_snake_case(tname);
+                let has_b = ir.structures.iter().any(|s| {
+                    s.name == *tname && s.fields.iter().any(|f| {
+                        matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                            && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                    })
+                });
+                if has_b {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![invalid_{snake}()];").unwrap();
+                } else if has_fixture.contains(tname) {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
+            }
+            let args = params.iter().map(|(p, _)| format!("&{p}")).collect::<Vec<_>>().join(", ");
+            writeln!(out, "        assert!(!{fn_name}({args}), \"invalid values should violate invariant\");").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     // Cross-tests: for each (fact, operation) pair, verify fact is preserved
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
         writeln!(out, "    // --- Cross-tests: fact × operation ---").unwrap();
@@ -518,9 +666,29 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     newtype_pairs.sort();
     newtype_pairs.dedup();
 
+    // Build constraint info for field-level range checks
+    let all_constraints = analyze::analyze(ir);
+
     for (fact_name, sig_name) in &newtype_pairs {
         let newtype_name = format!("Validated{sig_name}");
         let assert_fn = format!("assert_{}", to_snake_case(fact_name));
+
+        // Collect field-level cardinality bounds for this sig
+        let field_checks: Vec<(String, Option<usize>, Option<usize>)> = all_constraints.iter()
+            .filter_map(|c| {
+                if let analyze::ConstraintInfo::CardinalityBound { sig_name: s, field_name, bound } = c {
+                    if s == sig_name {
+                        let (min, max) = match bound {
+                            analyze::BoundKind::Exact(n) => (Some(*n), Some(*n)),
+                            analyze::BoundKind::AtMost(n) => (None, Some(*n)),
+                            analyze::BoundKind::AtLeast(n) => (Some(*n), None),
+                        };
+                        return Some((field_name.clone(), min, max));
+                    }
+                }
+                None
+            })
+            .collect();
 
         writeln!(out, "/// Newtype wrapper: {sig_name} validated by {fact_name}.").unwrap();
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
@@ -530,6 +698,21 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         writeln!(out, "    type Error = &'static str;").unwrap();
         writeln!(out).unwrap();
         writeln!(out, "    fn try_from(value: {sig_name}) -> Result<Self, Self::Error> {{").unwrap();
+
+        // Generate concrete field-level range checks
+        for (field_name, min, max) in &field_checks {
+            if let Some(n) = min {
+                writeln!(out, "        if value.{field_name}.len() < {n} {{").unwrap();
+                writeln!(out, "            return Err(\"{fact_name}: {field_name} has fewer than {n} elements\");").unwrap();
+                writeln!(out, "        }}").unwrap();
+            }
+            if let Some(n) = max {
+                writeln!(out, "        if value.{field_name}.len() > {n} {{").unwrap();
+                writeln!(out, "            return Err(\"{fact_name}: {field_name} has more than {n} elements\");").unwrap();
+                writeln!(out, "        }}").unwrap();
+            }
+        }
+
         writeln!(out, "        if {assert_fn}(&[value.clone()]) {{").unwrap();
         writeln!(out, "            Ok({newtype_name}(value))").unwrap();
         writeln!(out, "        }} else {{").unwrap();
@@ -701,16 +884,114 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         writeln!(out, "pub fn default_{}() -> {} {{", struct_snake, s.name).unwrap();
         writeln!(out, "    {} {{", s.name).unwrap();
         for f in &s.fields {
-            let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-            let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+            let val = if f.value_type.is_some() {
+                "BTreeMap::new()".to_string()
+            } else {
+                let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                default_value_for_field(&f.target, &f.mult, is_boxed)
+            };
             writeln!(out, "        {}: {},", f.name, val).unwrap();
         }
         writeln!(out, "    }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+
+        // Boundary value fixtures: generate if any field has a cardinality bound
+        let has_bounds = s.fields.iter().any(|f| {
+            matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+        });
+        if has_bounds {
+            // Boundary fixture
+            writeln!(out, "/// Factory: create {} at cardinality boundary", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn boundary_{}() -> {} {{", struct_snake, s.name).unwrap();
+            writeln!(out, "    {} {{", s.name).unwrap();
+            for f in &s.fields {
+                let val = if f.value_type.is_some() {
+                    "BTreeMap::new()".to_string()
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                    if let Some(bound) = analyze::bounds_for_field(ir, &s.name, &f.name) {
+                        let count = match &bound {
+                            analyze::BoundKind::Exact(n) => *n,
+                            analyze::BoundKind::AtMost(n) => *n,
+                            analyze::BoundKind::AtLeast(n) => *n,
+                        };
+                        boundary_value_for_field(&f.target, &f.mult, count)
+                    } else {
+                        let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                    }
+                } else {
+                    let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                    default_value_for_field(&f.target, &f.mult, is_boxed)
+                };
+                writeln!(out, "        {}: {},", f.name, val).unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+
+            // Invalid fixture
+            writeln!(out, "/// Factory: create {} that violates cardinality constraint", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn invalid_{}() -> {} {{", struct_snake, s.name).unwrap();
+            writeln!(out, "    {} {{", s.name).unwrap();
+            for f in &s.fields {
+                let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                if f.value_type.is_some() {
+                    writeln!(out, "        {}: BTreeMap::new(),", f.name).unwrap();
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                    if let Some(bound) = analyze::bounds_for_field(ir, &s.name, &f.name) {
+                        let violation_count = match &bound {
+                            analyze::BoundKind::Exact(n) => n + 1,
+                            analyze::BoundKind::AtMost(n) => n + 1,
+                            analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
+                        };
+                        let val = boundary_value_for_field(&f.target, &f.mult, violation_count);
+                        writeln!(out, "        {}: {},", f.name, val).unwrap();
+                    } else {
+                        let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+                        writeln!(out, "        {}: {},", f.name, val).unwrap();
+                    }
+                } else {
+                    let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+                    writeln!(out, "        {}: {},", f.name, val).unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
     }
 
     out
+}
+
+fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> String {
+    match mult {
+        Multiplicity::Set => {
+            let items: Vec<String> = (0..count)
+                .map(|_| format!("default_{}()", to_snake_case(target)))
+                .collect();
+            if items.is_empty() {
+                "BTreeSet::new()".to_string()
+            } else {
+                format!("BTreeSet::from([{}])", items.join(", "))
+            }
+        }
+        Multiplicity::Seq => {
+            let items: Vec<String> = (0..count)
+                .map(|_| format!("default_{}()", to_snake_case(target)))
+                .collect();
+            if items.is_empty() {
+                "Vec::new()".to_string()
+            } else {
+                format!("vec![{}]", items.join(", "))
+            }
+        }
+        _ => default_value_for_field(target, mult, false),
+    }
 }
 
 fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool) -> String {

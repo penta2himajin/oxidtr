@@ -154,6 +154,7 @@ fn differ_no_diff_when_in_sync() {
                 name: "name".into(),
                 mult: Multiplicity::One,
                 target: "String".into(),
+                value_type: None,
             }],
         }],
         vec![],
@@ -207,7 +208,7 @@ fn differ_missing_field() {
             is_enum: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
-            fields: vec![IRField { name: "email".into(), mult: Multiplicity::One, target: "String".into() }],
+            fields: vec![IRField { name: "email".into(), mult: Multiplicity::One, target: "String".into(), value_type: None }],
         }],
         vec![],
     );
@@ -253,7 +254,7 @@ fn differ_multiplicity_mismatch() {
             is_enum: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
-            fields: vec![IRField { name: "manager".into(), mult: Multiplicity::Lone, target: "User".into() }],
+            fields: vec![IRField { name: "manager".into(), mult: Multiplicity::Lone, target: "User".into(), value_type: None }],
         }],
         vec![],
     );

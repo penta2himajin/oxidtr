@@ -12,7 +12,8 @@ pub enum Multiplicity {
 pub struct FieldDecl {
     pub name: String,
     pub mult: Multiplicity,
-    pub target: String, // refers to sig name
+    pub target: String, // refers to sig name (key type for maps)
+    pub value_type: Option<String>, // Some(B) when declared as `A -> B` (map type)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

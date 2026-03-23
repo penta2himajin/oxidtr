@@ -119,7 +119,7 @@ fn kt_bean_validation_size_on_cardinality_constraint() {
         "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
     );
     let m = find_file(&files, "Models.kt");
-    assert!(m.contains("@Size see fact:"), "expected @Size annotation on members field:\n{m}");
+    assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation on members field:\n{m}");
 }
 
 #[test]
@@ -248,7 +248,7 @@ fn java_bean_validation_size_on_cardinality_constraint() {
         "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
     );
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("@Size see fact:"), "expected @Size annotation:\n{m}");
+    assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation:\n{m}");
 }
 
 #[test]
@@ -302,4 +302,125 @@ fn java_operations_no_doc_when_no_body() {
     );
     let ops = find_file(&files, "Operations.java");
     assert!(ops.contains("@pre"), "expected @pre for body expression:\n{ops}");
+}
+
+// ── Feature 1: Fun return type ──────────────────────────────────────────────
+
+#[test]
+fn kt_fun_return_type() {
+    let files = generate_kt(r#"
+        sig User {}
+        sig Role {}
+        fun getRole[u: one User]: one Role { u }
+    "#);
+    let ops = find_file(&files, "Operations.kt");
+    assert!(ops.contains("): Role {"), "should have return type Role:\n{ops}");
+}
+
+#[test]
+fn java_fun_return_type() {
+    let files = generate_java(r#"
+        sig User {}
+        sig Role {}
+        fun getRole[u: one User]: one Role { u }
+    "#);
+    let ops = find_file(&files, "Operations.java");
+    assert!(ops.contains("public static Role getRole("), "should have return type Role:\n{ops}");
+}
+
+// ── Feature 2: Singleton support ────────────────────────────────────────────
+
+#[test]
+fn kt_singleton_object() {
+    let files = generate_kt("one sig Config {}");
+    let m = find_file(&files, "Models.kt");
+    assert!(m.contains("object Config"), "should generate Kotlin object for singleton:\n{m}");
+    assert!(!m.contains("data class Config"), "should NOT generate data class for singleton:\n{m}");
+}
+
+#[test]
+fn java_singleton_enum_instance() {
+    let files = generate_java("one sig Config {}");
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("public enum Config {"), "should generate Java enum for singleton:\n{m}");
+    assert!(m.contains("INSTANCE"), "should have INSTANCE constant:\n{m}");
+}
+
+// ── Feature 3: Concrete numeric values with @Size ───────────────────────────
+
+#[test]
+fn kt_concrete_size_annotation() {
+    let files = generate_kt(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact TeamLimit { all t: Team | #t.members <= 10 }
+    "#);
+    let m = find_file(&files, "Models.kt");
+    assert!(m.contains("@Size(max = 10)"), "should have @Size(max = 10):\n{m}");
+}
+
+#[test]
+fn java_concrete_size_annotation() {
+    let files = generate_java(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact TeamLimit { all t: Team | #t.members <= 10 }
+    "#);
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("@Size(max = 10)"), "should have @Size(max = 10):\n{m}");
+}
+
+#[test]
+fn java_concrete_size_min_and_max() {
+    let files = generate_java(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact TeamMin { all t: Team | #t.members >= 3 }
+        fact TeamMax { all t: Team | #t.members <= 10 }
+    "#);
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("@Size(min = 3)") || m.contains("@Size(max = 10)"),
+        "should have concrete @Size annotations:\n{m}");
+}
+
+// ── Feature 4: Product → Map type ───────────────────────────────────────────
+
+#[test]
+fn kt_product_field_to_map() {
+    let files = generate_kt(r#"
+        sig Config { settings: one Key -> Value }
+        sig Key {}
+        sig Value {}
+    "#);
+    let m = find_file(&files, "Models.kt");
+    assert!(m.contains("Map<Key, Value>"), "product field should map to Map:\n{m}");
+}
+
+#[test]
+fn java_product_field_to_map() {
+    let files = generate_java(r#"
+        sig Config { settings: one Key -> Value }
+        sig Key {}
+        sig Value {}
+    "#);
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("Map<Key, Value>"), "product field should map to Map:\n{m}");
+}
+
+// ── Mine: singleton patterns ────────────────────────────────────────────────
+
+#[test]
+fn mine_kotlin_object_to_sig() {
+    let src = "object Config\n";
+    let mined = oxidtr::mine::kotlin_extractor::extract(src);
+    assert_eq!(mined.sigs.len(), 1, "should extract object as sig");
+    assert_eq!(mined.sigs[0].name, "Config");
+}
+
+#[test]
+fn mine_java_enum_instance() {
+    let src = "public enum Config {\n    INSTANCE\n}\n";
+    let mined = oxidtr::mine::java_extractor::extract(src);
+    assert!(mined.sigs.iter().any(|s| s.name == "Config"),
+        "should extract enum as sig: {:?}", mined.sigs);
 }

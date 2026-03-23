@@ -166,6 +166,11 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {
     let t = ts_type.trim();
 
+    // Map<K, V> → set of K (V info lost)
+    if let Some(inner) = strip_wrapper_ts(t, "Map<", ">") {
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
+    }
     // Set<T> → set
     if let Some(inner) = strip_wrapper_ts(t, "Set<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());

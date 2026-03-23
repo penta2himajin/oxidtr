@@ -257,3 +257,88 @@ fn rust_no_serde_by_default() {
     assert!(!content.contains("Deserialize"),
         "should NOT have serde derives by default:\n{content}");
 }
+
+// ── Feature 1: Fun return type in operation stubs ────────────────────────────
+
+#[test]
+fn rust_fun_return_type_one() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun getRole[u: one User]: one Role { u }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("-> Role"), "should have return type Role:\n{content}");
+}
+
+#[test]
+fn rust_fun_return_type_lone() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun findRole[u: one User]: lone Role { u }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("-> Option<Role>"), "should have return type Option<Role>:\n{content}");
+}
+
+#[test]
+fn rust_fun_return_type_set() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun getRoles[u: one User]: set Role { u }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("-> BTreeSet<Role>"), "should have return type BTreeSet<Role>:\n{content}");
+}
+
+#[test]
+fn rust_fun_return_type_seq() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun getRoles[u: one User]: seq Role { u }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("-> Vec<Role>"), "should have return type Vec<Role>:\n{content}");
+}
+
+// ── Feature 2: Singleton support ─────────────────────────────────────────────
+
+#[test]
+fn rust_singleton_unit_struct_with_const() {
+    let files = generate_from("one sig Config {}");
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("pub struct Config;"), "should generate unit struct:\n{content}");
+    assert!(content.contains("pub const CONFIG_INSTANCE: Config = Config;"),
+        "should generate INSTANCE const:\n{content}");
+}
+
+// ── Feature 3: Concrete numeric values in TryFrom ───────────────────────────
+
+#[test]
+fn rust_tryfrom_range_check_with_numeric_bound() {
+    let files = generate_from(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact TeamLimit { all t: Team | #t.members <= 10 }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(newtypes.contains("value.members.len() > 10"),
+        "TryFrom should check len > 10:\n{newtypes}");
+}
+
+// ── Feature 4: Product → Map type ───────────────────────────────────────────
+
+#[test]
+fn rust_product_field_to_btreemap() {
+    let files = generate_from(r#"
+        sig Config { settings: one Key -> Value }
+        sig Key {}
+        sig Value {}
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("BTreeMap<Key, Value>"),
+        "product field should map to BTreeMap:\n{content}");
+}

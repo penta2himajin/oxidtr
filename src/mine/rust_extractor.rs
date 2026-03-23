@@ -110,6 +110,16 @@ fn parse_rust_field(line: &str) -> Option<MinedField> {
 
 fn rust_type_to_mult(rust_type: &str) -> (MinedMultiplicity, String) {
     let t = rust_type.trim();
+    // BTreeMap<K, V> or HashMap<K, V> → treat as Set of K (with V info lost for now)
+    if let Some(inner) = strip_wrapper(t, "BTreeMap<", ">") {
+        // Extract key type (first element before comma)
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "HashMap<", ">") {
+        let key = inner.split(',').next().unwrap_or(inner).trim();
+        return (MinedMultiplicity::Set, key.to_string());
+    }
     if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
         return (MinedMultiplicity::Seq, inner.to_string());
     }
