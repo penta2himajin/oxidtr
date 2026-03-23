@@ -150,11 +150,10 @@ fn guarantee_1_swift_tests_cover_named_facts() {
 
     let facts = named_facts(&ir);
     for fact in &facts {
-        let snake = to_snake_case(fact);
-        let has_invariant = tests.content.contains(&format!("test_invariant_{snake}"))
+        let has_invariant = tests.content.contains(&format!("test_invariant_{fact}"))
             || tests.content.contains(&format!("Type-guaranteed: {fact}"));
-        let has_boundary = tests.content.contains(&format!("test_boundary_{snake}"));
-        let has_cross = tests.content.contains(&format!("{snake}_preserved_after_"));
+        let has_boundary = tests.content.contains(&format!("test_boundary_{fact}"));
+        let has_cross = tests.content.contains(&format!("{fact}_preserved_after_"));
         assert!(
             has_invariant || has_boundary || has_cross,
             "fact {fact} should appear in Tests.swift"

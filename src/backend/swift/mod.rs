@@ -421,7 +421,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        writeln!(out, "    func test_invariant_{}() {{", to_snake_case(&fact_name)).unwrap();
+        writeln!(out, "    func test_invariant_{}() {{", fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
         }
@@ -449,7 +449,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if has_boundary {
-            writeln!(out, "    func test_boundary_{}() {{", to_snake_case(&fact_name)).unwrap();
+            writeln!(out, "    func test_boundary_{}() {{", fact_name).unwrap();
             for (pname, tname) in &params {
                 let has_b = ir.structures.iter().any(|s| {
                     s.name == *tname && s.fields.iter().any(|f| {
@@ -467,7 +467,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
 
-            writeln!(out, "    func test_invalid_{}() {{", to_snake_case(&fact_name)).unwrap();
+            writeln!(out, "    func test_invalid_{}() {{", fact_name).unwrap();
             for (pname, tname) in &params {
                 let has_b = ir.structures.iter().any(|s| {
                     s.name == *tname && s.fields.iter().any(|f| {
@@ -494,10 +494,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         for constraint in &ir.constraints {
             let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
             let body = expr_translator::translate_with_ir(&constraint.expr, ir);
-            let fact_snake = to_snake_case(&fact_name);
             for op in &ir.operations {
                 writeln!(out, "    /// oxidtr: implement cross-test").unwrap();
-                writeln!(out, "    func disabled_test_{fact_snake}_preserved_after_{}() {{", op.name).unwrap();
+                writeln!(out, "    func disabled_test_{fact_name}_preserved_after_{}() {{", op.name).unwrap();
                 writeln!(out, "        // pre: XCTAssertTrue({body})").unwrap();
                 writeln!(out, "        // {}(...)", op.name).unwrap();
                 writeln!(out, "        // post: XCTAssertTrue({body})").unwrap();
