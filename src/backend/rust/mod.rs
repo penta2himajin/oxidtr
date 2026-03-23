@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -891,6 +891,31 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                             writeln!(out, "        }}").unwrap();
                         }
                     }
+                }
+            }
+        }
+
+        // FieldOrdering checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::FieldOrdering { sig_name: s, left_field, op, right_field } = c {
+                if s == sig_name {
+                    let rust_op = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    let negated = match op {
+                        CompareOp::Lt => ">=",
+                        CompareOp::Gt => "<=",
+                        CompareOp::Lte => ">",
+                        CompareOp::Gte => "<",
+                        _ => continue,
+                    };
+                    writeln!(out, "        if value.{left_field} {negated} value.{right_field} {{").unwrap();
+                    writeln!(out, "            return Err(\"{left_field} must be {rust_op} {right_field}\");").unwrap();
+                    writeln!(out, "        }}").unwrap();
                 }
             }
         }

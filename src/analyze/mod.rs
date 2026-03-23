@@ -36,6 +36,24 @@ pub enum ConstraintInfo {
         sig_name: String,
         field_name: String,
     },
+    /// Biconditional: all s: S | A iff B
+    Iff {
+        sig_name: String,
+        left: Expr,
+        right: Expr,
+    },
+    /// Field ordering: all s: S | s.x <= s.y (direct field-to-field comparison)
+    FieldOrdering {
+        sig_name: String,
+        left_field: String,
+        op: CompareOp,
+        right_field: String,
+    },
+    /// Prohibition: no s: S | condition (negated existential)
+    Prohibition {
+        sig_name: String,
+        condition: Expr,
+    },
     /// Generic named constraint (for doc comments)
     Named {
         name: String,
@@ -74,6 +92,9 @@ pub fn constraints_for_sig(ir: &OxidtrIR, sig_name: &str) -> Vec<ConstraintInfo>
         ConstraintInfo::Membership { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::NoSelfRef { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Acyclic { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::Iff { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::FieldOrdering { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::Prohibition { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Named { .. } => false,
     }).collect()
 }
@@ -160,12 +181,14 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                 }
             }
         }
-        // no s: Sig | s in s.^field → Acyclic
+        // no s: Sig | ... → Acyclic or Prohibition
         Expr::Quantifier { kind: QuantKind::No, bindings, body } => {
             if bindings.len() == 1 && bindings[0].vars.len() == 1 {
                 let var = &bindings[0].vars[0];
                 let domain = &bindings[0].domain;
                 if let Expr::VarRef(sig_name) = domain {
+                    let mut is_acyclic = false;
+                    // s in s.^field → Acyclic
                     if let Expr::Comparison { op: CompareOp::In, left, right } = body.as_ref() {
                         if let Expr::VarRef(v) = left.as_ref() {
                             if v == var {
@@ -175,10 +198,18 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                                             sig_name: sig_name.clone(),
                                             field_name: field.clone(),
                                         });
+                                        is_acyclic = true;
                                     }
                                 }
                             }
                         }
+                    }
+                    // Other no-quantifier patterns → Prohibition
+                    if !is_acyclic {
+                        results.push(ConstraintInfo::Prohibition {
+                            sig_name: sig_name.clone(),
+                            condition: substitute_var(body, var, sig_name),
+                        });
                     }
                 }
             }
@@ -222,6 +253,7 @@ fn analyze_body_for_sig(
             }
         }
         // #s.field = N or #s.field <= N etc. (via Comparison on Cardinality)
+        // OR s.fieldA op s.fieldB → FieldOrdering
         Expr::Comparison { op, left, right } => {
             // Look for cardinality on left
             if let Expr::Cardinality(inner) = left.as_ref() {
@@ -244,11 +276,39 @@ fn analyze_body_for_sig(
                     }
                 }
             }
+            // FieldOrdering: s.fieldA op s.fieldB (non-cardinality, non-tautological)
+            if !matches!(left.as_ref(), Expr::Cardinality(_))
+                && matches!(op, CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte)
+            {
+                if let (
+                    Expr::FieldAccess { base: bl, field: fl },
+                    Expr::FieldAccess { base: br, field: fr },
+                ) = (left.as_ref(), right.as_ref()) {
+                    if let (Expr::VarRef(vl), Expr::VarRef(vr)) = (bl.as_ref(), br.as_ref()) {
+                        if vl == var && vr == var && fl != fr {
+                            results.push(ConstraintInfo::FieldOrdering {
+                                sig_name: sig_name.to_string(),
+                                left_field: fl.clone(),
+                                op: op.clone(),
+                                right_field: fr.clone(),
+                            });
+                        }
+                    }
+                }
+            }
         }
         // Conjunction: analyze both sides
         Expr::BinaryLogic { op: LogicOp::And, left, right } => {
             analyze_body_for_sig(left, sig_name, var, results);
             analyze_body_for_sig(right, sig_name, var, results);
+        }
+        // Iff: A iff B → biconditional constraint
+        Expr::BinaryLogic { op: LogicOp::Iff, left, right } => {
+            results.push(ConstraintInfo::Iff {
+                sig_name: sig_name.to_string(),
+                left: substitute_var(left, var, sig_name),
+                right: substitute_var(right, var, sig_name),
+            });
         }
         // Implication body
         Expr::BinaryLogic { op: LogicOp::Implies, right, .. } => {
@@ -356,6 +416,52 @@ fn extract_int(expr: &Expr) -> Option<i64> {
         Some(*n)
     } else {
         None
+    }
+}
+
+/// Substitute a quantifier variable in an expression with the sig name.
+/// This normalizes expressions so they reference the sig name directly.
+fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
+    match expr {
+        Expr::VarRef(name) => {
+            if name == var {
+                Expr::VarRef(sig_name.to_string())
+            } else {
+                expr.clone()
+            }
+        }
+        Expr::FieldAccess { base, field } => Expr::FieldAccess {
+            base: Box::new(substitute_var(base, var, sig_name)),
+            field: field.clone(),
+        },
+        Expr::Comparison { op, left, right } => Expr::Comparison {
+            op: op.clone(),
+            left: Box::new(substitute_var(left, var, sig_name)),
+            right: Box::new(substitute_var(right, var, sig_name)),
+        },
+        Expr::BinaryLogic { op, left, right } => Expr::BinaryLogic {
+            op: op.clone(),
+            left: Box::new(substitute_var(left, var, sig_name)),
+            right: Box::new(substitute_var(right, var, sig_name)),
+        },
+        Expr::Not(inner) => Expr::Not(Box::new(substitute_var(inner, var, sig_name))),
+        Expr::Cardinality(inner) => Expr::Cardinality(Box::new(substitute_var(inner, var, sig_name))),
+        Expr::TransitiveClosure(inner) => Expr::TransitiveClosure(Box::new(substitute_var(inner, var, sig_name))),
+        Expr::SetOp { op, left, right } => Expr::SetOp {
+            op: *op,
+            left: Box::new(substitute_var(left, var, sig_name)),
+            right: Box::new(substitute_var(right, var, sig_name)),
+        },
+        Expr::Product { left, right } => Expr::Product {
+            left: Box::new(substitute_var(left, var, sig_name)),
+            right: Box::new(substitute_var(right, var, sig_name)),
+        },
+        Expr::Quantifier { kind, bindings, body } => Expr::Quantifier {
+            kind: kind.clone(),
+            bindings: bindings.clone(),
+            body: Box::new(substitute_var(body, var, sig_name)),
+        },
+        Expr::IntLiteral(_) => expr.clone(),
     }
 }
 

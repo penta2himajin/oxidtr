@@ -96,6 +96,12 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         ConstraintInfo::Acyclic { .. } => Guarantee::RequiresTest,
         // Membership: no type system can encode this
         ConstraintInfo::Membership { .. } => Guarantee::RequiresTest,
+        // Iff: no type system can encode biconditional constraints
+        ConstraintInfo::Iff { .. } => Guarantee::RequiresTest,
+        // Field ordering: no type system can encode field ordering
+        ConstraintInfo::FieldOrdering { .. } => Guarantee::RequiresTest,
+        // Prohibition: no type system can encode negated existentials
+        ConstraintInfo::Prohibition { .. } => Guarantee::RequiresTest,
         // Named/generic constraints: no type system can encode these
         ConstraintInfo::Named { .. } => Guarantee::RequiresTest,
     }

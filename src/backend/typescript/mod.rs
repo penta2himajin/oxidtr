@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -919,6 +919,32 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                 }
                 analyze::ConstraintInfo::Acyclic { field_name, .. } => {
                     writeln!(out, "  {{ const seen = new Set<unknown>(); let cur: unknown = {param_name}; while (cur != null) {{ if (seen.has(cur)) {{ errors.push(\"{field_name} must not form a cycle\"); break; }} seen.add(cur); cur = (cur as Record<string, unknown>).{field_name}; }} }}").unwrap();
+                }
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let ts_op = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    let negated_op = match op {
+                        CompareOp::Lt => ">=",
+                        CompareOp::Gt => "<=",
+                        CompareOp::Lte => ">",
+                        CompareOp::Gte => "<",
+                        _ => continue,
+                    };
+                    writeln!(out, "  if ({param_name}.{left_field} {negated_op} {param_name}.{right_field}) errors.push(\"{left_field} must be {ts_op} {right_field}\");").unwrap();
+                }
+                analyze::ConstraintInfo::Iff { left, right, .. } => {
+                    let desc_l = analyze::describe_expr(left);
+                    let desc_r = analyze::describe_expr(right);
+                    writeln!(out, "  // TODO: iff constraint — {desc_l} iff {desc_r}").unwrap();
+                }
+                analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                    let desc = analyze::describe_expr(condition);
+                    writeln!(out, "  // TODO: prohibition — no instance where {desc}").unwrap();
                 }
                 _ => {} // Named, Membership — not directly translatable to simple validators
             }

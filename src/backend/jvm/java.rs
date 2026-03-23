@@ -2,7 +2,7 @@ use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -203,7 +203,40 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
             })
             .collect();
 
-        writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+        // FieldOrdering → compact constructor with validation
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let field_orderings: Vec<_> = sig_constraints.iter().filter_map(|c| {
+            if let analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } = c {
+                let op_str = match op {
+                    CompareOp::Lt => "<",
+                    CompareOp::Gt => ">",
+                    CompareOp::Lte => "<=",
+                    CompareOp::Gte => ">=",
+                    _ => return None,
+                };
+                Some((left_field.clone(), op_str, right_field.clone()))
+            } else {
+                None
+            }
+        }).collect();
+        if field_orderings.is_empty() {
+            writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+        } else {
+            writeln!(out, "record {}({}) {{", s.name, params.join(", ")).unwrap();
+            writeln!(out, "    {} {{", s.name).unwrap();
+            for (lf, op, rf) in &field_orderings {
+                let negated = match *op {
+                    "<" => ">=",
+                    ">" => "<=",
+                    "<=" => ">",
+                    ">=" => "<",
+                    _ => continue,
+                };
+                writeln!(out, "        if ({lf} {negated} {rf}) throw new IllegalArgumentException(\"{lf} must be {op} {rf}\");").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 

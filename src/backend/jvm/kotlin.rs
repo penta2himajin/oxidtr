@@ -2,7 +2,7 @@ use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -199,7 +199,33 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             }
             writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
         }
-        writeln!(out, ")").unwrap();
+        // Sig-level constraint annotations (FieldOrdering → init block)
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let field_orderings: Vec<_> = sig_constraints.iter().filter_map(|c| {
+            if let analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } = c {
+                let op_str = match op {
+                    CompareOp::Lt => "<",
+                    CompareOp::Gt => ">",
+                    CompareOp::Lte => "<=",
+                    CompareOp::Gte => ">=",
+                    _ => return None,
+                };
+                Some((left_field.clone(), op_str, right_field.clone()))
+            } else {
+                None
+            }
+        }).collect();
+        if field_orderings.is_empty() {
+            writeln!(out, ")").unwrap();
+        } else {
+            writeln!(out, ") {{").unwrap();
+            writeln!(out, "    init {{").unwrap();
+            for (lf, op, rf) in &field_orderings {
+                writeln!(out, "        require({lf} {op} {rf}) {{ \"{lf} must be {op} {rf}\" }}").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 
