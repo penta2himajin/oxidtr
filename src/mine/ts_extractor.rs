@@ -119,13 +119,19 @@ fn collect_interface_fields(
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
+        // Capture depth BEFORE processing this line's braces.
+        // Only parse fields at the top level of the interface (depth == 1).
+        let depth_before = depth;
         for ch in trimmed.chars() {
             match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
         }
         if depth == 0 { break; }
 
-        if let Some(field) = parse_ts_field(trimmed) {
-            fields.push(field);
+        // Skip fields nested inside inline object types (e.g. bounds?: { x: ...; y: ...; })
+        if depth_before == 1 {
+            if let Some(field) = parse_ts_field(trimmed) {
+                fields.push(field);
+            }
         }
     }
     fields
@@ -135,10 +141,23 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     let trimmed = line.trim().trim_end_matches(';').trim_end_matches(',').trim();
     if trimmed.is_empty() || trimmed.starts_with("//") { return None; }
 
+    // Issue 1: Skip JSDoc comment lines (/** ..., * ..., */)
+    if trimmed.starts_with("/**")
+        || trimmed.starts_with("*/")
+        || trimmed.starts_with("* ")
+        || trimmed == "*"
+    {
+        return None;
+    }
+
     // "readonly kind: "Foo"" → skip (discriminant)
     let rest = trimmed.strip_prefix("readonly ").unwrap_or(trimmed);
 
     let colon = rest.find(':')?;
+
+    // Issue 2: Skip method signatures — '(' before ':' means it's a method, not a property
+    if rest[..colon].contains('(') { return None; }
+
     let mut name = rest[..colon].trim().to_string();
     let optional = name.ends_with('?');
     if optional {
@@ -149,9 +168,9 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim();
     if type_str.is_empty() { return None; }
 
-    // Check for string literal type (discriminant field)
-    if type_str.starts_with('"') && type_str.ends_with('"') {
-        // This is a discriminant like kind: "Foo" — include as-is to let caller filter
+    // Issue 4: Single string literal discriminant (kind: "Foo").
+    // Must NOT be a union — "frame" | "scene" starts/ends with '"' but contains " | ".
+    if type_str.starts_with('"') && type_str.ends_with('"') && !type_str.contains(" | ") {
         return Some(MinedField {
             name,
             mult: MinedMultiplicity::One,
