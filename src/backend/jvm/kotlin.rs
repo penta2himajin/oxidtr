@@ -561,6 +561,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)

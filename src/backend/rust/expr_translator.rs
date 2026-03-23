@@ -64,6 +64,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(right, ir, out);
         }
         Expr::Not(inner) | Expr::Cardinality(inner) => collect_tc_fields(inner, ir, out),
+        Expr::MultFormula { expr: inner, .. } => collect_tc_fields(inner, ir, out),
         Expr::Quantifier { bindings, body, .. } => {
             for b in bindings { collect_tc_fields(&b.domain, ir, out); }
             collect_tc_fields(body, ir, out);
@@ -94,6 +95,9 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(right, sig_names, params);
         }
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            collect_params(inner, sig_names, params);
+        }
+        Expr::MultFormula { expr: inner, .. } => {
             collect_params(inner, sig_names, params);
         }
         Expr::Comparison { left, right, .. } | Expr::SetOp { left, right, .. }
@@ -197,6 +201,15 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
             let l = translate_inner(left, false, sig_names);
             let r = translate_inner(right, false, sig_names);
             format!("({l}, {r})")
+        }
+
+        Expr::MultFormula { kind, expr } => {
+            let inner = translate_inner(expr, false, sig_names);
+            match kind {
+                QuantKind::Some => format!("{inner}.is_some()"),
+                QuantKind::No => format!("{inner}.is_none()"),
+                _ => inner,
+            }
         }
     };
 
@@ -472,6 +485,15 @@ fn translate_inner_ir(
             let l = ti(left, false);
             let r = ti(right, false);
             format!("({l}, {r})")
+        }
+
+        Expr::MultFormula { kind, expr } => {
+            let inner = ti(expr, false);
+            match kind {
+                QuantKind::Some => format!("{inner}.is_some()"),
+                QuantKind::No => format!("{inner}.is_none()"),
+                _ => inner,
+            }
         }
     };
 

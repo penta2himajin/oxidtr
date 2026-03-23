@@ -408,6 +408,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)
@@ -963,6 +964,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
             expr_has_comparison(inner)
         }
+        Expr::MultFormula { expr: inner, .. } => expr_has_comparison(inner),
         Expr::FieldAccess { base, .. } => expr_has_comparison(base),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }

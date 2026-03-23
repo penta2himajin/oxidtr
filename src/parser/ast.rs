@@ -95,6 +95,12 @@ pub enum Expr {
         right: Box<Expr>,
     },
     Not(Box<Expr>),
+    /// Multiplicity formula: `some expr` (non-empty) or `no expr` (empty).
+    /// Distinct from Quantifier which has bindings and a body.
+    MultFormula {
+        kind: QuantKind, // Some or No
+        expr: Box<Expr>,
+    },
     Quantifier {
         kind: QuantKind,
         bindings: Vec<QuantBinding>,

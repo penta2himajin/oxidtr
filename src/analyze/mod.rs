@@ -163,6 +163,14 @@ pub fn describe_expr(expr: &Expr) -> String {
         Expr::Product { left, right } => {
             format!("{} -> {}", describe_expr(left), describe_expr(right))
         }
+        Expr::MultFormula { kind, expr } => {
+            let q = match kind {
+                QuantKind::Some => "some",
+                QuantKind::No => "no",
+                _ => "all",
+            };
+            format!("{q} {}", describe_expr(expr))
+        }
     }
 }
 
@@ -461,6 +469,10 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
             bindings: bindings.clone(),
             body: Box::new(substitute_var(body, var, sig_name)),
         },
+        Expr::MultFormula { kind, expr } => Expr::MultFormula {
+            kind: kind.clone(),
+            expr: Box::new(substitute_var(expr, var, sig_name)),
+        },
         Expr::IntLiteral(_) => expr.clone(),
     }
 }
@@ -515,6 +527,7 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
             collect_disj_fields(inner, results);
         }
+        Expr::MultFormula { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -555,7 +568,8 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
             // Field access on a param is still a param reference (e.g., a.balance)
             expr_only_refs_params(base, param_names)
         }
-        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } => {
             expr_only_refs_params(inner, param_names)
         }
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
@@ -632,6 +646,14 @@ pub fn alloy_repr(expr: &Expr) -> String {
         }
         Expr::Product { left, right } => {
             format!("{} -> {}", alloy_repr(left), alloy_repr(right))
+        }
+        Expr::MultFormula { kind, expr } => {
+            let q = match kind {
+                QuantKind::Some => "some",
+                QuantKind::No => "no",
+                _ => "all",
+            };
+            format!("{q} {}", alloy_repr(expr))
         }
     }
 }
@@ -761,7 +783,8 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_references_sig(left, sig_name) || expr_references_sig(right, sig_name)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } => {
             expr_references_sig(inner, sig_name)
         }
         Expr::FieldAccess { base, .. } => expr_references_sig(base, sig_name),
