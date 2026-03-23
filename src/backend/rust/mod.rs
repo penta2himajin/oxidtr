@@ -3,6 +3,7 @@ pub mod expr_translator;
 use super::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::Multiplicity;
+use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -38,6 +39,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
             content: generate_tests(ir),
         });
     }
+
+    files.push(GeneratedFile {
+        path: "fixtures.rs".to_string(),
+        content: generate_fixtures(ir),
+    });
 
     files
 }
@@ -80,11 +86,15 @@ fn generate_models(ir: &OxidtrIR) -> String {
             continue;
         }
 
+        // Doc comments from constraints
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        for cn in &constraint_names {
+            writeln!(out, "/// Invariant: {cn}").unwrap();
+        }
+
         if s.is_enum {
-            // Generate enum with variant fields from child sigs
             generate_enum(&mut out, s, children.get(&s.name), ir, &self_ref_fields);
         } else {
-            // Generate struct
             generate_struct(&mut out, s, &self_ref_fields);
         }
         writeln!(out).unwrap();
@@ -482,6 +492,57 @@ pub fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
         }
     }
     result
+}
+
+fn generate_fixtures(ir: &OxidtrIR) -> String {
+    let mut out = String::new();
+
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+    let cyclic = find_cyclic_fields(ir);
+
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out).unwrap();
+
+    for s in &ir.structures {
+        if variant_names.contains(&s.name) || s.is_enum { continue; }
+        if s.fields.is_empty() { continue; }
+
+        let struct_snake = to_snake_case(&s.name);
+
+        writeln!(out, "/// Factory: create a default valid {}", s.name).unwrap();
+        writeln!(out, "#[allow(dead_code)]").unwrap();
+        writeln!(out, "pub fn default_{}() -> {} {{", struct_snake, s.name).unwrap();
+        writeln!(out, "    {} {{", s.name).unwrap();
+        for f in &s.fields {
+            let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+            let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+            writeln!(out, "        {}: {},", f.name, val).unwrap();
+        }
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}
+
+fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool) -> String {
+    match mult {
+        Multiplicity::Lone => "None".to_string(),
+        Multiplicity::Set | Multiplicity::Seq => "Vec::new()".to_string(),
+        Multiplicity::One => {
+            if is_boxed {
+                format!("Box::new(default_{}())", to_snake_case(target))
+            } else {
+                format!("default_{}()", to_snake_case(target))
+            }
+        }
+    }
 }
 
 fn to_snake_case(s: &str) -> String {
