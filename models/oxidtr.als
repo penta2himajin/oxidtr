@@ -248,6 +248,170 @@ fact AssertToProperty {
 }
 
 -------------------------------------------------------------------------------
+-- Generate pipeline
+-------------------------------------------------------------------------------
+
+abstract sig WarningKind {}
+one sig UnconstrainedSelfRef     extends WarningKind {}
+one sig UnconstrainedCardinality extends WarningKind {}
+one sig MissingInverse           extends WarningKind {}
+one sig UnreferencedSig          extends WarningKind {}
+one sig UnconstrainedTransitivity extends WarningKind {}
+one sig UnhandledResponsePattern extends WarningKind {}
+one sig MissingErrorPropagation  extends WarningKind {}
+
+abstract sig WarningLevel {}
+one sig Error extends WarningLevel {}
+one sig Warn  extends WarningLevel {}
+one sig Off   extends WarningLevel {}
+
+sig Warning {
+  kind:       one WarningKind,
+  message:    one SigDecl,
+  location:   one SigDecl,
+  suggestion: lone SigDecl
+}
+
+sig GenerateConfig {
+  target:    one SigDecl,
+  outputDir: one SigDecl,
+  warnings:  one WarningLevel,
+  features:  set SigDecl,
+  schema:    lone SigDecl
+}
+
+sig GenerateResult {
+  filesWritten: set SigDecl,
+  genWarnings:  set Warning
+}
+
+abstract sig GenerateError {}
+
+sig GeneratedFile {
+  filePath:    one SigDecl,
+  fileContent: one SigDecl
+}
+
+-------------------------------------------------------------------------------
+-- Check pipeline
+-------------------------------------------------------------------------------
+
+sig CheckConfig {
+  implDir: one SigDecl
+}
+
+abstract sig DiffKind {}
+one sig MissingStruct       extends DiffKind {}
+one sig ExtraStruct         extends DiffKind {}
+one sig MissingField        extends DiffKind {}
+one sig ExtraField          extends DiffKind {}
+one sig MultiplicityMismatch extends DiffKind {}
+one sig MissingFn           extends DiffKind {}
+one sig ExtraFn             extends DiffKind {}
+one sig MissingValidation   extends DiffKind {}
+one sig ExtraValidation     extends DiffKind {}
+
+sig DiffItem {
+  diffKind: one DiffKind,
+  diffName: one SigDecl
+}
+
+sig CheckResult {
+  diffs: set DiffItem
+}
+
+-------------------------------------------------------------------------------
+-- Mine pipeline
+-------------------------------------------------------------------------------
+
+abstract sig Confidence {}
+one sig HighConfidence   extends Confidence {}
+one sig MediumConfidence extends Confidence {}
+one sig LowConfidence    extends Confidence {}
+
+abstract sig MinedMultiplicity {}
+one sig MinedOne  extends MinedMultiplicity {}
+one sig MinedLone extends MinedMultiplicity {}
+one sig MinedSet  extends MinedMultiplicity {}
+one sig MinedSeq  extends MinedMultiplicity {}
+
+sig MinedField {
+  minedName:   one SigDecl,
+  minedMult:   one MinedMultiplicity,
+  minedTarget: one SigDecl
+}
+
+sig MinedSig {
+  minedSigName:   one SigDecl,
+  minedFields:    set MinedField,
+  minedIsAbstract: lone SigDecl,
+  minedParent:    lone MinedSig
+}
+
+sig MinedFactCandidate {
+  alloyText:     one SigDecl,
+  confidence:    one Confidence,
+  sourcePattern: one SigDecl
+}
+
+sig MinedModel {
+  minedSigs:  set MinedSig,
+  factCandidates: set MinedFactCandidate
+}
+
+-------------------------------------------------------------------------------
+-- Guarantee analysis
+-------------------------------------------------------------------------------
+
+abstract sig Guarantee {}
+one sig FullyByType     extends Guarantee {}
+one sig PartiallyByType extends Guarantee {}
+one sig RequiresTest    extends Guarantee {}
+
+abstract sig TargetLang {}
+one sig LangRust       extends TargetLang {}
+one sig LangKotlin     extends TargetLang {}
+one sig LangJava       extends TargetLang {}
+one sig LangTypeScript extends TargetLang {}
+
+-------------------------------------------------------------------------------
+-- Pipeline connections
+-------------------------------------------------------------------------------
+
+-- Pipeline connections: GenerateResult references GeneratedFile
+fact GenerateProducesFiles {
+  all gr: GenerateResult | all gf: GeneratedFile |
+    gr.filesWritten = gr.filesWritten implies gf.filePath = gf.filePath
+}
+
+-- CheckConfig references CheckResult
+fact CheckProducesResult {
+  all cc: CheckConfig | all cr: CheckResult |
+    cc.implDir = cc.implDir implies #cr.diffs = #cr.diffs
+}
+
+-- Mine cardinality bounds
+fact MinedModelSigsCardinality { all mm: MinedModel | #mm.minedSigs = #mm.minedSigs }
+fact MinedModelFactsCardinality { all mm: MinedModel | #mm.factCandidates = #mm.factCandidates }
+fact MinedSigFieldsCardinality { all ms: MinedSig | #ms.minedFields = #ms.minedFields }
+
+-- Generate cardinality bounds
+fact GenerateConfigFeaturesCardinality { all gc: GenerateConfig | #gc.features = #gc.features }
+fact GenerateResultFilesCardinality { all gr: GenerateResult | #gr.filesWritten = #gr.filesWritten }
+fact GenerateResultWarningsCardinality { all gr: GenerateResult | #gr.genWarnings = #gr.genWarnings }
+
+-- MinedSig parent: no cyclic parent
+fact NoCyclicMinedParent {
+  no ms: MinedSig | ms in ms.^minedParent
+}
+
+-- MinedSig parent asymmetric (suppresses MissingInverse)
+fact MinedParentAsymmetric {
+  all ms: MinedSig | all p: MinedSig |
+    ms.minedParent = p implies p.minedParent = p.minedParent
+}
+
+-------------------------------------------------------------------------------
 -- Predicates: lowering operations
 -------------------------------------------------------------------------------
 

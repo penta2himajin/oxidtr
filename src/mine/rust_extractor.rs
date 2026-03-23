@@ -85,7 +85,7 @@ fn collect_struct_fields(
     for (ln, line) in lines.by_ref() {
         let trimmed = line.trim();
         for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+            match ch { '{' => depth += 1, '}' => depth = depth.saturating_sub(1), _ => {} }
         }
         if depth == 0 { break; }
         body_lines.push((ln, trimmed.to_string()));
@@ -217,7 +217,7 @@ fn collect_fn_body(
     for (ln, line) in lines.by_ref() {
         let trimmed = line.trim();
         for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+            match ch { '{' => depth += 1, '}' => depth = depth.saturating_sub(1), _ => {} }
         }
         if depth == 0 { break; }
         body.push((ln, trimmed.to_string()));
@@ -302,7 +302,7 @@ fn strip_balanced_parens(s: &str) -> &str {
         match ch {
             '(' => depth += 1,
             ')' => {
-                depth -= 1;
+                depth = depth.saturating_sub(1);
                 if depth < 0 { return s; } // unbalanced
             }
             _ => {}
@@ -409,7 +409,7 @@ fn extract_balanced_body(s: &str) -> &str {
         match ch {
             '(' | '{' => depth += 1,
             ')' | '}' => {
-                depth -= 1;
+                depth = depth.saturating_sub(1);
                 if depth < 0 {
                     end = i;
                     break;
@@ -517,7 +517,7 @@ fn find_top_level(s: &str, pattern: &str) -> Option<usize> {
     for i in 0..=bytes.len() - pat_bytes.len() {
         match bytes[i] {
             b'(' | b'{' | b'[' => depth += 1,
-            b')' | b'}' | b']' => depth -= 1,
+            b')' | b'}' | b']' => depth = depth.saturating_sub(1),
             _ => {}
         }
         if depth == 0 && &bytes[i..i + pat_bytes.len()] == pat_bytes {
@@ -534,7 +534,7 @@ fn find_matching_close(s: &str, _open: char, close: char) -> Option<usize> {
         if ch == '(' || ch == '{' { depth += 1; }
         if ch == ')' || ch == '}' {
             if depth == 0 && ch == close { return Some(i); }
-            depth -= 1;
+            depth = depth.saturating_sub(1);
         }
     }
     None

@@ -279,16 +279,22 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
 
 fn collect_files(dir: &Path, ext: &str) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
+    collect_files_recursive(dir, ext, &mut files);
+    files.sort();
+    files
+}
+
+fn collect_files_recursive(dir: &Path, ext: &str, files: &mut Vec<std::path::PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.is_file() && path.extension().map_or(false, |e| e == ext) {
+            if path.is_dir() {
+                collect_files_recursive(&path, ext, files);
+            } else if path.is_file() && path.extension().map_or(false, |e| e == ext) {
                 files.push(path);
             }
         }
     }
-    files.sort();
-    files
 }
 
 fn extract_with_lang(content: &str, lang: &str) -> Result<MinedModel, String> {
