@@ -3,6 +3,9 @@
 ///
 /// These tests require external tools (cargo, bun, gradle) and are separated
 /// from unit/self-hosting tests so they can be run independently.
+///
+/// All tests are `#[ignore]` by default — run with:
+///   cargo test --test target_validation -- --include-ignored
 
 use oxidtr::parser;
 use oxidtr::ir;
@@ -80,6 +83,7 @@ edition = "2021"
 
 /// Generate a complete crate from oxidtr.als and verify it type-checks.
 #[test]
+#[ignore]
 fn rust_self_hosted_crate_compiles() {
     let ir = parse_and_lower();
     let tmp = tempfile::tempdir().unwrap();
@@ -109,6 +113,7 @@ fn rust_self_hosted_crate_compiles() {
 
 /// Generate a crate from oxidtr.als and run cargo test (non-cross, non-invalid).
 #[test]
+#[ignore]
 fn rust_self_hosted_tests_pass() {
     let ir = parse_and_lower();
     let tmp = tempfile::tempdir().unwrap();
@@ -145,6 +150,7 @@ fn rust_self_hosted_tests_pass() {
 
 /// Generate TS code from oxidtr.als and run bun test.
 #[test]
+#[ignore]
 fn ts_self_hosted_tests_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
@@ -190,6 +196,7 @@ fn ts_self_hosted_tests_pass() {
 
 /// Generate Kotlin code from oxidtr.als and run gradle test.
 #[test]
+#[ignore]
 fn kotlin_self_hosted_tests_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
