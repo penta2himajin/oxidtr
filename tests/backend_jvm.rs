@@ -123,7 +123,7 @@ fn kt_self_hosting() {
 #[test]
 fn kt_bean_validation_size_on_cardinality_constraint() {
     let files = generate_kt(
-        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 10 }",
     );
     let m = find_file(&files, "Models.kt");
     assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation on members field:\n{m}");
@@ -259,7 +259,7 @@ fn java_bean_validation_notnull_on_one() {
 #[test]
 fn java_bean_validation_size_on_cardinality_constraint() {
     let files = generate_java(
-        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 10 }",
     );
     let m = find_file(&files, "Models.java");
     assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation:\n{m}");

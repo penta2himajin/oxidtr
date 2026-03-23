@@ -98,7 +98,7 @@ fn schema_discriminated_union() {
 #[test]
 fn bean_validation_size_from_cardinality() {
     let model = parser::parse(
-        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }"
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 10 }"
     ).unwrap();
     let ir = ir::lower(&model).unwrap();
     let validations = analyze::bean_validations_for_field(&ir, "Team", "members");

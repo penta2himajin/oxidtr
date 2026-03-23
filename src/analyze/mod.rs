@@ -228,7 +228,7 @@ fn analyze_body_for_sig(
                 if let Expr::FieldAccess { field, .. } = inner.as_ref() {
                     let n = extract_int(right);
                     let bound = match op {
-                        CompareOp::Eq => Some(n.map_or(BoundKind::Exact(0), |v| BoundKind::Exact(v as usize))),
+                        CompareOp::Eq => n.map(|v| BoundKind::Exact(v as usize)),
                         CompareOp::Lte => n.map(|v| BoundKind::AtMost(v as usize)),
                         CompareOp::Lt => n.map(|v| BoundKind::AtMost((v - 1) as usize)),
                         CompareOp::Gte => n.map(|v| BoundKind::AtLeast(v as usize)),
