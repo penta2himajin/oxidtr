@@ -2,6 +2,7 @@ pub mod rust;
 pub mod typescript;
 pub mod jvm;
 pub mod swift;
+pub mod go;
 pub mod schema;
 
 use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity};

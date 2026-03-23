@@ -80,6 +80,10 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "Models.swift", "Operations.swift", mine::swift_extractor::extract)?;
         let validation_sources = collect_validation_sources_swift(impl_dir)?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+    } else if impl_dir.join("models.go").exists() {
+        let extracted = extract_mined(impl_dir, "models.go", "operations.go", mine::go_extractor::extract)?;
+        let validation_sources = collect_validation_sources_go(impl_dir)?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
@@ -163,6 +167,16 @@ fn collect_validation_sources_jvm(impl_dir: &Path, tests_file: &str) -> Result<V
 fn collect_validation_sources_swift(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
     let mut sources = Vec::new();
     let tests_path = impl_dir.join("Tests.swift");
+    if tests_path.exists() {
+        sources.push(std::fs::read_to_string(&tests_path)?);
+    }
+    Ok(sources)
+}
+
+/// Collect validation source texts from Go impl directory.
+fn collect_validation_sources_go(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let tests_path = impl_dir.join("models_test.go");
     if tests_path.exists() {
         sources.push(std::fs::read_to_string(&tests_path)?);
     }
@@ -264,7 +278,7 @@ fn collect_sources_recursive(dir: &Path, sources: &mut Vec<String>) -> Result<()
                 collect_sources_recursive(&path, sources)?;
             } else if path.is_file() {
                 let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if matches!(ext, "rs" | "ts" | "kt" | "java" | "json") {
+                if matches!(ext, "rs" | "ts" | "kt" | "java" | "go" | "json") {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         sources.push(content);
                     }

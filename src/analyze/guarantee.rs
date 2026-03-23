@@ -27,6 +27,7 @@ pub enum TargetLang {
     Swift,
     Kotlin,
     Java,
+    Go,
     TypeScript,
 }
 
@@ -38,6 +39,7 @@ impl TargetLang {
             "swift" => Some(TargetLang::Swift),
             "kotlin" | "kt" => Some(TargetLang::Kotlin),
             "java" => Some(TargetLang::Java),
+            "go" => Some(TargetLang::Go),
             "typescript" | "ts" => Some(TargetLang::TypeScript),
             _ => None,
         }
@@ -48,7 +50,7 @@ impl TargetLang {
         // All languages default off. Use --schema to enable.
         // TS round-trip tests use --schema for lossless cardinality recovery.
         match self {
-            TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::TypeScript => false,
+            TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::Go | TargetLang::TypeScript => false,
         }
     }
 }
@@ -69,7 +71,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         ConstraintInfo::Presence { kind: super::PresenceKind::Required, .. } => {
             match lang {
                 TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
-                TargetLang::Java => Guarantee::PartiallyByType,
+                TargetLang::Java | TargetLang::Go => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
         }
@@ -77,7 +79,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         ConstraintInfo::Presence { kind: super::PresenceKind::Absent, .. } => {
             match lang {
                 TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
-                TargetLang::Java => Guarantee::PartiallyByType,
+                TargetLang::Java | TargetLang::Go => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
         }
@@ -124,7 +126,7 @@ pub fn has_type_guarantee(constraints: &[ConstraintInfo], lang: TargetLang, sig_
 pub fn enum_exhaustiveness_guarantee(lang: TargetLang) -> Guarantee {
     match lang {
         TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java => Guarantee::FullyByType,
-        TargetLang::TypeScript => Guarantee::RequiresTest,
+        TargetLang::Go | TargetLang::TypeScript => Guarantee::RequiresTest,
     }
 }
 
@@ -212,6 +214,7 @@ mod tests {
         assert_eq!(can_guarantee_by_type(&c, TargetLang::Rust), Guarantee::RequiresTest);
         assert_eq!(can_guarantee_by_type(&c, TargetLang::Kotlin), Guarantee::RequiresTest);
         assert_eq!(can_guarantee_by_type(&c, TargetLang::Java), Guarantee::RequiresTest);
+        assert_eq!(can_guarantee_by_type(&c, TargetLang::Go), Guarantee::RequiresTest);
         assert_eq!(can_guarantee_by_type(&c, TargetLang::TypeScript), Guarantee::RequiresTest);
     }
 
@@ -240,6 +243,7 @@ mod tests {
         assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Rust), Guarantee::FullyByType);
         assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Kotlin), Guarantee::FullyByType);
         assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Java), Guarantee::FullyByType);
+        assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Go), Guarantee::RequiresTest);
         assert_eq!(enum_exhaustiveness_guarantee(TargetLang::TypeScript), Guarantee::RequiresTest);
     }
 
@@ -251,6 +255,7 @@ mod tests {
         assert_eq!(TargetLang::from_target_str("java"), Some(TargetLang::Java));
         assert_eq!(TargetLang::from_target_str("typescript"), Some(TargetLang::TypeScript));
         assert_eq!(TargetLang::from_target_str("ts"), Some(TargetLang::TypeScript));
+        assert_eq!(TargetLang::from_target_str("go"), Some(TargetLang::Go));
         assert_eq!(TargetLang::from_target_str("python"), None);
     }
 
@@ -259,6 +264,7 @@ mod tests {
         assert!(!TargetLang::Rust.schema_default());
         assert!(!TargetLang::Kotlin.schema_default());
         assert!(!TargetLang::Java.schema_default());
+        assert!(!TargetLang::Go.schema_default());
         assert!(!TargetLang::TypeScript.schema_default());
     }
 
