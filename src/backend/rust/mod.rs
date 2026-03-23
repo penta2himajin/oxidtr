@@ -787,6 +787,18 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             })
             .collect();
 
+        // Collect NoSelfRef fields for this sig
+        let no_self_ref_fields: Vec<String> = all_constraints.iter()
+            .filter_map(|c| {
+                if let analyze::ConstraintInfo::NoSelfRef { sig_name: s, field_name } = c {
+                    if s == sig_name {
+                        return Some(field_name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
         writeln!(out, "/// Newtype wrapper: {sig_name} validated by {fact_name}.").unwrap();
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
         writeln!(out, "pub struct {newtype_name}(pub {sig_name});").unwrap();
@@ -807,6 +819,27 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 writeln!(out, "        if value.{field_name}.len() > {n} {{").unwrap();
                 writeln!(out, "            return Err(\"{fact_name}: {field_name} has more than {n} elements\");").unwrap();
                 writeln!(out, "        }}").unwrap();
+            }
+        }
+
+        // NoSelfRef field checks
+        if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+            for field_name in &no_self_ref_fields {
+                if let Some(f) = structure.fields.iter().find(|f| f.name == *field_name) {
+                    match f.mult {
+                        Multiplicity::Lone => {
+                            writeln!(out, "        if value.{field_name}.as_ref().map_or(false, |f| f.as_ref() == &value) {{").unwrap();
+                            writeln!(out, "            return Err(\"{field_name} must not reference self\");").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                        Multiplicity::One => {
+                            writeln!(out, "        if *value.{field_name} == value {{").unwrap();
+                            writeln!(out, "            return Err(\"{field_name} must not reference self\");").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                        _ => {}
+                    }
+                }
             }
         }
 

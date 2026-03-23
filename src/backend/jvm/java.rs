@@ -168,6 +168,13 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         }
                     }
                 }
+                // NoSelfRef: field must not reference self
+                let no_self_ref = analyze::constraints_for_sig(ir, &s.name).iter().any(|c| {
+                    matches!(c, analyze::ConstraintInfo::NoSelfRef { field_name: fname, .. } if fname == &f.name)
+                });
+                if no_self_ref {
+                    annotations.push(format!("/* requires {} != this — no self-reference */", f.name));
+                }
                 // Gap 3: disj → suggest Set
                 if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
                     if f.mult == Multiplicity::Seq {
