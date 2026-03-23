@@ -2,7 +2,7 @@
 /// TDD: these tests define expected behavior before full implementation.
 
 use oxidtr::check::{self, CheckConfig};
-use oxidtr::check::impl_parser::{self, ExtractedField, ExtractedStruct, ExtractedFn};
+use oxidtr::check::impl_parser::{self, ExtractedField};
 use oxidtr::check::differ::{self, DiffItem};
 use oxidtr::ir::nodes::{OxidtrIR, StructureNode, IRField, OperationNode};
 use oxidtr::parser::ast::Multiplicity;
@@ -271,7 +271,6 @@ fn differ_multiplicity_mismatch() {
 #[test]
 fn differ_missing_fn() {
     use oxidtr::check::impl_parser::ExtractedImpl;
-    use oxidtr::ir::nodes::IRParam;
     let ir = make_ir(
         vec![],
         vec![OperationNode { name: "add_user".into(), params: vec![], body: vec![] }],

@@ -1,7 +1,6 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::rust;
-use std::path::Path;
 use std::process::Command;
 
 /// Generate a complete crate from oxidtr.als and verify it compiles.

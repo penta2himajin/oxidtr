@@ -26,7 +26,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Generate from self-hosting model
-        run: cargo run -- generate models/oxidtr.als --output generated
-      - name: Check structural consistency
+      - name: Generate Rust from self-hosting model
+        run: cargo run -- generate models/oxidtr.als --target rust --output generated
+      - name: Check Rust structural consistency
         run: cargo run -- check --model models/oxidtr.als --impl generated
+      - name: Generate TypeScript from self-hosting model
+        run: cargo run -- generate models/oxidtr.als --target ts --output generated-ts
+      - name: Check TypeScript structural consistency
+        run: cargo run -- check --model models/oxidtr.als --impl generated-ts
