@@ -19,9 +19,10 @@ sig FieldDecl {
 }
 
 sig SigDecl {
-  isAbstract: lone SigDecl,
-  parent:     lone SigDecl,
-  fields:     set FieldDecl
+  isAbstract:    lone SigDecl,
+  sigMultiplicity: one SigMultiplicity,
+  parent:        lone SigDecl,
+  fields:        set FieldDecl
 }
 
 abstract sig Expr {}
@@ -32,11 +33,26 @@ sig FieldAccess extends Expr {
   accessTarget: one SigDecl
 }
 sig Cardinality extends Expr { inner: one Expr }
+sig IntLiteral extends Expr {}
+sig TransitiveClosure extends Expr { tcInner: one Expr }
+sig SetOp extends Expr {
+  setOpKind:  one SetOpKind,
+  setOpLeft:  one Expr,
+  setOpRight: one Expr
+}
+sig Product extends Expr {
+  prodLeft:  one Expr,
+  prodRight: one Expr
+}
 
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}
 one sig Eq    extends CompareOp {}
 one sig NotEq extends CompareOp {}
+one sig Lt    extends CompareOp {}
+one sig Gt    extends CompareOp {}
+one sig Lte   extends CompareOp {}
+one sig Gte   extends CompareOp {}
 
 sig Comparison extends Expr {
   cop:    one CompareOp,
@@ -48,6 +64,7 @@ abstract sig LogicOp {}
 one sig And     extends LogicOp {}
 one sig Or      extends LogicOp {}
 one sig Implies extends LogicOp {}
+one sig Iff     extends LogicOp {}
 
 sig BinaryLogic extends Expr {
   lop:    one LogicOp,
@@ -61,6 +78,18 @@ abstract sig QuantKind {}
 one sig All  extends QuantKind {}
 one sig Some extends QuantKind {}
 one sig No   extends QuantKind {}
+
+abstract sig SetOpKind {}
+one sig Union        extends SetOpKind {}
+one sig Intersection extends SetOpKind {}
+one sig Difference   extends SetOpKind {}
+
+abstract sig SigMultiplicity {}
+one sig Default extends SigMultiplicity {}
+
+sig QuantBinding {
+  qbDomain: one Expr
+}
 
 sig Quantifier extends Expr {
   qkind:  one QuantKind,
@@ -76,6 +105,12 @@ sig PredDecl {
   predBody:   set Expr
 }
 
+sig FunDecl {
+  funParams:     set ParamDecl,
+  funReturnMult: one Multiplicity,
+  funBody:       one Expr
+}
+
 sig ParamDecl {
   paramMult: one Multiplicity,
   paramType: one SigDecl
@@ -85,6 +120,7 @@ sig AlloyModel {
   sigs:    set SigDecl,
   facts:   set FactDecl,
   preds:   set PredDecl,
+  funs:    set FunDecl,
   asserts: set AssertDecl
 }
 
@@ -126,6 +162,8 @@ fact AlloyModelPredsCardinality  { all m: AlloyModel | #m.preds = #m.preds }
 fact AlloyModelAssertsCardinality { all m: AlloyModel | #m.asserts = #m.asserts }
 fact PredParamsCardinality { all p: PredDecl | #p.predParams = #p.predParams }
 fact PredBodyCardinality   { all p: PredDecl | #p.predBody = #p.predBody }
+fact AlloyModelFunsCardinality { all m: AlloyModel | #m.funs = #m.funs }
+fact FunParamsCardinality  { all f: FunDecl | #f.funParams = #f.funParams }
 
 -------------------------------------------------------------------------------
 -- oxidtr IR (lowered from AST)
@@ -147,10 +185,18 @@ sig ConstraintNode {
   cexpr:   one Expr
 }
 
-sig OperationNode {
-  oorigin: one PredDecl,
-  oparams: set IRParam
+sig IRReturnType {
+  retMult: one Multiplicity
 }
+
+sig OperationNode {
+  oorigin:     one PredDecl,
+  oparams:     set IRParam,
+  oreturnType: lone IRReturnType
+}
+
+abstract sig LoweringError {}
+sig InvalidReference extends LoweringError {}
 
 sig IRParam {
   ipMult: one Multiplicity,

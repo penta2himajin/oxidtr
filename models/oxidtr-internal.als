@@ -4,6 +4,73 @@
 -- It is the target for `oxidtr mine src/` (self-mine).
 
 -------------------------------------------------------------------------------
+-- Lexer / Token
+-------------------------------------------------------------------------------
+
+abstract sig Token {}
+one sig Sig      extends Token {}
+one sig Abstract extends Token {}
+one sig Extends  extends Token {}
+one sig One      extends Token {}
+one sig Lone     extends Token {}
+one sig Set      extends Token {}
+one sig Seq      extends Token {}
+one sig Fact     extends Token {}
+one sig Pred     extends Token {}
+one sig Fun      extends Token {}
+one sig Assert   extends Token {}
+one sig All      extends Token {}
+one sig Some_    extends Token {}
+one sig No       extends Token {}
+one sig Not      extends Token {}
+one sig And      extends Token {}
+one sig Or       extends Token {}
+one sig Implies  extends Token {}
+one sig Iff      extends Token {}
+one sig In       extends Token {}
+one sig Check    extends Token {}
+one sig Run      extends Token {}
+one sig Disj     extends Token {}
+one sig LBrace   extends Token {}
+one sig RBrace   extends Token {}
+one sig LBracket extends Token {}
+one sig RBracket extends Token {}
+one sig LParen   extends Token {}
+one sig RParen   extends Token {}
+one sig Colon    extends Token {}
+one sig Comma    extends Token {}
+one sig Dot      extends Token {}
+one sig Hash     extends Token {}
+one sig Caret    extends Token {}
+one sig Eq       extends Token {}
+one sig NotEq    extends Token {}
+one sig Lt       extends Token {}
+one sig Gt       extends Token {}
+one sig Lte      extends Token {}
+one sig Gte      extends Token {}
+one sig Arrow    extends Token {}
+one sig Pipe     extends Token {}
+one sig Plus     extends Token {}
+one sig Ampersand extends Token {}
+one sig Minus    extends Token {}
+one sig Ident    extends Token {}
+one sig Int      extends Token {}
+one sig Eof      extends Token {}
+
+sig Lexer {
+  lexerPos: one String
+}
+
+-------------------------------------------------------------------------------
+-- Parser errors
+-------------------------------------------------------------------------------
+
+abstract sig ParseError {}
+sig UnexpectedToken extends ParseError {}
+sig UnexpectedEof   extends ParseError {}
+sig InvalidSyntax   extends ParseError {}
+
+-------------------------------------------------------------------------------
 -- Generate pipeline
 -------------------------------------------------------------------------------
 
@@ -52,31 +119,72 @@ sig GeneratedFile {
 sig String {}
 
 -------------------------------------------------------------------------------
+-- Backend
+-------------------------------------------------------------------------------
+
+sig RustBackendConfig {
+  rustFeatures: set String
+}
+
+sig TCField {
+  tcFieldName: one String,
+  tcSigName:   one String
+}
+
+sig JvmContext {
+  jvmChildren:     set String,
+  jvmEnumParents:  set String,
+  jvmVariantNames: set String,
+  jvmStructMap:    set String
+}
+
+-------------------------------------------------------------------------------
 -- Check pipeline
 -------------------------------------------------------------------------------
+
+abstract sig CheckError {}
+sig IoError         extends CheckError {}
+sig CheckParseError extends CheckError {}
+sig CheckLoweringError extends CheckError {}
+sig ImplNotFound    extends CheckError {}
 
 sig CheckConfig {
   implDir: one String
 }
 
 abstract sig DiffItem {}
-one sig MissingStruct          extends DiffItem {}
-one sig ExtraStruct            extends DiffItem {}
-one sig MissingField           extends DiffItem {}
-one sig ExtraField             extends DiffItem {}
-one sig MultiplicityMismatch   extends DiffItem {}
-one sig MissingFn              extends DiffItem {}
-one sig ExtraFn                extends DiffItem {}
-one sig MissingValidation      extends DiffItem {}
-one sig ExtraValidation        extends DiffItem {}
-
-sig DiffItem {
-  diffKind: one DiffItem,
-  diffName: one String
-}
+sig MissingStruct          extends DiffItem {}
+sig ExtraStruct            extends DiffItem {}
+sig MissingField           extends DiffItem {}
+sig ExtraField             extends DiffItem {}
+sig MultiplicityMismatch   extends DiffItem {}
+sig MissingFn              extends DiffItem {}
+sig ExtraFn                extends DiffItem {}
+sig MissingValidation      extends DiffItem {}
+sig ExtraValidation        extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem
+}
+
+sig ExtractedField {
+  exFieldName: one String,
+  exFieldMult: one String,
+  exFieldTarget: one String
+}
+
+sig ExtractedStruct {
+  exStructName:   one String,
+  exStructFields: set ExtractedField
+}
+
+sig ExtractedFn {
+  exFnName: one String
+}
+
+sig ExtractedImpl {
+  exStructs: set ExtractedStruct,
+  exFns:     set ExtractedFn
 }
 
 -------------------------------------------------------------------------------
@@ -89,10 +197,10 @@ one sig Medium extends Confidence {}
 one sig Low    extends Confidence {}
 
 abstract sig MinedMultiplicity {}
-one sig One  extends MinedMultiplicity {}
-one sig Lone extends MinedMultiplicity {}
-one sig Set  extends MinedMultiplicity {}
-one sig Seq  extends MinedMultiplicity {}
+one sig MinedOne  extends MinedMultiplicity {}
+one sig MinedLone extends MinedMultiplicity {}
+one sig MinedSet  extends MinedMultiplicity {}
+one sig MinedSeq  extends MinedMultiplicity {}
 
 sig MinedField {
   minedName:   one String,
@@ -155,14 +263,48 @@ sig CardinalityBound extends ConstraintInfo {
   boundField: one String
 }
 
+abstract sig BoundKind {}
+sig Exact   extends BoundKind {}
+sig AtMost  extends BoundKind {}
+sig AtLeast extends BoundKind {}
+
 sig Presence extends ConstraintInfo {
   presenceSig:   one String,
   presenceField: one String
 }
 
+abstract sig PresenceKind {}
+one sig Required extends PresenceKind {}
+one sig Absent   extends PresenceKind {}
+
+sig Membership extends ConstraintInfo {
+  memberSig:   one String,
+  memberField: one String
+}
+
+sig NoSelfRef extends ConstraintInfo {
+  nsrSig:   one String,
+  nsrField: one String
+}
+
 sig Acyclic extends ConstraintInfo {
   acyclicSig:   one String,
   acyclicField: one String
+}
+
+sig Named extends ConstraintInfo {
+  namedName:        one String,
+  namedDescription: one String
+}
+
+abstract sig BeanValidation {}
+sig Size extends BeanValidation {
+  sizeMin:  lone String,
+  sizeMax:  lone String,
+  sizeFact: one String
+}
+sig MinMax extends BeanValidation {
+  mmFact: one String
 }
 
 -------------------------------------------------------------------------------
@@ -186,6 +328,9 @@ fact GenerateResultFilesCardinality { all gr: GenerateResult | #gr.filesWritten 
 fact GenerateResultWarningsCardinality { all gr: GenerateResult | #gr.genWarnings = #gr.genWarnings }
 fact CheckResultDiffsCardinality { all cr: CheckResult | #cr.diffs = #cr.diffs }
 fact MergeResultConflictsCardinality { all mr: MergeResult | #mr.conflicts = #mr.conflicts }
+fact ExtractedImplCardinality { all ei: ExtractedImpl | #ei.exStructs = #ei.exStructs }
+fact ExtractedImplFnsCardinality { all ei: ExtractedImpl | #ei.exFns = #ei.exFns }
+fact ExtractedStructFieldsCardinality { all es: ExtractedStruct | #es.exStructFields = #es.exStructFields }
 
 -------------------------------------------------------------------------------
 -- Safety assertions
