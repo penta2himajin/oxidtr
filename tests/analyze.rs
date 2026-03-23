@@ -314,3 +314,238 @@ fn schema_self_hosting() {
     assert!(file.content.contains("\"OxidtrIR\""));
     assert!(file.content.contains("\"Multiplicity\""));
 }
+
+// ── Gap 1: some sig / lone sig field reference constraints ───────────────────
+
+#[test]
+fn sig_multiplicity_for_helper() {
+    let model = parser::parse(
+        "some sig Token {}\nlone sig Config {}\nsig User { token: one Token, config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    assert_eq!(analyze::sig_multiplicity_for(&ir, "Token"), oxidtr::parser::ast::SigMultiplicity::Some);
+    assert_eq!(analyze::sig_multiplicity_for(&ir, "Config"), oxidtr::parser::ast::SigMultiplicity::Lone);
+    assert_eq!(analyze::sig_multiplicity_for(&ir, "User"), oxidtr::parser::ast::SigMultiplicity::Default);
+    assert_eq!(analyze::sig_multiplicity_for(&ir, "NotExist"), oxidtr::parser::ast::SigMultiplicity::Default);
+}
+
+#[test]
+fn schema_some_sig_adds_min_items_on_collection() {
+    let model = parser::parse(
+        "some sig Role {}\nsig User { roles: set Role }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    assert!(file.content.contains("\"minItems\": 1"),
+        "schema should have minItems: 1 for collection referencing some sig:\n{}", file.content);
+}
+
+#[test]
+fn schema_lone_sig_makes_one_field_nullable() {
+    let model = parser::parse(
+        "lone sig Config {}\nsig App { config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    // field mult is One but target is lone sig → should be nullable
+    assert!(file.content.contains("\"null\""),
+        "schema should make one-field nullable when target is lone sig:\n{}", file.content);
+    // config should not be in required list (required array should be empty)
+    assert!(file.content.contains("\"required\": []"),
+        "lone sig target field should not be in required:\n{}", file.content);
+}
+
+#[test]
+fn rust_some_sig_doc_comment_on_collection() {
+    let model = parser::parse(
+        "some sig Role {}\nsig User { roles: set Role }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    assert!(models.content.contains("some sig"),
+        "Rust model should have some sig annotation comment:\n{}", models.content);
+}
+
+#[test]
+fn rust_lone_sig_doc_comment_on_one_field() {
+    let model = parser::parse(
+        "lone sig Config {}\nsig App { config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    assert!(models.content.contains("lone sig"),
+        "Rust model should have lone sig annotation comment:\n{}", models.content);
+}
+
+#[test]
+fn java_some_sig_not_empty_annotation() {
+    let model = parser::parse(
+        "some sig Role {}\nsig User { roles: set Role }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::java::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.java").unwrap();
+    assert!(models.content.contains("@NotEmpty"),
+        "Java model should have @NotEmpty for collection referencing some sig:\n{}", models.content);
+}
+
+#[test]
+fn java_lone_sig_nullable_on_one_field() {
+    let model = parser::parse(
+        "lone sig Config {}\nsig App { config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::java::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.java").unwrap();
+    assert!(models.content.contains("@Nullable"),
+        "Java model should have @Nullable for one-field referencing lone sig:\n{}", models.content);
+    // Should NOT have @NotNull on this field
+    assert!(!models.content.contains("@NotNull"),
+        "Java model should not have @NotNull for one-field referencing lone sig:\n{}", models.content);
+}
+
+#[test]
+fn kotlin_some_sig_not_empty_annotation() {
+    let model = parser::parse(
+        "some sig Role {}\nsig User { roles: set Role }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::kotlin::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.kt").unwrap();
+    assert!(models.content.contains("@NotEmpty"),
+        "Kotlin model should have @NotEmpty for collection referencing some sig:\n{}", models.content);
+}
+
+#[test]
+fn kotlin_lone_sig_nullable_comment() {
+    let model = parser::parse(
+        "lone sig Config {}\nsig App { config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::kotlin::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.kt").unwrap();
+    assert!(models.content.contains("@Nullable"),
+        "Kotlin model should have @Nullable for one-field referencing lone sig:\n{}", models.content);
+}
+
+#[test]
+fn ts_some_sig_not_empty_comment() {
+    let model = parser::parse(
+        "some sig Role {}\nsig User { roles: set Role }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.ts").unwrap();
+    assert!(models.content.contains("@NotEmpty"),
+        "TS model should have @NotEmpty for collection referencing some sig:\n{}", models.content);
+}
+
+#[test]
+fn ts_lone_sig_constraint_comment() {
+    let model = parser::parse(
+        "lone sig Config {}\nsig App { config: one Config }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.ts").unwrap();
+    assert!(models.content.contains("lone sig"),
+        "TS model should have lone sig annotation comment:\n{}", models.content);
+}
+
+// ── Gap 2: Set operations → JSON Schema descriptions ─────────────────────────
+
+#[test]
+fn schema_set_op_union_description() {
+    let model = parser::parse(
+        "sig A {}\nsig B {}\nsig C { items: set A }\nfact F { all c: C | c.items in A + B }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    assert!(file.content.contains("Union"),
+        "schema should describe union set operation:\n{}", file.content);
+}
+
+#[test]
+fn analyze_set_ops_for_field_detects_union() {
+    let model = parser::parse(
+        "sig A {}\nsig B {}\nsig C { items: set A }\nfact F { all c: C | c.items in A + B }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let ops = analyze::set_ops_for_field(&ir, "C", "items");
+    assert!(!ops.is_empty(), "should detect set op on field");
+    assert_eq!(ops[0].0, oxidtr::parser::ast::SetOpKind::Union);
+}
+
+#[test]
+fn analyze_set_ops_for_field_empty_when_no_set_op() {
+    let model = parser::parse(
+        "sig A {}\nsig C { items: set A }\nfact F { all c: C | #c.items >= 1 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let ops = analyze::set_ops_for_field(&ir, "C", "items");
+    assert!(ops.is_empty(), "should not detect set op when there is none");
+}
+
+// ── Gap 3: disj → collection type preference (doc comment) ──────────────────
+
+#[test]
+fn rust_disj_suggest_set_comment() {
+    let model = parser::parse(
+        "sig Team { members: seq User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: Team.members | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    assert!(models.content.contains("Consider using BTreeSet"),
+        "Rust model should suggest BTreeSet for disj seq field:\n{}", models.content);
+}
+
+#[test]
+fn java_disj_suggest_set_comment() {
+    let model = parser::parse(
+        "sig Team { members: seq User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: Team.members | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::java::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.java").unwrap();
+    assert!(models.content.contains("Consider using Set<T>"),
+        "Java model should suggest Set for disj seq field:\n{}", models.content);
+}
+
+#[test]
+fn kotlin_disj_suggest_set_comment() {
+    let model = parser::parse(
+        "sig Team { members: seq User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: Team.members | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::kotlin::generate(&ir);
+    let models = files.iter().find(|f| f.path == "Models.kt").unwrap();
+    assert!(models.content.contains("Consider using Set<T>"),
+        "Kotlin model should suggest Set for disj seq field:\n{}", models.content);
+}
+
+#[test]
+fn ts_disj_suggest_set_comment() {
+    let model = parser::parse(
+        "sig Team { members: seq User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: Team.members | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.ts").unwrap();
+    assert!(models.content.contains("Consider using Set<T>"),
+        "TS model should suggest Set for disj seq field:\n{}", models.content);
+}
+
+#[test]
+fn schema_disj_seq_already_has_unique_items() {
+    // Verify existing behavior: disj on seq field → uniqueItems: true in schema
+    let model = parser::parse(
+        "sig Team { members: seq User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: Team.members | m1 != m2 }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let file = oxidtr::backend::schema::generate(&ir);
+    assert!(file.content.contains("\"uniqueItems\": true"),
+        "schema should already have uniqueItems for disj seq field:\n{}", file.content);
+}

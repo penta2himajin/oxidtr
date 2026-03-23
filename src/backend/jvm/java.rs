@@ -79,6 +79,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
 fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
+    let disj_fields = analyze::disj_fields(ir);
 
     writeln!(out, "import java.util.List;").unwrap();
     let has_map = ir.structures.iter().any(|s| s.fields.iter().any(|f| f.value_type.is_some()));
@@ -104,7 +105,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         if s.is_enum {
             generate_sealed_interface(&mut out, s, ctx);
         } else {
-            generate_record(&mut out, s, ir);
+            generate_record(&mut out, s, ir, &disj_fields);
         }
         writeln!(out).unwrap();
     }
@@ -112,7 +113,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
+fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → Java enum with INSTANCE
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
         writeln!(out, "public enum {} {{", s.name).unwrap();
@@ -127,10 +128,22 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
         let params: Vec<String> = s.fields.iter()
             .map(|f| {
                 let mut annotations = Vec::new();
+                let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
                 match f.mult {
-                    Multiplicity::One => annotations.push("@NotNull".to_string()),
+                    Multiplicity::One => {
+                        // Gap 1: lone sig target → nullable even if field mult is One
+                        if target_mult == SigMultiplicity::Lone {
+                            annotations.push("/* @Nullable — lone sig may not exist */".to_string());
+                        } else {
+                            annotations.push("@NotNull".to_string());
+                        }
+                    }
                     _ => {}
                 };
+                // Gap 1: some sig → @NotEmpty on collection fields
+                if target_mult == SigMultiplicity::Some && matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                    annotations.push("/* @NotEmpty */".to_string());
+                }
                 // Bean Validation: @Size for set/seq fields with cardinality constraints
                 let validations = analyze::bean_validations_for_field(ir, &s.name, &f.name);
                 for v in &validations {
@@ -148,6 +161,12 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
                         analyze::BeanValidation::MinMax { fact_name } => {
                             annotations.push(format!("/* @Min/@Max see fact: {fact_name} */"));
                         }
+                    }
+                }
+                // Gap 3: disj → suggest Set
+                if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
+                    if f.mult == Multiplicity::Seq {
+                        annotations.push("/* Consider using Set<T> for uniqueness (disj constraint) */".to_string());
                     }
                 }
                 let annotation_str = if annotations.is_empty() {

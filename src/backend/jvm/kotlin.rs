@@ -79,6 +79,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
 fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
+    let disj_fields = analyze::disj_fields(ir);
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
@@ -95,7 +96,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         if s.is_enum {
             generate_sealed_class(&mut out, s, ctx);
         } else {
-            generate_data_class(&mut out, s, ir);
+            generate_data_class(&mut out, s, ir, &disj_fields);
         }
         writeln!(out).unwrap();
     }
@@ -103,7 +104,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
+fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → Kotlin object
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
         writeln!(out, "object {}", s.name).unwrap();
@@ -124,6 +125,11 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
             // Bean Validation annotations
             let validations = analyze::bean_validations_for_field(ir, &s.name, &f.name);
             let mut annotations = Vec::new();
+            // Gap 1: some sig → @NotEmpty on collection fields
+            let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
+            if target_mult == SigMultiplicity::Some && matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                annotations.push("/* @NotEmpty */".to_string());
+            }
             for v in &validations {
                 match v {
                     analyze::BeanValidation::Size { min, max, fact_name } => {
@@ -139,6 +145,16 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
                     analyze::BeanValidation::MinMax { fact_name } => {
                         annotations.push(format!("/* @Min/@Max see fact: {fact_name} */"));
                     }
+                }
+            }
+            // Gap 1: lone sig target → make nullable even if field mult is One
+            if target_mult == SigMultiplicity::Lone && f.mult == Multiplicity::One {
+                annotations.push("/* @Nullable — lone sig may not exist */".to_string());
+            }
+            // Gap 3: disj → suggest Set
+            if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
+                if f.mult == Multiplicity::Seq {
+                    annotations.push("/* Consider using Set<T> for uniqueness (disj constraint) */".to_string());
                 }
             }
             for ann in &annotations {

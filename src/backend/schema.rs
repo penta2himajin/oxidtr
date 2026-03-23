@@ -2,15 +2,38 @@
 /// Produces a schemas.json conforming to JSON Schema draft-07.
 
 use crate::ir::nodes::*;
-use crate::parser::ast::Multiplicity;
+use crate::parser::ast::{Multiplicity, SigMultiplicity, SetOpKind};
 use crate::analyze;
 use crate::backend::GeneratedFile;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+/// Collect set operation descriptions for fields across all constraints.
+/// Returns a map of (sig_name, field_name) → human-readable description.
+fn collect_set_op_descriptions(ir: &OxidtrIR) -> HashMap<(String, String), String> {
+    let mut result = HashMap::new();
+    for s in &ir.structures {
+        for f in &s.fields {
+            let ops = analyze::set_ops_for_field(ir, &s.name, &f.name);
+            if !ops.is_empty() {
+                let descs: Vec<String> = ops.iter().map(|(op, left, right)| {
+                    match op {
+                        SetOpKind::Union => format!("Union of {left} and {right}"),
+                        SetOpKind::Intersection => format!("Intersection of {left} and {right}"),
+                        SetOpKind::Difference => format!("Difference of {left} and {right}"),
+                    }
+                }).collect();
+                result.insert((s.name.clone(), f.name.clone()), descs.join("; "));
+            }
+        }
+    }
+    result
+}
+
 pub fn generate(ir: &OxidtrIR) -> GeneratedFile {
     let constraints = analyze::analyze(ir);
     let disj_fields = analyze::disj_fields(ir);
+    let set_op_descs = collect_set_op_descriptions(ir);
     let mut out = String::new();
 
     // Collect enum parents and variants
@@ -46,7 +69,7 @@ pub fn generate(ir: &OxidtrIR) -> GeneratedFile {
         if s.is_enum {
             generate_enum_schema(&mut out, s, children.get(s.name.as_str()), &ir.structures, &constraints);
         } else {
-            generate_struct_schema(&mut out, s, &constraints, &disj_fields);
+            generate_struct_schema(&mut out, s, &constraints, &disj_fields, ir, &set_op_descs);
         }
         writeln!(out, "    }}{comma}").unwrap();
     }
@@ -65,6 +88,8 @@ fn generate_struct_schema(
     s: &StructureNode,
     constraints: &[analyze::ConstraintInfo],
     disj_fields: &[(String, String)],
+    ir: &OxidtrIR,
+    set_op_descs: &HashMap<(String, String), String>,
 ) {
     writeln!(out, "    \"{}\": {{", s.name).unwrap();
     writeln!(out, "      \"type\": \"object\",").unwrap();
@@ -81,14 +106,16 @@ fn generate_struct_schema(
         let comma = if i < s.fields.len() - 1 { "," } else { "" };
         let bounds = field_bounds(constraints, &s.name, &f.name);
         let is_disj = disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name);
-        write_field_schema_with_bounds(out, f, &bounds, is_disj);
+        let target_sig_mult = analyze::sig_multiplicity_for(ir, &f.target);
+        let set_op_desc = set_op_descs.get(&(s.name.clone(), f.name.clone()));
+        write_field_schema_with_bounds(out, f, &bounds, is_disj, target_sig_mult, set_op_desc);
         writeln!(out, "        }}{comma}").unwrap();
     }
     writeln!(out, "      }},").unwrap();
 
-    // Required: all One fields
+    // Required: all One fields, but lone sig targets are nullable even if field mult is One
     let required: Vec<&str> = s.fields.iter()
-        .filter(|f| f.mult == Multiplicity::One)
+        .filter(|f| f.mult == Multiplicity::One && analyze::sig_multiplicity_for(ir, &f.target) != SigMultiplicity::Lone)
         .map(|f| f.name.as_str())
         .collect();
     let req_json: Vec<String> = required.iter().map(|r| format!("\"{r}\"")).collect();
@@ -118,13 +145,34 @@ fn field_bounds(constraints: &[analyze::ConstraintInfo], sig_name: &str, field_n
     FieldBounds { min_items, max_items }
 }
 
-fn write_field_schema_with_bounds(out: &mut String, f: &IRField, bounds: &FieldBounds, is_disj: bool) {
+fn write_field_schema_with_bounds(
+    out: &mut String,
+    f: &IRField,
+    bounds: &FieldBounds,
+    is_disj: bool,
+    target_sig_mult: SigMultiplicity,
+    set_op_desc: Option<&String>,
+) {
     writeln!(out, "        \"{}\": {{", f.name).unwrap();
 
     // Map field (A -> B): use object with additionalProperties
     if let Some(vt) = &f.value_type {
         writeln!(out, "          \"type\": \"object\",").unwrap();
         writeln!(out, "          \"additionalProperties\": {{ \"$ref\": \"#/definitions/{vt}\" }}").unwrap();
+        return;
+    }
+
+    // Gap 2: add set operation description if present
+    if let Some(desc) = set_op_desc {
+        writeln!(out, "          \"description\": \"{}\",", desc).unwrap();
+    }
+
+    // Gap 1: lone sig target makes reference nullable even for One fields
+    if target_sig_mult == SigMultiplicity::Lone && f.mult == Multiplicity::One {
+        writeln!(out, "          \"oneOf\": [").unwrap();
+        writeln!(out, "            {{ \"$ref\": \"#/definitions/{}\" }},", f.target).unwrap();
+        writeln!(out, "            {{ \"type\": \"null\" }}").unwrap();
+        writeln!(out, "          ]").unwrap();
         return;
     }
 
@@ -141,7 +189,12 @@ fn write_field_schema_with_bounds(out: &mut String, f: &IRField, bounds: &FieldB
         Multiplicity::Set => {
             writeln!(out, "          \"type\": \"array\",").unwrap();
             writeln!(out, "          \"uniqueItems\": true,").unwrap();
-            if let Some(n) = bounds.min_items {
+            // Gap 1: some sig target → at least 1 item
+            let effective_min = match target_sig_mult {
+                SigMultiplicity::Some => Some(bounds.min_items.map_or(1, |n| n.max(1))),
+                _ => bounds.min_items,
+            };
+            if let Some(n) = effective_min {
                 writeln!(out, "          \"minItems\": {n},").unwrap();
             }
             if let Some(n) = bounds.max_items {
@@ -155,7 +208,12 @@ fn write_field_schema_with_bounds(out: &mut String, f: &IRField, bounds: &FieldB
             if is_disj {
                 writeln!(out, "          \"uniqueItems\": true,").unwrap();
             }
-            if let Some(n) = bounds.min_items {
+            // Gap 1: some sig target → at least 1 item
+            let effective_min = match target_sig_mult {
+                SigMultiplicity::Some => Some(bounds.min_items.map_or(1, |n| n.max(1))),
+                _ => bounds.min_items,
+            };
+            if let Some(n) = effective_min {
                 writeln!(out, "          \"minItems\": {n},").unwrap();
             }
             if let Some(n) = bounds.max_items {

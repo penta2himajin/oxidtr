@@ -560,6 +560,87 @@ fn alloy_repr_atom(expr: &Expr) -> String {
     }
 }
 
+/// Look up the sig multiplicity for a given sig name in the IR.
+/// Returns `SigMultiplicity::Default` if the sig is not found.
+pub fn sig_multiplicity_for(ir: &OxidtrIR, sig_name: &str) -> SigMultiplicity {
+    ir.structures.iter()
+        .find(|s| s.name == sig_name)
+        .map(|s| s.sig_multiplicity)
+        .unwrap_or(SigMultiplicity::Default)
+}
+
+/// Collect set operations found in constraint expressions that reference a given field.
+/// Returns a list of (SetOpKind, left_operand, right_operand) descriptions for the field.
+pub fn set_ops_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<(SetOpKind, String, String)> {
+    let mut results = Vec::new();
+    for c in &ir.constraints {
+        collect_set_ops_for_field(&c.expr, sig_name, field_name, &mut results);
+    }
+    results
+}
+
+fn collect_set_ops_for_field(
+    expr: &Expr,
+    sig_name: &str,
+    field_name: &str,
+    results: &mut Vec<(SetOpKind, String, String)>,
+) {
+    match expr {
+        Expr::Quantifier { kind: QuantKind::All, bindings, body } => {
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                if let Expr::VarRef(name) = &bindings[0].domain {
+                    if name == sig_name {
+                        collect_set_ops_in_body(body, field_name, results);
+                    }
+                }
+            }
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            collect_set_ops_for_field(left, sig_name, field_name, results);
+            collect_set_ops_for_field(right, sig_name, field_name, results);
+        }
+        _ => {}
+    }
+}
+
+fn collect_set_ops_in_body(
+    expr: &Expr,
+    field_name: &str,
+    results: &mut Vec<(SetOpKind, String, String)>,
+) {
+    match expr {
+        Expr::Comparison { left, right, .. } => {
+            // Check if left references the field and right is a set op (or vice versa)
+            if field_access_matches(left, field_name) {
+                if let Expr::SetOp { op, left: sl, right: sr } = right.as_ref() {
+                    results.push((*op, describe_expr(sl), describe_expr(sr)));
+                }
+            }
+            if field_access_matches(right, field_name) {
+                if let Expr::SetOp { op, left: sl, right: sr } = left.as_ref() {
+                    results.push((*op, describe_expr(sl), describe_expr(sr)));
+                }
+            }
+            // Also check if the set op contains a field reference
+            collect_set_ops_in_body(left, field_name, results);
+            collect_set_ops_in_body(right, field_name, results);
+        }
+        Expr::SetOp { op, left, right } => {
+            // If either side is a field access to our field
+            if field_access_matches(left, field_name) || field_access_matches(right, field_name) {
+                results.push((*op, describe_expr(left), describe_expr(right)));
+            }
+            collect_set_ops_in_body(left, field_name, results);
+            collect_set_ops_in_body(right, field_name, results);
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            collect_set_ops_in_body(left, field_name, results);
+            collect_set_ops_in_body(right, field_name, results);
+        }
+        _ => {}
+    }
+}
+
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,

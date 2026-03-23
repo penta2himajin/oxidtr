@@ -136,10 +136,11 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
             writeln!(out, "/// Invariant: {cn}").unwrap();
         }
 
+        let disj_fields = analyze::disj_fields(ir);
         if s.is_enum {
             generate_enum(&mut out, s, children.get(&s.name), ir, &self_ref_fields, use_serde);
         } else {
-            generate_struct(&mut out, s, &self_ref_fields, use_serde);
+            generate_struct(&mut out, s, &self_ref_fields, use_serde, ir, &disj_fields);
         }
         writeln!(out).unwrap();
     }
@@ -207,6 +208,8 @@ fn generate_struct(
     s: &StructureNode,
     self_ref_fields: &HashSet<(String, String)>,
     use_serde: bool,
+    ir: &OxidtrIR,
+    disj_fields: &[(String, String)],
 ) {
     // Singleton: one sig → unit struct + INSTANCE constant
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
@@ -230,6 +233,8 @@ fn generate_struct(
     } else {
         writeln!(out, "pub struct {} {{", s.name).unwrap();
         for f in &s.fields {
+            // Gap 1 & 3: annotations for sig multiplicity and disj constraints
+            write_field_annotations_rust(out, ir, &s.name, f, "    ", disj_fields);
             let is_self_ref = self_ref_fields.contains(&(s.name.clone(), f.name.clone()));
             let type_str = if let Some(vt) = &f.value_type {
                 format!("BTreeMap<{}, {}>", f.target, vt)
@@ -239,6 +244,40 @@ fn generate_struct(
             writeln!(out, "    pub {}: {type_str},", f.name).unwrap();
         }
         writeln!(out, "}}").unwrap();
+    }
+}
+
+/// Generate doc comments for fields based on target sig multiplicity and disj constraints.
+fn write_field_annotations_rust(
+    out: &mut String,
+    ir: &OxidtrIR,
+    sig_name: &str,
+    f: &IRField,
+    indent: &str,
+    disj_fields: &[(String, String)],
+) {
+    use crate::parser::ast::SigMultiplicity;
+
+    let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
+    match target_mult {
+        SigMultiplicity::Some => {
+            if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                writeln!(out, "{indent}/// @constraint Target is `some sig` — collection must not be empty.").unwrap();
+            }
+        }
+        SigMultiplicity::Lone => {
+            if f.mult == Multiplicity::One {
+                writeln!(out, "{indent}/// @constraint Target is `lone sig` — reference may not exist.").unwrap();
+            }
+        }
+        _ => {}
+    }
+
+    // Gap 3: disj → suggest Set
+    if disj_fields.iter().any(|(sig, field)| sig == sig_name && field == &f.name) {
+        if f.mult == Multiplicity::Seq {
+            writeln!(out, "{indent}/// Consider using BTreeSet<T> for uniqueness (disj constraint).").unwrap();
+        }
     }
 }
 

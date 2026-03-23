@@ -83,6 +83,8 @@ fn generate_models(ir: &OxidtrIR) -> String {
         .map(|s| (s.name.as_str(), s))
         .collect();
 
+    let disj_fields = analyze::disj_fields(ir);
+
     for s in &ir.structures {
         if variant_names.contains(&s.name) {
             continue;
@@ -101,7 +103,7 @@ fn generate_models(ir: &OxidtrIR) -> String {
         if s.is_enum {
             generate_union_type(&mut out, s, children.get(&s.name), &struct_map);
         } else {
-            generate_interface(&mut out, s);
+            generate_interface(&mut out, s, ir, &disj_fields);
         }
         writeln!(out).unwrap();
     }
@@ -109,7 +111,7 @@ fn generate_models(ir: &OxidtrIR) -> String {
     out
 }
 
-fn generate_interface(out: &mut String, s: &StructureNode) {
+fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → interface + exported const
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
         writeln!(out, "export interface {} {{}}", s.name).unwrap();
@@ -122,6 +124,8 @@ fn generate_interface(out: &mut String, s: &StructureNode) {
     } else {
         writeln!(out, "export interface {} {{", s.name).unwrap();
         for f in &s.fields {
+            // Gap 1 & 3: annotations for sig multiplicity and disj constraints
+            write_field_annotations_ts(out, ir, &s.name, f, disj_fields);
             let type_str = if let Some(vt) = &f.value_type {
                 format!("Map<{}, {}>", f.target, vt)
             } else {
@@ -130,6 +134,35 @@ fn generate_interface(out: &mut String, s: &StructureNode) {
             writeln!(out, "  {}: {};", f.name, type_str).unwrap();
         }
         writeln!(out, "}}").unwrap();
+    }
+}
+
+fn write_field_annotations_ts(
+    out: &mut String,
+    ir: &OxidtrIR,
+    sig_name: &str,
+    f: &IRField,
+    disj_fields: &[(String, String)],
+) {
+    let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
+    match target_mult {
+        SigMultiplicity::Some => {
+            if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq) {
+                writeln!(out, "  /** @NotEmpty Target is `some sig` — collection must not be empty. */").unwrap();
+            }
+        }
+        SigMultiplicity::Lone => {
+            if f.mult == Multiplicity::One {
+                writeln!(out, "  /** @constraint Target is `lone sig` — reference may not exist. */").unwrap();
+            }
+        }
+        _ => {}
+    }
+    // Gap 3: disj → suggest Set
+    if disj_fields.iter().any(|(sig, field)| sig == sig_name && field == &f.name) {
+        if f.mult == Multiplicity::Seq {
+            writeln!(out, "  /** Consider using Set<T> for uniqueness (disj constraint). */").unwrap();
+        }
     }
 }
 
