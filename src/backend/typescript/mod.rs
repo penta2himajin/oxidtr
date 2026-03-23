@@ -496,7 +496,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             for op in &ir.operations {
                 let op_name = to_camel_case(&op.name);
                 let test_name = format!("{fact_name} preserved after {op_name}");
-                writeln!(out, "  it('{test_name}', () => {{").unwrap();
+                writeln!(out, "  it.skip('{test_name}', () => {{").unwrap();
                 writeln!(out, "    // pre: expect(/* {fact_name} constraint */).toBe(true);").unwrap();
                 writeln!(out, "    // {op_name}(...);").unwrap();
                 writeln!(out, "    // post: expect(/* {fact_name} constraint */).toBe(true);").unwrap();

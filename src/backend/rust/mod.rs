@@ -619,6 +619,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
                 writeln!(out, "    #[test]").unwrap();
+                writeln!(out, "    #[ignore]").unwrap();
                 writeln!(out, "    fn {test_name}() {{").unwrap();
                 writeln!(
                     out,
@@ -936,6 +937,43 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         writeln!(out, "use std::collections::BTreeSet;").unwrap();
     }
     writeln!(out).unwrap();
+
+    // Build children map for enum default fixtures
+    let children: HashMap<String, Vec<String>> = {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for s in &ir.structures {
+            if let Some(parent) = &s.parent {
+                map.entry(parent.clone()).or_default().push(s.name.clone());
+            }
+        }
+        map
+    };
+    // Build struct map for looking up child sig fields
+    let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+
+    // Generate enum default fixtures (first variant)
+    for s in &ir.structures {
+        if !s.is_enum { continue; }
+        let variants = match children.get(&s.name) {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        let enum_snake = to_snake_case(&s.name);
+        // Find first unit variant (no fields)
+        let first_unit = variants.iter().find(|v| {
+            struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+        });
+        if let Some(variant) = first_unit {
+            writeln!(out, "/// Factory: default value for enum {}", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn default_{}() -> {} {{", enum_snake, s.name).unwrap();
+            writeln!(out, "    {}::{}", s.name, variant).unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
 
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }

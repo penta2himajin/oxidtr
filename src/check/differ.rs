@@ -33,6 +33,8 @@ pub enum DiffItem {
     },
     MissingFn { name: String },
     ExtraFn   { name: String },
+    MissingValidation { fact_name: String },
+    ExtraValidation   { name: String },
 }
 
 impl std::fmt::Display for DiffItem {
@@ -53,6 +55,10 @@ impl std::fmt::Display for DiffItem {
                 write!(f, "[MISSING_FN] {name}: pred in model but not in impl"),
             DiffItem::ExtraFn { name } =>
                 write!(f, "[EXTRA_FN] {name}: fn in impl but not in model"),
+            DiffItem::MissingValidation { fact_name } =>
+                write!(f, "[MISSING_VALIDATION] {fact_name}: fact in model but no validation in impl"),
+            DiffItem::ExtraValidation { name } =>
+                write!(f, "[EXTRA_VALIDATION] {name}: validation in impl but no fact in model"),
         }
     }
 }
@@ -65,6 +71,50 @@ pub fn diff(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
 /// Diff with identity fn name normalization (for TS where names match directly).
 pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
     diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string())
+}
+
+/// Diff with Rust snake_case normalization, including validation coverage check.
+pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+    let mut diffs = diff_with_fn_normalizer(ir, extracted, to_snake_case);
+    diffs.extend(diff_validations(ir, validation_sources, true));
+    diffs
+}
+
+/// Diff with identity normalization, including validation coverage check.
+pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+    let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
+    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs
+}
+
+/// Check that each named fact in the model has a corresponding validation
+/// in the implementation sources.
+fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> Vec<DiffItem> {
+    let mut diffs = Vec::new();
+    let combined = sources.join("\n");
+
+    for constraint in &ir.constraints {
+        let fact_name = match &constraint.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+
+        // Look for the fact name in the combined source texts.
+        // For Rust, we look for the snake_case form.
+        // For other languages, we look for the original name.
+        let search_name = if use_snake_case {
+            to_snake_case(&fact_name)
+        } else {
+            fact_name.clone()
+        };
+
+        let found = combined.contains(&search_name);
+        if !found {
+            diffs.push(DiffItem::MissingValidation { fact_name });
+        }
+    }
+
+    diffs
 }
 
 fn diff_with_fn_normalizer<F>(ir: &OxidtrIR, extracted: &ExtractedImpl, normalize_fn: F) -> Vec<DiffItem>

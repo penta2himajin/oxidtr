@@ -366,6 +366,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let lang = KotlinLang;
 
     writeln!(out, "import org.junit.jupiter.api.Test").unwrap();
+    writeln!(out, "import org.junit.jupiter.api.Disabled").unwrap();
     writeln!(out, "import org.junit.jupiter.api.Assertions.*").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "class PropertyTests {{").unwrap();
@@ -493,6 +494,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
             let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
             for op in &ir.operations {
+                writeln!(out, "    @Disabled(\"oxidtr: implement cross-test\")").unwrap();
                 writeln!(out, "    @Test").unwrap();
                 writeln!(out, "    fun `{fact_name} preserved after {}`() {{", op.name).unwrap();
                 writeln!(out, "        // pre: assertTrue({body})").unwrap();

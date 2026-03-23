@@ -94,3 +94,36 @@ jobs:
         run: |
           grep -q '.iter().all(' generated/tests.rs
           grep -q '.every(' generated-ts/tests.ts
+
+      # Verify cross-tests are marked as skipped/ignored
+      - name: Verify cross-test markers
+        run: |
+          grep -q '#\[ignore\]' generated/tests.rs || echo "No cross-tests in Rust (OK)"
+          grep -q 'it.skip(' generated-ts/tests.ts || echo "No cross-tests in TS (OK)"
+          grep -q '@Disabled' generated-kt/Tests.kt || echo "No cross-tests in Kotlin (OK)"
+
+      # Run generated Rust tests (non-cross, non-existential)
+      - name: Run generated Rust tests
+        run: |
+          cd generated
+          cat > Cargo.toml << 'TOML'
+          [package]
+          name = "oxidtr_generated"
+          version = "0.1.0"
+          edition = "2021"
+          TOML
+          mkdir -p src
+          echo '#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]' > src/lib.rs
+          echo 'pub mod models;' >> src/lib.rs
+          test -f helpers.rs && echo 'pub mod helpers;' >> src/lib.rs
+          test -f operations.rs && echo 'pub mod operations;' >> src/lib.rs
+          test -f fixtures.rs && echo '#[allow(dead_code, unused_variables, unused_imports)]' >> src/lib.rs && echo 'pub mod fixtures;' >> src/lib.rs
+          test -f newtypes.rs && echo '#[allow(dead_code, unused_variables, unused_imports)]' >> src/lib.rs && echo 'pub mod newtypes;' >> src/lib.rs
+          test -f tests.rs && echo '#[allow(dead_code, unused_variables, unused_imports)]' >> src/lib.rs && echo 'mod tests;' >> src/lib.rs
+          for f in *.rs; do
+            if [ "$f" != "lib.rs" ]; then
+              mv "$f" "src/$f"
+              sed -i '1i #![allow(dead_code, unused_variables, unused_imports, non_snake_case)]' "src/$f"
+            fi
+          done
+          cargo test -- --skip preserved_after --skip invalid_

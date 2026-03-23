@@ -401,6 +401,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let lang = JavaLang;
 
     writeln!(out, "import org.junit.jupiter.api.Test;").unwrap();
+    writeln!(out, "import org.junit.jupiter.api.Disabled;").unwrap();
     writeln!(out, "import static org.junit.jupiter.api.Assertions.*;").unwrap();
     writeln!(out, "import java.util.List;").unwrap();
     writeln!(out).unwrap();
@@ -492,6 +493,27 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "        assertFalse(!({body}));").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
+        }
+    }
+
+    // Cross-tests — inline expressions
+    if !ir.constraints.is_empty() && !ir.operations.is_empty() {
+        writeln!(out, "    // --- Cross-tests: fact x operation ---").unwrap();
+        writeln!(out).unwrap();
+        for constraint in &ir.constraints {
+            let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
+            let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
+            for op in &ir.operations {
+                writeln!(out, "    @Disabled(\"oxidtr: implement cross-test\")").unwrap();
+                writeln!(out, "    @Test").unwrap();
+                writeln!(out, "    void {fact_name}_preserved_after_{}() {{", op.name).unwrap();
+                writeln!(out, "        // pre: assertTrue({body});").unwrap();
+                writeln!(out, "        // {}(...);", op.name).unwrap();
+                writeln!(out, "        // post: assertTrue({body});").unwrap();
+                writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement cross-test\");").unwrap();
+                writeln!(out, "    }}").unwrap();
+                writeln!(out).unwrap();
+            }
         }
     }
 

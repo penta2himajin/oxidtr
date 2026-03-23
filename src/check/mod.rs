@@ -64,29 +64,31 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
     let impl_dir = Path::new(&config.impl_dir);
 
     // Auto-detect language by file presence
-    let (extracted, use_snake_case) = if impl_dir.join("models.ts").exists() {
-        (extract_mined(impl_dir, "models.ts", "operations.ts", mine::ts_extractor::extract)?, false)
+    let diffs = if impl_dir.join("models.ts").exists() {
+        let extracted = extract_mined(impl_dir, "models.ts", "operations.ts", mine::ts_extractor::extract)?;
+        let validation_sources = collect_validation_sources_ts(impl_dir)?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("Models.kt").exists() {
-        (extract_mined(impl_dir, "Models.kt", "Operations.kt", mine::kotlin_extractor::extract)?, false)
+        let extracted = extract_mined(impl_dir, "Models.kt", "Operations.kt", mine::kotlin_extractor::extract)?;
+        let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.kt")?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("Models.java").exists() {
-        (extract_mined(impl_dir, "Models.java", "Operations.java", mine::java_extractor::extract)?, false)
+        let extracted = extract_mined(impl_dir, "Models.java", "Operations.java", mine::java_extractor::extract)?;
+        let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.java")?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
-        (extract_rust(impl_dir)?, true)
+        let (extracted, validation_sources) = extract_rust(impl_dir)?;
+        differ::diff_with_validation(&ir, &extracted, &validation_sources)
     } else {
         return Err(CheckError::ImplNotFound(
             "models.rs, models.ts, Models.kt, or Models.java".to_string()
         ));
     };
 
-    let diffs = if use_snake_case {
-        differ::diff(&ir, &extracted)
-    } else {
-        differ::diff_identity(&ir, &extracted)
-    };
     Ok(CheckResult { diffs })
 }
 
-fn extract_rust(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
+fn extract_rust(impl_dir: &Path) -> Result<(ExtractedImpl, Vec<String>), CheckError> {
     let models_src = std::fs::read_to_string(impl_dir.join("models.rs"))?;
     let ops_path = impl_dir.join("operations.rs");
     let ops_src = if ops_path.exists() {
@@ -94,7 +96,52 @@ fn extract_rust(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
     } else {
         String::new()
     };
-    Ok(impl_parser::parse_impl(&models_src, &ops_src))
+
+    // Collect validation sources (tests, newtypes) for validation coverage check
+    let mut validation_sources = Vec::new();
+    let tests_path = impl_dir.join("tests.rs");
+    if tests_path.exists() {
+        validation_sources.push(std::fs::read_to_string(&tests_path)?);
+    }
+    let newtypes_path = impl_dir.join("newtypes.rs");
+    if newtypes_path.exists() {
+        validation_sources.push(std::fs::read_to_string(&newtypes_path)?);
+    }
+
+    Ok((impl_parser::parse_impl(&models_src, &ops_src), validation_sources))
+}
+
+/// Collect validation source texts from TypeScript impl directory.
+fn collect_validation_sources_ts(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let tests_path = impl_dir.join("tests.ts");
+    if tests_path.exists() {
+        sources.push(std::fs::read_to_string(&tests_path)?);
+    }
+    let validators_path = impl_dir.join("validators.ts");
+    if validators_path.exists() {
+        sources.push(std::fs::read_to_string(&validators_path)?);
+    }
+    Ok(sources)
+}
+
+/// Collect validation source texts from JVM (Kotlin/Java) impl directory.
+fn collect_validation_sources_jvm(impl_dir: &Path, tests_file: &str) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let tests_path = impl_dir.join(tests_file);
+    if tests_path.exists() {
+        sources.push(std::fs::read_to_string(&tests_path)?);
+    }
+    // Java: also check Models.java for compact constructor assertions
+    let models_path = impl_dir.join("Models.java");
+    if models_path.exists() {
+        sources.push(std::fs::read_to_string(&models_path)?);
+    }
+    let models_kt_path = impl_dir.join("Models.kt");
+    if models_kt_path.exists() {
+        sources.push(std::fs::read_to_string(&models_kt_path)?);
+    }
+    Ok(sources)
 }
 
 /// Extract using a mine extractor function, then convert MinedModel → ExtractedImpl.
