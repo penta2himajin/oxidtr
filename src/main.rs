@@ -40,12 +40,15 @@ enum Commands {
     Mine {
         /// Path to source file or directory
         source: String,
-        /// Source language (auto-detected from extension if omitted)
+        /// Source language (auto-detected; omit for multi-lang merge)
         #[arg(long)]
         lang: Option<String>,
         /// Output file (default: stdout)
         #[arg(short, long)]
         output: Option<String>,
+        /// Conflict handling when merging multi-lang sources (warn or error)
+        #[arg(long, default_value = "warn")]
+        conflict: ConflictArg,
     },
 }
 
@@ -54,6 +57,12 @@ enum WarningArg {
     Error,
     Warn,
     Off,
+}
+
+#[derive(Clone, ValueEnum)]
+enum ConflictArg {
+    Warn,
+    Error,
 }
 
 fn main() {
@@ -88,16 +97,29 @@ fn main() {
             }
         }
 
-        Commands::Mine { source, lang, output } => {
-            let mined = match mine::run(&source, lang.as_deref()) {
-                Ok(m) => m,
+        Commands::Mine { source, lang, output, conflict } => {
+            let result = match mine::run_merge(&source, lang.as_deref()) {
+                Ok(r) => r,
                 Err(e) => {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             };
 
-            let rendered = mine::renderer::render(&mined);
+            // Report conflicts
+            if !result.conflicts.is_empty() {
+                for c in &result.conflicts {
+                    eprintln!("[CONFLICT] {}.{}: {} ({})",
+                        c.sig_name, c.field_name, c.description,
+                        c.sources.join(" vs "));
+                }
+                if matches!(conflict, ConflictArg::Error) {
+                    eprintln!("error: {} conflict(s) found", result.conflicts.len());
+                    std::process::exit(1);
+                }
+            }
+
+            let rendered = mine::renderer::render(&result.model);
 
             if let Some(path) = output {
                 if let Err(e) = std::fs::write(&path, &rendered) {
@@ -105,11 +127,16 @@ fn main() {
                     std::process::exit(1);
                 }
                 println!("Mined {} sig(s), {} fact candidate(s) → {path}",
-                    mined.sigs.len(), mined.fact_candidates.len());
+                    result.model.sigs.len(), result.model.fact_candidates.len());
             } else {
                 print!("{rendered}");
                 eprintln!("\nMined {} sig(s), {} fact candidate(s)",
-                    mined.sigs.len(), mined.fact_candidates.len());
+                    result.model.sigs.len(), result.model.fact_candidates.len());
+            }
+
+            // Report sources
+            if result.sources_used.len() > 1 {
+                eprintln!("Sources: {}", result.sources_used.join(", "));
             }
         }
 
