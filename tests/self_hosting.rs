@@ -97,6 +97,44 @@ fn self_hosting_mine_sig_coverage_100_percent() {
         "expected 100+ mined sigs, got {}", mined.sigs.len());
 }
 
+/// Verify the generated crate contains expected structures and tests.
+/// (Moved from self_hosting_compile.rs — this is a content check, not compilation.)
+#[test]
+fn self_hosted_crate_content_check() {
+    let model = parser::parse(SELF_MODEL).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let files = rust::generate(&ir);
+
+    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    let tests = files.iter().find(|f| f.path == "tests.rs").unwrap();
+
+    // No invariants.rs should be generated
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
+
+    // Key types from oxidtr domain
+    assert!(models.content.contains("pub enum Multiplicity"));
+    assert!(models.content.contains("pub struct SigDecl"));
+    assert!(models.content.contains("pub struct OxidtrIR"));
+    assert!(models.content.contains("pub struct StructureNode"));
+
+    // Tests use inlined translated expressions, not invariant function calls
+    assert!(tests.content.contains(".iter().all("),
+        "tests should contain inlined expressions");
+
+    // Tests should NOT import invariants
+    assert!(!tests.content.contains("use crate::invariants::"),
+        "tests should NOT import invariants");
+
+    // Tests should NOT contain @alloy comments
+    assert!(!tests.content.contains("@alloy:"),
+        "tests should NOT contain @alloy comments");
+
+    // Assert property tests exist
+    assert!(tests.content.contains("fn no_cyclic_inheritance"));
+    assert!(tests.content.contains("fn unique_structure_origins"));
+}
+
 fn extract_sig_name(line: &str) -> Option<String> {
     let rest = line.strip_prefix("sig ")
         .or_else(|| line.strip_prefix("one sig "))

@@ -113,6 +113,8 @@ cargo run -- mine generated/ -o /tmp/mined.als
 
 ## テスト構成
 
+### ユニットテスト (`cargo test` で常に実行)
+
 | テストファイル | 対象 |
 |---|---|
 | `parser_sig`, `parser_expr` | Alloyパーサー |
@@ -122,14 +124,30 @@ cargo run -- mine generated/ -o /tmp/mined.als
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `check` | 構造的整合性検証 |
-| `self_hosting`, `self_hosting_compile` | セルフホスト検証 |
+| `analyze`, `enrich` | 制約分析・enrichment |
+| `guarantee_differentiation` | 言語間テスト生成差異化 |
+
+### セルフホスト検証 (`cargo test` で常に実行、外部依存なし)
+
+| テストファイル | 対象 |
+|---|---|
+| `self_hosting` | パース・lower・生成・内容検査・mine sig coverage |
+| `self_host_guarantees` | fact→テスト変換・cross-testマーカー・mine/check整合性 |
+| `round_trip`, `round_trip_jvm`, `round_trip_enriched` | ラウンドトリップ検証 |
+| `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
 | `mine_rust`, `mine_ts` | mine抽出 (言語別) |
 | `mine_auto_detect`, `mine_multi_lang` | mine自動検出・multi-lang merge |
 | `mine_new_patterns`, `mine_general_patterns` | 一般コードパターン抽出 |
-| `round_trip`, `round_trip_jvm`, `round_trip_enriched` | ラウンドトリップ検証 |
-| `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
-| `analyze`, `enrich` | 制約分析・enrichment |
-| `guarantee_differentiation` | 言語間テスト生成差異化 |
+
+### 対象検証テスト (外部ツールチェイン依存)
+
+| テストファイル | 対象 | 必要ツール |
+|---|---|---|
+| `target_validation::rust_self_hosted_crate_compiles` | Rust型検査 | cargo |
+| `target_validation::rust_self_hosted_tests_pass` | Rustテスト実行 | cargo |
+| `target_validation::ts_self_hosted_tests_pass` | TSテスト実行 | bun |
+| `target_validation::kotlin_self_hosted_tests_pass` | Kotlinテスト実行 | gradle |
+| `target_validation::java_self_hosted_tests_pass` | Javaテスト実行 (ignore) | gradle |
 
 ## ロードマップ
 
