@@ -7,10 +7,10 @@
 -------------------------------------------------------------------------------
 
 abstract sig Multiplicity {}
-one sig MultOne  extends Multiplicity {}
-one sig MultLone extends Multiplicity {}
-one sig MultSet  extends Multiplicity {}
-one sig MultSeq  extends Multiplicity {}
+one sig One  extends Multiplicity {}
+one sig Lone extends Multiplicity {}
+one sig Set  extends Multiplicity {}
+one sig Seq  extends Multiplicity {}
 
 sig FieldDecl {
   fname:  one SigDecl,
@@ -34,9 +34,9 @@ sig FieldAccess extends Expr {
 sig Cardinality extends Expr { inner: one Expr }
 
 abstract sig CompareOp {}
-one sig OpIn    extends CompareOp {}
-one sig OpEq    extends CompareOp {}
-one sig OpNotEq extends CompareOp {}
+one sig In    extends CompareOp {}
+one sig Eq    extends CompareOp {}
+one sig NotEq extends CompareOp {}
 
 sig Comparison extends Expr {
   cop:    one CompareOp,
@@ -45,9 +45,9 @@ sig Comparison extends Expr {
 }
 
 abstract sig LogicOp {}
-one sig OpAnd     extends LogicOp {}
-one sig OpOr      extends LogicOp {}
-one sig OpImplies extends LogicOp {}
+one sig And     extends LogicOp {}
+one sig Or      extends LogicOp {}
+one sig Implies extends LogicOp {}
 
 sig BinaryLogic extends Expr {
   lop:    one LogicOp,
@@ -55,12 +55,12 @@ sig BinaryLogic extends Expr {
   lright: one Expr
 }
 
-sig UnaryNot extends Expr { notInner: one Expr }
+sig Not extends Expr { notInner: one Expr }
 
 abstract sig QuantKind {}
-one sig QuantAll  extends QuantKind {}
-one sig QuantSome extends QuantKind {}
-one sig QuantNo   extends QuantKind {}
+one sig All  extends QuantKind {}
+one sig Some extends QuantKind {}
+one sig No   extends QuantKind {}
 
 sig Quantifier extends Expr {
   qkind:  one QuantKind,

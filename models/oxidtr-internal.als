@@ -17,9 +17,9 @@ one sig UnhandledResponsePattern extends WarningKind {}
 one sig MissingErrorPropagation  extends WarningKind {}
 
 abstract sig WarningLevel {}
-one sig WarnError extends WarningLevel {}
-one sig WarnWarn  extends WarningLevel {}
-one sig WarnOff   extends WarningLevel {}
+one sig Error extends WarningLevel {}
+one sig Warn  extends WarningLevel {}
+one sig Off   extends WarningLevel {}
 
 sig Warning {
   kind:       one WarningKind,
@@ -59,19 +59,19 @@ sig CheckConfig {
   implDir: one String
 }
 
-abstract sig DiffKind {}
-one sig DiffMissingStruct       extends DiffKind {}
-one sig DiffExtraStruct         extends DiffKind {}
-one sig DiffMissingField        extends DiffKind {}
-one sig DiffExtraField          extends DiffKind {}
-one sig DiffMultiplicityMismatch extends DiffKind {}
-one sig DiffMissingFn           extends DiffKind {}
-one sig DiffExtraFn             extends DiffKind {}
-one sig DiffMissingValidation   extends DiffKind {}
-one sig DiffExtraValidation     extends DiffKind {}
+abstract sig DiffItem {}
+one sig MissingStruct          extends DiffItem {}
+one sig ExtraStruct            extends DiffItem {}
+one sig MissingField           extends DiffItem {}
+one sig ExtraField             extends DiffItem {}
+one sig MultiplicityMismatch   extends DiffItem {}
+one sig MissingFn              extends DiffItem {}
+one sig ExtraFn                extends DiffItem {}
+one sig MissingValidation      extends DiffItem {}
+one sig ExtraValidation        extends DiffItem {}
 
 sig DiffItem {
-  diffKind: one DiffKind,
+  diffKind: one DiffItem,
   diffName: one String
 }
 
@@ -84,15 +84,15 @@ sig CheckResult {
 -------------------------------------------------------------------------------
 
 abstract sig Confidence {}
-one sig HighConfidence   extends Confidence {}
-one sig MediumConfidence extends Confidence {}
-one sig LowConfidence    extends Confidence {}
+one sig High   extends Confidence {}
+one sig Medium extends Confidence {}
+one sig Low    extends Confidence {}
 
 abstract sig MinedMultiplicity {}
-one sig MinedOne  extends MinedMultiplicity {}
-one sig MinedLone extends MinedMultiplicity {}
-one sig MinedSet  extends MinedMultiplicity {}
-one sig MinedSeq  extends MinedMultiplicity {}
+one sig One  extends MinedMultiplicity {}
+one sig Lone extends MinedMultiplicity {}
+one sig Set  extends MinedMultiplicity {}
+one sig Seq  extends MinedMultiplicity {}
 
 sig MinedField {
   minedName:   one String,
@@ -139,10 +139,10 @@ one sig PartiallyByType extends Guarantee {}
 one sig RequiresTest    extends Guarantee {}
 
 abstract sig TargetLang {}
-one sig LangRust       extends TargetLang {}
-one sig LangKotlin     extends TargetLang {}
-one sig LangJava       extends TargetLang {}
-one sig LangTypeScript extends TargetLang {}
+one sig Rust       extends TargetLang {}
+one sig Kotlin     extends TargetLang {}
+one sig Java       extends TargetLang {}
+one sig TypeScript extends TargetLang {}
 
 -------------------------------------------------------------------------------
 -- Constraint analysis
@@ -155,12 +155,12 @@ sig CardinalityBound extends ConstraintInfo {
   boundField: one String
 }
 
-sig PresenceInfo extends ConstraintInfo {
+sig Presence extends ConstraintInfo {
   presenceSig:   one String,
   presenceField: one String
 }
 
-sig AcyclicInfo extends ConstraintInfo {
+sig Acyclic extends ConstraintInfo {
   acyclicSig:   one String,
   acyclicField: one String
 }

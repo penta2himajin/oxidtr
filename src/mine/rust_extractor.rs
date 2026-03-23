@@ -7,69 +7,167 @@ pub fn extract(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
 
-    // Pass 1: Extract struct/enum declarations (type structure)
+    // Pass 1: Extract struct/enum declarations using depth tracking.
+    // Only recognize struct/enum at depth 0 (top-level).
     {
-        let mut lines = source.lines().enumerate().peekable();
-        while let Some((line_num, line)) = lines.next() {
+        let mut depth: usize = 0;
+        let all_lines: Vec<(usize, &str)> = source.lines().enumerate().collect();
+        let mut i = 0;
+        while i < all_lines.len() {
+            let (line_num, line) = all_lines[i];
             let trimmed = line.trim();
 
-            // struct → sig
-            if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
-                let is_unit = trimmed.ends_with(';')
-                    || !trimmed.contains('{')
-                    || (trimmed.contains('{') && trimmed.contains('}'));
-                if is_unit {
+            // At top level (depth 0), check for struct/enum
+            if depth == 0 {
+                if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
+                    let is_unit = trimmed.ends_with(';')
+                        || !trimmed.contains('{')
+                        || (trimmed.contains('{') && trimmed.contains('}'));
+                    if is_unit {
+                        sigs.push(MinedSig {
+                            name,
+                            fields: vec![],
+                            is_abstract: false,
+                            parent: None,
+                            source_location: format!("line {}", line_num + 1),
+                        });
+                    } else {
+                        // Collect fields from subsequent lines
+                        let mut fields = Vec::new();
+                        let mut block_depth = 1usize;
+                        i += 1;
+                        while i < all_lines.len() && block_depth > 0 {
+                            let inner_trimmed = all_lines[i].1.trim();
+                            for ch in inner_trimmed.chars() {
+                                match ch {
+                                    '{' => block_depth += 1,
+                                    '}' => block_depth = block_depth.saturating_sub(1),
+                                    _ => {}
+                                }
+                            }
+                            if block_depth > 0 {
+                                if let Some(field) = parse_rust_field(inner_trimmed) {
+                                    fields.push(field);
+                                }
+                            }
+                            i += 1;
+                        }
+                        sigs.push(MinedSig {
+                            name,
+                            fields,
+                            is_abstract: false,
+                            parent: None,
+                            source_location: format!("line {}", line_num + 1),
+                        });
+                    }
+                    continue;
+                }
+
+                if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
+                    // Collect enum variants
+                    let mut variants: Vec<(String, Vec<MinedField>)> = Vec::new();
+                    let mut block_depth = 1usize;
+                    i += 1;
+                    while i < all_lines.len() && block_depth > 0 {
+                        let inner = all_lines[i].1.trim();
+                        let open = inner.chars().filter(|&c| c == '{').count();
+                        let close = inner.chars().filter(|&c| c == '}').count();
+                        block_depth = block_depth + open - close.min(block_depth + open);
+
+                        if block_depth >= 1 {
+                            // Strip trailing comma and comments
+                            let cleaned = inner.trim_end_matches(',');
+                            let cleaned = if let Some(cp) = cleaned.find("//") {
+                                cleaned[..cp].trim()
+                            } else { cleaned };
+
+                            if !cleaned.is_empty() {
+                                let first = cleaned.chars().next().unwrap_or(' ');
+                                if first.is_ascii_uppercase() {
+                                    if let Some(brace_pos) = cleaned.find('{') {
+                                        // Struct variant
+                                        let vname: String = cleaned[..brace_pos].trim().to_string();
+                                        if !vname.is_empty() && vname.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                            let mut vfields = Vec::new();
+                                            i += 1;
+                                            while i < all_lines.len() {
+                                                let vline = all_lines[i].1.trim();
+                                                let vo = vline.chars().filter(|&c| c == '{').count();
+                                                let vc = vline.chars().filter(|&c| c == '}').count();
+                                                block_depth = block_depth + vo - vc.min(block_depth + vo);
+                                                let vclean = vline.trim_end_matches(',').trim_end_matches('}').trim();
+                                                if let Some(colon) = vclean.find(':') {
+                                                    let fname = vclean[..colon].trim();
+                                                    if !fname.is_empty() && fname.chars().next().map_or(false, |c| c.is_ascii_lowercase()) {
+                                                        let type_str = vclean[colon + 1..].trim();
+                                                        if !type_str.is_empty() {
+                                                            let (mult, target) = rust_type_to_mult(type_str);
+                                                            vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                                        }
+                                                    }
+                                                }
+                                                if vline.contains('}') { i += 1; break; }
+                                                i += 1;
+                                            }
+                                            variants.push((vname, vfields));
+                                            continue;
+                                        }
+                                    } else if let Some(paren_pos) = cleaned.find('(') {
+                                        // Tuple variant
+                                        let vname: String = cleaned[..paren_pos].trim().to_string();
+                                        if !vname.is_empty() && vname.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                            let close_paren = cleaned.rfind(')').unwrap_or(cleaned.len());
+                                            let params_str = &cleaned[paren_pos + 1..close_paren];
+                                            let vfields: Vec<MinedField> = params_str.split(',')
+                                                .enumerate()
+                                                .filter_map(|(fi, p)| {
+                                                    let p = p.trim();
+                                                    if p.is_empty() { return None; }
+                                                    let (mult, target) = rust_type_to_mult(p);
+                                                    Some(MinedField { name: format!("field{fi}"), mult, target })
+                                                })
+                                                .collect();
+                                            variants.push((vname, vfields));
+                                        }
+                                    } else if cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                        // Unit variant
+                                        variants.push((cleaned.to_string(), vec![]));
+                                    }
+                                }
+                            }
+                        }
+                        if block_depth == 0 { i += 1; break; }
+                        i += 1;
+                    }
                     sigs.push(MinedSig {
-                        name,
+                        name: name.clone(),
                         fields: vec![],
-                        is_abstract: false,
+                        is_abstract: true,
                         parent: None,
                         source_location: format!("line {}", line_num + 1),
                     });
-                } else {
-                    let (fields, _body_lines) = collect_struct_fields(&mut lines);
-                    sigs.push(MinedSig {
-                        name,
-                        fields,
-                        is_abstract: false,
-                        parent: None,
-                        source_location: format!("line {}", line_num + 1),
-                    });
+                    for (vname, vfields) in variants {
+                        sigs.push(MinedSig {
+                            name: vname,
+                            fields: vfields,
+                            is_abstract: false,
+                            parent: Some(name.clone()),
+                            source_location: format!("line {}", line_num + 1),
+                        });
+                    }
+                    continue;
                 }
-                continue;
             }
 
-            // enum → abstract sig + child sigs
-            if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
-                let variants = collect_enum_variants(&mut lines);
-                sigs.push(MinedSig {
-                    name: name.clone(),
-                    fields: vec![],
-                    is_abstract: true,
-                    parent: None,
-                    source_location: format!("line {}", line_num + 1),
-                });
-                for (vname, vfields) in variants {
-                    sigs.push(MinedSig {
-                        name: vname,
-                        fields: vfields,
-                        is_abstract: false,
-                        parent: Some(name.clone()),
-                        source_location: format!("line {}", line_num + 1),
-                    });
+            // Track depth for all lines
+            for ch in trimmed.chars() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ => {}
                 }
-                continue;
             }
-
-            // Skip fn/impl blocks to avoid depth confusion with struct/enum inside
-            if trimmed.contains('{') && !trimmed.starts_with("pub struct ")
-                && !trimmed.starts_with("pub enum ")
-                && (trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ")
-                    || trimmed.starts_with("pub(crate) fn ")
-                    || trimmed.starts_with("pub const ") || trimmed.starts_with("const "))
-            {
-                skip_block(&mut lines);
-            }
+            i += 1;
         }
     }
 
@@ -86,6 +184,16 @@ pub fn extract(source: &str) -> MinedModel {
     }
 
     MinedModel { sigs, fact_candidates }
+}
+
+/// Skip until matching close paren for multi-line tuple variants.
+fn skip_until_close_paren(
+    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
+    _depth: &mut usize,
+) {
+    for (_ln, line) in lines.by_ref() {
+        if line.contains(')') { break; }
+    }
 }
 
 /// Skip a block (fn body, impl block, etc.) by tracking braces.
@@ -193,7 +301,13 @@ fn collect_enum_variants(
         depth = depth + open - close;
         if depth == 0 { break; }
 
+        // Strip trailing comma and line comments
         let cleaned = trimmed.trim_end_matches(',');
+        let cleaned = if let Some(comment_pos) = cleaned.find("//") {
+            cleaned[..comment_pos].trim()
+        } else {
+            cleaned
+        };
         if cleaned.is_empty() { continue; }
         let first = cleaned.chars().next().unwrap_or(' ');
         if !first.is_ascii_uppercase() { continue; }
@@ -206,8 +320,34 @@ fn collect_enum_variants(
                 variants.push((name, fields));
             }
         } else if cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            // Unit variant
+            // Unit variant: "VariantName"
             variants.push((cleaned.to_string(), vec![]));
+        } else if let Some(paren_pos) = cleaned.find('(') {
+            // Tuple variant: "VariantName(Type)" or "VariantName(Type, Type)"
+            let name: String = cleaned[..paren_pos].trim().to_string();
+            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                // Extract fields from tuple params as positional fields
+                let close_paren = cleaned.rfind(')').unwrap_or(cleaned.len());
+                let params_str = &cleaned[paren_pos + 1..close_paren];
+                let fields: Vec<MinedField> = params_str.split(',')
+                    .enumerate()
+                    .filter_map(|(i, p)| {
+                        let p = p.trim();
+                        if p.is_empty() { return None; }
+                        let (mult, target) = rust_type_to_mult(p);
+                        Some(MinedField {
+                            name: format!("field{i}"),
+                            mult,
+                            target,
+                        })
+                    })
+                    .collect();
+                variants.push((name, fields));
+                // If paren spans multiple lines, skip until closing
+                if !cleaned.contains(')') {
+                    skip_until_close_paren(lines, &mut depth);
+                }
+            }
         }
     }
     variants
