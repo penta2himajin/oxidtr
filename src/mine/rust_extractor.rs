@@ -85,29 +85,51 @@ pub fn extract(source: &str) -> MinedModel {
                                 let first = cleaned.chars().next().unwrap_or(' ');
                                 if first.is_ascii_uppercase() {
                                     if let Some(brace_pos) = cleaned.find('{') {
-                                        // Struct variant
+                                        // Struct variant (single-line or multi-line)
                                         let vname: String = cleaned[..brace_pos].trim().to_string();
                                         if !vname.is_empty() && vname.chars().all(|c| c.is_alphanumeric() || c == '_') {
                                             let mut vfields = Vec::new();
-                                            i += 1;
-                                            while i < all_lines.len() {
-                                                let vline = all_lines[i].1.trim();
-                                                let vo = vline.chars().filter(|&c| c == '{').count();
-                                                let vc = vline.chars().filter(|&c| c == '}').count();
-                                                block_depth = block_depth + vo - vc.min(block_depth + vo);
-                                                let vclean = vline.trim_end_matches(',').trim_end_matches('}').trim();
-                                                if let Some(colon) = vclean.find(':') {
-                                                    let fname = vclean[..colon].trim();
-                                                    if !fname.is_empty() && fname.chars().next().map_or(false, |c| c.is_ascii_lowercase()) {
-                                                        let type_str = vclean[colon + 1..].trim();
-                                                        if !type_str.is_empty() {
-                                                            let (mult, target) = rust_type_to_mult(type_str);
-                                                            vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                            // Check if it's a single-line variant: "Foo { field: Type }"
+                                            if cleaned.contains('}') {
+                                                // Single-line: parse fields from the line itself
+                                                let inner = &cleaned[brace_pos + 1..];
+                                                let close = inner.find('}').unwrap_or(inner.len());
+                                                let fields_str = &inner[..close];
+                                                for part in fields_str.split(',') {
+                                                    let part = part.trim();
+                                                    if let Some(colon) = part.find(':') {
+                                                        let fname = part[..colon].trim();
+                                                        if !fname.is_empty() && fname.chars().next().map_or(false, |c| c.is_ascii_lowercase()) {
+                                                            let type_str = part[colon + 1..].trim();
+                                                            if !type_str.is_empty() {
+                                                                let (mult, target) = rust_type_to_mult(type_str);
+                                                                vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                                            }
                                                         }
                                                     }
                                                 }
-                                                if vline.contains('}') { i += 1; break; }
+                                            } else {
+                                                // Multi-line: read until closing }
                                                 i += 1;
+                                                while i < all_lines.len() {
+                                                    let vline = all_lines[i].1.trim();
+                                                    let vo = vline.chars().filter(|&c| c == '{').count();
+                                                    let vc = vline.chars().filter(|&c| c == '}').count();
+                                                    block_depth = block_depth + vo - vc.min(block_depth + vo);
+                                                    let vclean = vline.trim_end_matches(',').trim_end_matches('}').trim();
+                                                    if let Some(colon) = vclean.find(':') {
+                                                        let fname = vclean[..colon].trim();
+                                                        if !fname.is_empty() && fname.chars().next().map_or(false, |c| c.is_ascii_lowercase()) {
+                                                            let type_str = vclean[colon + 1..].trim();
+                                                            if !type_str.is_empty() {
+                                                                let (mult, target) = rust_type_to_mult(type_str);
+                                                                vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                                            }
+                                                        }
+                                                    }
+                                                    if vline.contains('}') { i += 1; break; }
+                                                    i += 1;
+                                                }
                                             }
                                             variants.push((vname, vfields));
                                             continue;
