@@ -199,15 +199,17 @@ fn extract_fns_generic(src: &str) -> Vec<ExtractedFn> {
             .or_else(|| trimmed.strip_prefix("function "))
             .or_else(|| trimmed.strip_prefix("fun "))
             .or_else(|| {
-                // Java: after "public static <return_type> "
-                if trimmed.starts_with("public static ") {
-                    let after = &trimmed["public static ".len()..];
-                    // Skip return type (first word) + space
-                    let space = after.find(' ')?;
-                    Some(&after[space + 1..])
+                // Java: after "public static <return_type> " or "static <return_type> "
+                let after = if trimmed.starts_with("public static ") {
+                    Some(&trimmed["public static ".len()..])
+                } else if trimmed.starts_with("static ") && !trimmed.starts_with("static {") {
+                    Some(&trimmed["static ".len()..])
                 } else {
                     None
-                }
+                }?;
+                // Skip return type (first word) + space
+                let space = after.find(' ')?;
+                Some(&after[space + 1..])
             });
         if let Some(rest) = rest {
             let name: String = rest.chars()

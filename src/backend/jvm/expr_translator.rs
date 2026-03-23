@@ -13,6 +13,10 @@ pub trait JvmLang {
     fn tc_call(&self, field: &str, base: &str) -> String;
     fn eq_op(&self) -> &str;
     fn neq_op(&self) -> &str;
+    /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`
+    fn field_access(&self, base: &str, field: &str) -> String {
+        format!("{base}.{field}")
+    }
 }
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR, lang: &dyn JvmLang) -> String {
@@ -135,7 +139,7 @@ fn translate_inner(
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
-            format!("{}.{field}", ti(base, false))
+            lang.field_access(&ti(base, false), field)
         }
 
         Expr::Cardinality(inner) => lang.cardinality(&ti(inner, false)),

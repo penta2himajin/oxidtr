@@ -73,7 +73,8 @@ pub fn extract(source: &str) -> MinedModel {
 }
 
 fn parse_record(line: &str) -> Option<(String, Vec<MinedField>)> {
-    let rest = line.strip_prefix("public record ")?;
+    let rest = line.strip_prefix("public record ")
+        .or_else(|| line.strip_prefix("record "))?;
     let paren = rest.find('(')?;
     let name: String = rest[..paren].trim().to_string();
     if name.is_empty() { return None; }
@@ -130,7 +131,8 @@ fn split_top_level_commas(s: &str) -> Vec<String> {
 
 fn parse_record_implements(line: &str) -> Option<(String, String)> {
     if !line.contains("implements") { return None; }
-    let rest = line.strip_prefix("public record ")?;
+    let rest = line.strip_prefix("public record ")
+        .or_else(|| line.strip_prefix("record "))?;
     let paren = rest.find('(')?;
     let name: String = rest[..paren].trim().to_string();
 
@@ -143,7 +145,8 @@ fn parse_record_implements(line: &str) -> Option<(String, String)> {
 }
 
 fn parse_sealed_interface(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("public sealed interface ")?;
+    let rest = line.strip_prefix("public sealed interface ")
+        .or_else(|| line.strip_prefix("sealed interface "))?;
     let name: String = rest.chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
@@ -151,7 +154,8 @@ fn parse_sealed_interface(line: &str) -> Option<String> {
 }
 
 fn parse_enum(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("public enum ")?;
+    let rest = line.strip_prefix("public enum ")
+        .or_else(|| line.strip_prefix("enum "))?;
     let name: String = rest.chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();

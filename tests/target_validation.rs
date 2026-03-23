@@ -267,12 +267,12 @@ rootProject.name = "oxidtr-kt-test"
 
 /// Generate Java code from oxidtr.als and run gradle test.
 #[test]
-#[ignore] // TODO: Java backend has pre-existing issues (unqualified enum access, missing sealed interface fixtures)
+#[ignore]
 fn java_self_hosted_tests_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
-    let src_main = dir.join("src/main/java/oxidtr");
-    let src_test = dir.join("src/test/java/oxidtr");
+    let src_main = dir.join("src/main/java");
+    let src_test = dir.join("src/test/java");
     std::fs::create_dir_all(&src_main).unwrap();
     std::fs::create_dir_all(&src_test).unwrap();
 
@@ -285,29 +285,17 @@ fn java_self_hosted_tests_pass() {
 plugins { id 'java' }
 java { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
 repositories { mavenCentral() }
-dependencies { testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2' }
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
 test { useJUnitPlatform() }
 "#).unwrap();
 
-    // Write generated files.
-    // Make all types package-private (remove `public`) so they can stay in one file.
-    // Strip @NotNull annotations (require external dependency).
+    // Write generated files
     for file in &files {
         let dest = if file.path == "Tests.java" { &src_test } else { &src_main };
-        let mut content = String::from("package oxidtr;\n");
-        if file.path == "Tests.java" {
-            content.push_str("import static oxidtr.Fixtures.*;\nimport static oxidtr.Helpers.*;\n");
-        }
-        let body = file.content
-            .replace("@NotNull ", "")
-            .replace("public record ", "record ")
-            .replace("public enum ", "enum ")
-            .replace("public sealed interface ", "sealed interface ")
-            .replace("public class Fixtures", "class Fixtures")
-            .replace("public class Helpers", "class Helpers")
-            .replace("public class Operations", "class Operations");
-        content.push_str(&body);
-        std::fs::write(dest.join(&file.path), content).unwrap();
+        std::fs::write(dest.join(&file.path), &file.content).unwrap();
     }
 
     // Run gradle test

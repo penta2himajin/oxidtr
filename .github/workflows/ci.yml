@@ -63,7 +63,7 @@ jobs:
           grep -q 'pub fn default_' generated/fixtures.rs
           grep -q 'export function default' generated-ts/fixtures.ts
           grep -q 'fun default' generated-kt/Fixtures.kt
-          grep -q 'public static' generated-java/Fixtures.java
+          grep -q 'static ' generated-java/Fixtures.java
           grep -q '@NotNull' generated-java/Models.java
 
       # Verify no invariants files (removed by design)
@@ -116,5 +116,5 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Run target validation tests (excluding Java — pre-existing issues)
-        run: cargo test --test target_validation -- --include-ignored --skip java
+      - name: Run target validation tests
+        run: cargo test --test target_validation -- --include-ignored
