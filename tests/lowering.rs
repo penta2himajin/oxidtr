@@ -150,6 +150,7 @@ fn lower_one_sig_preserves_singleton_flag() {
 #[test]
 fn unhandled_response_not_fired_for_singleton_children() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
     use std::fs;
     let dir = tempfile::tempdir().unwrap();
     let model_path = dir.path().join("model.als");
@@ -166,6 +167,7 @@ fn unhandled_response_not_fired_for_singleton_children() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
@@ -210,6 +212,7 @@ fn lower_default_sig_has_default_multiplicity() {
 #[test]
 fn unhandled_response_not_fired_for_some_and_lone_children() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
     use std::fs;
     let dir = tempfile::tempdir().unwrap();
     let model_path = dir.path().join("model.als");
@@ -226,6 +229,7 @@ fn unhandled_response_not_fired_for_some_and_lone_children() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
@@ -237,6 +241,7 @@ fn unhandled_response_not_fired_for_some_and_lone_children() {
 #[test]
 fn unhandled_response_still_fires_for_non_singleton_children() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
     use std::fs;
     let dir = tempfile::tempdir().unwrap();
     let model_path = dir.path().join("model.als");
@@ -253,6 +258,7 @@ fn unhandled_response_still_fires_for_non_singleton_children() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     // ErrResponse は is_error_name() でエラー扱い → MissingErrorPropagation

@@ -10,6 +10,8 @@ use oxidtr::backend::rust;
 use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::check;
+// NOTE: Tests that require external toolchains (cargo test, bun test, gradle test)
+// have been moved to target_validation.rs.
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -185,7 +187,8 @@ fn guarantee_2_newtypes_use_inlined_expressions() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// Guarantee 3: Generated tests actually pass (cross-tests marked as ignored)
+// Guarantee 3: Cross-tests are properly marked as ignored/skipped
+// (Actual test execution moved to target_validation.rs)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 #[test]
@@ -285,94 +288,6 @@ fn guarantee_3_java_cross_tests_are_disabled() {
             }
         }
     }
-}
-
-#[test]
-fn guarantee_3_generated_rust_tests_pass() {
-    // Extend self_hosting_compile: not just cargo check, but cargo test
-    let tmp = tempfile::tempdir().unwrap();
-    let crate_dir = tmp.path().join("selfhost_test_crate");
-    let crate_dir_str = crate_dir.to_str().unwrap();
-    std::fs::create_dir_all(format!("{crate_dir_str}/src")).unwrap();
-
-    let ir = parse_and_lower();
-    let files = rust::generate(&ir);
-
-    // Write Cargo.toml
-    std::fs::write(
-        format!("{crate_dir_str}/Cargo.toml"),
-        r#"[package]
-name = "oxidtr_selfhost_test"
-version = "0.1.0"
-edition = "2021"
-"#,
-    ).unwrap();
-
-    // Write lib.rs
-    let mut lib_rs = String::new();
-    lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-    lib_rs.push_str("pub mod models;\n");
-    let has_helpers = files.iter().any(|f| f.path == "helpers.rs");
-    let has_operations = files.iter().any(|f| f.path == "operations.rs");
-    let has_tests = files.iter().any(|f| f.path == "tests.rs");
-    let has_fixtures = files.iter().any(|f| f.path == "fixtures.rs");
-    let has_newtypes = files.iter().any(|f| f.path == "newtypes.rs");
-    if has_helpers {
-        lib_rs.push_str("pub mod helpers;\n");
-    }
-    if has_operations {
-        lib_rs.push_str("pub mod operations;\n");
-    }
-    if has_fixtures {
-        lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("pub mod fixtures;\n");
-    }
-    if has_newtypes {
-        lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("pub mod newtypes;\n");
-    }
-    if has_tests {
-        lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("mod tests;\n");
-    }
-    std::fs::write(format!("{crate_dir_str}/src/lib.rs"), lib_rs).unwrap();
-
-    // Write generated files
-    for file in &files {
-        let mut content = String::new();
-        content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
-        content.push_str(&file.content);
-        std::fs::write(format!("{crate_dir_str}/src/{}", file.path), content).unwrap();
-    }
-
-    // Run cargo test on generated code.
-    // Skip:
-    //   - cross-tests: require human implementation (marked #[ignore])
-    //   - invalid_: tautological identity constraints (e.g. #x.f = #x.f) can't be violated
-    //   - existential cross-sig invariants: need linked fixture graphs that default factories can't provide
-    //     (e.g. SigToStructureBijection, FactToConstraint, AssertToProperty, PredToOperation, IRFieldOwnership)
-    let output = std::process::Command::new("cargo")
-        .args([
-            "test", "--",
-            "--skip", "preserved_after",
-            "--skip", "invalid_",
-            "--skip", "sig_to_structure",
-            "--skip", "fact_to_constraint",
-            "--skip", "assert_to_property",
-            "--skip", "pred_to_operation",
-            "--skip", "i_r_field_ownership",
-        ])
-        .current_dir(crate_dir_str)
-        .output()
-        .expect("failed to run cargo test");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        output.status.success(),
-        "cargo test on generated crate failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

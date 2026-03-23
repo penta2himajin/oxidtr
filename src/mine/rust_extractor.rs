@@ -31,6 +31,7 @@ pub fn extract(source: &str) -> MinedModel {
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
                         });
+                        i += 1; // advance past this unit struct line
                     } else {
                         // Collect fields from subsequent lines
                         let mut fields = Vec::new();
@@ -75,11 +76,11 @@ pub fn extract(source: &str) -> MinedModel {
                         block_depth = block_depth + open - close.min(block_depth + open);
 
                         if block_depth >= 1 {
-                            // Strip trailing comma and comments
-                            let cleaned = inner.trim_end_matches(',');
-                            let cleaned = if let Some(cp) = cleaned.find("//") {
-                                cleaned[..cp].trim()
-                            } else { cleaned };
+                            // Strip comments first, then trailing comma
+                            let cleaned = if let Some(cp) = inner.find("//") {
+                                inner[..cp].trim()
+                            } else { inner };
+                            let cleaned = cleaned.trim_end_matches(',').trim();
 
                             if !cleaned.is_empty() {
                                 let first = cleaned.chars().next().unwrap_or(' ');
@@ -108,6 +109,7 @@ pub fn extract(source: &str) -> MinedModel {
                                                         }
                                                     }
                                                 }
+                                                i += 1; // advance past this single-line variant
                                             } else {
                                                 // Multi-line: read until closing }
                                                 i += 1;
@@ -208,31 +210,6 @@ pub fn extract(source: &str) -> MinedModel {
     MinedModel { sigs, fact_candidates }
 }
 
-/// Skip until matching close paren for multi-line tuple variants.
-fn skip_until_close_paren(
-    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-    _depth: &mut usize,
-) {
-    for (_ln, line) in lines.by_ref() {
-        if line.contains(')') { break; }
-    }
-}
-
-/// Skip a block (fn body, impl block, etc.) by tracking braces.
-fn skip_block(lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>) {
-    let mut depth = 1usize;
-    for (_ln, line) in lines.by_ref() {
-        let trimmed = line.trim();
-        for ch in trimmed.chars() {
-            match ch {
-                '{' => depth += 1,
-                '}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-        }
-        if depth == 0 { break; }
-    }
-}
 
 fn parse_type_decl(line: &str, prefix: &str) -> Option<String> {
     let rest = line.strip_prefix(prefix)?;
@@ -240,27 +217,6 @@ fn parse_type_decl(line: &str, prefix: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
-fn collect_struct_fields(
-    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-) -> (Vec<MinedField>, Vec<(usize, String)>) {
-    let mut fields = Vec::new();
-    let mut body_lines = Vec::new();
-    let mut depth = 1usize;
-
-    for (ln, line) in lines.by_ref() {
-        let trimmed = line.trim();
-        for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth = depth.saturating_sub(1), _ => {} }
-        }
-        if depth == 0 { break; }
-        body_lines.push((ln, trimmed.to_string()));
-
-        if let Some(field) = parse_rust_field(trimmed) {
-            fields.push(field);
-        }
-    }
-    (fields, body_lines)
-}
 
 fn parse_rust_field(line: &str) -> Option<MinedField> {
     let rest = line.strip_prefix("pub ")?;
@@ -310,100 +266,6 @@ fn strip_wrapper<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> 
     s.strip_prefix(prefix)?.strip_suffix(suffix)
 }
 
-fn collect_enum_variants(
-    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-) -> Vec<(String, Vec<MinedField>)> {
-    let mut variants = Vec::new();
-    let mut depth = 1usize;
-
-    while let Some((_ln, line)) = lines.next() {
-        let trimmed = line.trim();
-        let open = trimmed.chars().filter(|&c| c == '{').count();
-        let close = trimmed.chars().filter(|&c| c == '}').count();
-        depth = depth + open - close;
-        if depth == 0 { break; }
-
-        // Strip trailing comma and line comments
-        let cleaned = trimmed.trim_end_matches(',');
-        let cleaned = if let Some(comment_pos) = cleaned.find("//") {
-            cleaned[..comment_pos].trim()
-        } else {
-            cleaned
-        };
-        if cleaned.is_empty() { continue; }
-        let first = cleaned.chars().next().unwrap_or(' ');
-        if !first.is_ascii_uppercase() { continue; }
-
-        // Struct variant: "VariantName {"
-        if let Some(brace_pos) = cleaned.find('{') {
-            let name: String = cleaned[..brace_pos].trim().to_string();
-            if name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
-                let fields = collect_variant_fields(lines, &mut depth);
-                variants.push((name, fields));
-            }
-        } else if cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
-            // Unit variant: "VariantName"
-            variants.push((cleaned.to_string(), vec![]));
-        } else if let Some(paren_pos) = cleaned.find('(') {
-            // Tuple variant: "VariantName(Type)" or "VariantName(Type, Type)"
-            let name: String = cleaned[..paren_pos].trim().to_string();
-            if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
-                // Extract fields from tuple params as positional fields
-                let close_paren = cleaned.rfind(')').unwrap_or(cleaned.len());
-                let params_str = &cleaned[paren_pos + 1..close_paren];
-                let fields: Vec<MinedField> = params_str.split(',')
-                    .enumerate()
-                    .filter_map(|(i, p)| {
-                        let p = p.trim();
-                        if p.is_empty() { return None; }
-                        let (mult, target) = rust_type_to_mult(p);
-                        Some(MinedField {
-                            name: format!("field{i}"),
-                            mult,
-                            target,
-                        })
-                    })
-                    .collect();
-                variants.push((name, fields));
-                // If paren spans multiple lines, skip until closing
-                if !cleaned.contains(')') {
-                    skip_until_close_paren(lines, &mut depth);
-                }
-            }
-        }
-    }
-    variants
-}
-
-fn collect_variant_fields(
-    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-    depth: &mut usize,
-) -> Vec<MinedField> {
-    let target_depth = *depth - 1;
-    let mut fields = Vec::new();
-    while let Some((_ln, line)) = lines.next() {
-        let trimmed = line.trim();
-        let open = trimmed.chars().filter(|&c| c == '{').count();
-        let close = trimmed.chars().filter(|&c| c == '}').count();
-        *depth = *depth + open - close;
-
-        // Variant fields have no `pub` prefix
-        let cleaned = trimmed.trim_end_matches(',').trim_end_matches('}').trim();
-        if let Some(colon) = cleaned.find(':') {
-            let name = cleaned[..colon].trim().to_string();
-            if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_ascii_lowercase()) {
-                let type_str = cleaned[colon + 1..].trim();
-                if !type_str.is_empty() {
-                    let (mult, target) = rust_type_to_mult(type_str);
-                    fields.push(MinedField { name, mult, target });
-                }
-            }
-        }
-
-        if *depth <= target_depth { break; }
-    }
-    fields
-}
 
 fn collect_fn_body(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,

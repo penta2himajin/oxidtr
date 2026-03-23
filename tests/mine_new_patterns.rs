@@ -3,6 +3,7 @@
 
 use oxidtr::mine::{self, rust_extractor, ts_extractor, kotlin_extractor, java_extractor, MinedMultiplicity};
 use oxidtr::backend::{rust, typescript, GeneratedFile};
+use oxidtr::backend::typescript::TsTestRunner;
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::parser;
 use oxidtr::ir;
@@ -162,6 +163,7 @@ fn mine_directory_round_trip_rust_with_all_enrichments() {
         warnings: oxidtr::generate::WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -183,6 +185,7 @@ fn mine_directory_round_trip_ts_with_all_enrichments() {
         warnings: oxidtr::generate::WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 

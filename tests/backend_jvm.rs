@@ -123,7 +123,7 @@ fn kt_self_hosting() {
 #[test]
 fn kt_bean_validation_size_on_cardinality_constraint() {
     let files = generate_kt(
-        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 10 }",
     );
     let m = find_file(&files, "Models.kt");
     assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation on members field:\n{m}");
@@ -168,7 +168,8 @@ fn kt_operations_no_doc_when_empty_body() {
 fn java_record_for_sig() {
     let files = generate_java("sig User { name: one Role }\nsig Role {}");
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("public record User("));
+    assert!(m.contains("record User("), "expected record User:\n{m}");
+    assert!(!m.contains("public record"), "types should be package-private:\n{m}");
     assert!(m.contains("Role name"));
 }
 
@@ -192,7 +193,8 @@ fn java_enum_for_all_singleton() {
         "abstract sig Color {}\none sig Red extends Color {}\none sig Blue extends Color {}",
     );
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("public enum Color {"));
+    assert!(m.contains("enum Color {"), "expected enum Color:\n{m}");
+    assert!(!m.contains("public enum"), "enums should be package-private:\n{m}");
 }
 
 #[test]
@@ -201,8 +203,8 @@ fn java_sealed_interface_for_enum_with_fields() {
         "abstract sig Expr {}\nsig Literal extends Expr {}\nsig BinOp extends Expr { left: one Expr, right: one Expr }",
     );
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("sealed interface Expr"));
-    assert!(m.contains("public record BinOp("));
+    assert!(m.contains("sealed interface Expr"), "expected sealed interface:\n{m}");
+    assert!(m.contains("record BinOp("), "expected record BinOp:\n{m}");
     assert!(m.contains("implements Expr"));
 }
 
@@ -210,7 +212,7 @@ fn java_sealed_interface_for_enum_with_fields() {
 fn java_operations_throw() {
     let files = generate_java("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
     let ops = find_file(&files, "Operations.java");
-    assert!(ops.contains("public static void changeRole("));
+    assert!(ops.contains("static void changeRole("), "expected static void:\n{ops}");
     assert!(ops.contains("UnsupportedOperationException"));
 }
 
@@ -234,9 +236,12 @@ fn java_self_hosting() {
     let files = java::generate(&ir);
 
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("public record SigDecl("));
-    assert!(m.contains("public record OxidtrIR("));
-    assert!(m.contains("public enum Multiplicity"));
+    assert!(m.contains("record SigDecl("), "expected record SigDecl:\n{}", &m[..200]);
+    assert!(m.contains("record OxidtrIR("), "expected record OxidtrIR");
+    assert!(m.contains("enum Multiplicity"), "expected enum Multiplicity");
+    // Types should be package-private (no public keyword)
+    assert!(!m.contains("public record"), "types should be package-private");
+    assert!(!m.contains("public enum"), "enums should be package-private");
 
     // Helpers.java should exist for TC functions
     assert!(files.iter().any(|f| f.path == "Helpers.java"), "should generate Helpers.java");
@@ -253,16 +258,16 @@ fn java_self_hosting() {
 fn java_bean_validation_notnull_on_one() {
     let files = generate_java("sig User { name: one Role }\nsig Role {}");
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("@NotNull"), "expected @NotNull on one-mult field");
+    assert!(m.contains("/* @NotNull */"), "expected /* @NotNull */ comment on one-mult field:\n{m}");
 }
 
 #[test]
 fn java_bean_validation_size_on_cardinality_constraint() {
     let files = generate_java(
-        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 10 }",
     );
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size annotation:\n{m}");
+    assert!(m.contains("@Size(") || m.contains("@Size see fact:"), "expected @Size comment:\n{m}");
 }
 
 #[test]
@@ -274,7 +279,7 @@ fn java_bean_validation_min_max_on_comparison() {
     assert!(m.contains("@Min/@Max see fact: ValidRole"), "expected @Min/@Max comment:\n{m}");
 }
 
-// ── Java: Compact Constructor ──────────────────────────────────────────────
+// ── Java: Compact Constructor (removed — assertions used non-existent globals) ──
 
 #[test]
 fn java_compact_constructor_for_constrained_record() {
@@ -282,9 +287,9 @@ fn java_compact_constructor_for_constrained_record() {
         "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
     );
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("public User {"), "expected compact constructor:\n{m}");
-    assert!(m.contains("HasRole violated"), "expected inlined constraint assertion:\n{m}");
-    assert!(m.contains("assert "), "expected assert keyword in compact constructor:\n{m}");
+    // Constraints are documented via @invariant Javadoc, not compact constructors
+    assert!(m.contains("@invariant HasRole"), "expected @invariant Javadoc:\n{m}");
+    assert!(m.contains("record User("), "expected record User:\n{m}");
     // Should NOT reference Invariants class
     assert!(!m.contains("Invariants."), "should not reference Invariants class:\n{m}");
 }
@@ -294,8 +299,7 @@ fn java_no_compact_constructor_without_constraints() {
     let files = generate_java("sig User { name: one Role }\nsig Role {}");
     let m = find_file(&files, "Models.java");
     // Should be a simple record without compact constructor
-    assert!(m.contains("public record User(") && m.contains(") {}"), "expected simple record:\n{m}");
-    assert!(!m.contains("public User {"), "should not have compact constructor:\n{m}");
+    assert!(m.contains("record User(") && m.contains(") {}"), "expected simple record:\n{m}");
 }
 
 // ── Java: Operations doc ────────────────────────────────────────────────────
@@ -341,7 +345,7 @@ fn java_fun_return_type() {
         fun getRole[u: one User]: one Role { u }
     "#);
     let ops = find_file(&files, "Operations.java");
-    assert!(ops.contains("public static Role getRole("), "should have return type Role:\n{ops}");
+    assert!(ops.contains("static Role getRole("), "should have return type Role:\n{ops}");
 }
 
 // ── Feature 2: Singleton support ────────────────────────────────────────────
@@ -358,7 +362,8 @@ fn kt_singleton_object() {
 fn java_singleton_enum_instance() {
     let files = generate_java("one sig Config {}");
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("public enum Config {"), "should generate Java enum for singleton:\n{m}");
+    assert!(m.contains("enum Config {"), "should generate Java enum for singleton:\n{m}");
+    assert!(!m.contains("public enum"), "enums should be package-private:\n{m}");
     assert!(m.contains("INSTANCE"), "should have INSTANCE constant:\n{m}");
 }
 
@@ -383,7 +388,7 @@ fn java_concrete_size_annotation() {
         fact TeamLimit { all t: Team | #t.members <= 10 }
     "#);
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("@Size(max = 10)"), "should have @Size(max = 10):\n{m}");
+    assert!(m.contains("@Size(max = 10)"), "should have @Size(max = 10) (in comment):\n{m}");
 }
 
 #[test]

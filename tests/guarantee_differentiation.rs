@@ -7,6 +7,7 @@ use oxidtr::ir;
 use oxidtr::backend::{rust, typescript, GeneratedFile};
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 use oxidtr::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang, enum_exhaustiveness_guarantee};
 use oxidtr::analyze::{ConstraintInfo, PresenceKind, BoundKind};
 
@@ -169,6 +170,7 @@ fn schema_auto_included_for_ts() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None, // use default
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -189,6 +191,7 @@ fn schema_not_auto_included_for_java() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -209,6 +212,7 @@ fn schema_not_auto_included_for_rust() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -229,6 +233,7 @@ fn schema_not_auto_included_for_kotlin() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -250,6 +255,7 @@ fn schema_flag_overrides_default() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: Some(true),
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -271,6 +277,7 @@ fn schema_flag_disables_for_ts() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: Some(false),
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
@@ -293,6 +300,7 @@ fn ts_pipeline_generates_validators_file() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 

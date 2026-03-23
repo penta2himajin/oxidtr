@@ -133,7 +133,8 @@ fn parse_object_decl(line: &str) -> Option<String> {
 }
 
 fn parse_data_class(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("data class ")?;
+    let rest = line.strip_prefix("data class ")
+        .or_else(|| line.strip_prefix("value class "))?;
     let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
     if name.is_empty() { None } else { Some(name) }
 }

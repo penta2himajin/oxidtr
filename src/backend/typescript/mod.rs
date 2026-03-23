@@ -7,7 +7,30 @@ use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+/// TypeScript test runner selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TsTestRunner {
+    Bun,
+    Vitest,
+}
+
+/// Config for TypeScript backend.
+#[derive(Debug, Clone)]
+pub struct TsBackendConfig {
+    pub test_runner: TsTestRunner,
+}
+
+impl Default for TsBackendConfig {
+    fn default() -> Self {
+        Self { test_runner: TsTestRunner::Bun }
+    }
+}
+
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    generate_with_config(ir, &TsBackendConfig::default())
+}
+
+pub fn generate_with_config(ir: &OxidtrIR, config: &TsBackendConfig) -> Vec<GeneratedFile> {
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
@@ -36,7 +59,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "tests.ts".to_string(),
-            content: generate_tests(ir),
+            content: generate_tests(ir, config.test_runner),
         });
     }
 
@@ -352,7 +375,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 // ── tests.ts ───────────────────────────────────────────────────────────────
 
-fn generate_tests(ir: &OxidtrIR) -> String {
+fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
 
@@ -370,7 +393,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    writeln!(out, "import {{ describe, it, expect }} from 'vitest';").unwrap();
+    let test_import = match test_runner {
+        TsTestRunner::Bun => "bun:test",
+        TsTestRunner::Vitest => "vitest",
+    };
+    writeln!(out, "import {{ describe, it, expect }} from '{}';", test_import).unwrap();
     writeln!(out, "import type * as M from './models';").unwrap();
     if needs_helpers {
         writeln!(out, "import * as helpers from './helpers';").unwrap();
@@ -408,12 +435,34 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
+        let ownership = super::detect_ownership_pattern(&constraint.expr, ir, ts_param_name);
+
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
-        for (pname, tname) in &params {
-            if has_fixture.contains(tname) {
-                writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
-            } else {
-                writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+        if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
+            let owned_param = params.iter().find(|(p, _)| p == owned_var);
+            let owner_param = params.iter().find(|(p, _)| p == owner_var);
+            if let (Some((opname, otname)), Some((cpname, ctname))) = (owned_param, owner_param) {
+                writeln!(out, "    const item = fix.default{otname}();").unwrap();
+                writeln!(out, "    const owner = fix.default{ctname}();").unwrap();
+                writeln!(out, "    owner.{field_name}.add(item);").unwrap();
+                writeln!(out, "    const {opname}: M.{otname}[] = [item];").unwrap();
+                writeln!(out, "    const {cpname}: M.{ctname}[] = [owner];").unwrap();
+                for (pname, tname) in &params {
+                    if pname == opname || pname == cpname { continue; }
+                    if has_fixture.contains(tname) {
+                        writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
+                    } else {
+                        writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+                    }
+                }
+            }
+        } else {
+            for (pname, tname) in &params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
+                } else {
+                    writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+                }
             }
         }
         writeln!(out, "    expect({body}).toBe(true);").unwrap();
@@ -562,6 +611,46 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
     writeln!(out, "import type * as M from './models';").unwrap();
     writeln!(out).unwrap();
 
+    // Build children map for enum default fixtures
+    let children: HashMap<String, Vec<String>> = {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for s in &ir.structures {
+            if let Some(parent) = &s.parent {
+                map.entry(parent.clone()).or_default().push(s.name.clone());
+            }
+        }
+        map
+    };
+    let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+
+    // Generate enum default fixtures (first variant as string literal)
+    for s in &ir.structures {
+        if !s.is_enum { continue; }
+        let variants = match children.get(&s.name) {
+            Some(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+        // Find first unit variant (no fields)
+        let first_unit = variants.iter().find(|v| {
+            struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+        });
+        if let Some(variant) = first_unit {
+            writeln!(out, "/** Factory: default value for enum {} */", s.name).unwrap();
+            writeln!(out, "export function default{}(): M.{} {{", s.name, s.name).unwrap();
+            writeln!(out, "  return \"{}\";", variant).unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
+    // Collect which types have fixture factories (for populating set/seq fields)
+    let fixture_types: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone())
+        .collect();
+
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
         if s.fields.is_empty() { continue; }
@@ -573,6 +662,10 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         for f in &s.fields {
             let val = if f.value_type.is_some() {
                 "new Map()".to_string()
+            } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                && ts_is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                let safe = HashSet::from([f.target.clone()]);
+                ts_default_value_inner(&f.target, &f.mult, &safe)
             } else {
                 ts_default_value(&f.target, &f.mult)
             };
@@ -674,13 +767,69 @@ fn ts_return_type(type_name: &str, mult: &Multiplicity) -> String {
     }
 }
 
+/// Convert type name to TS param name (camelCase + plural 's').
+fn ts_param_name(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i == 0 {
+            out.push(c.to_lowercase().next().unwrap());
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('s');
+    out
+}
+
 fn ts_default_value(target: &str, mult: &Multiplicity) -> String {
+    ts_default_value_inner(target, mult, &HashSet::new())
+}
+
+fn ts_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set => "new Set()".to_string(),
-        Multiplicity::Seq => "[]".to_string(),
+        Multiplicity::Set => {
+            if safe_targets.contains(target) {
+                format!("new Set([default{}()])", target)
+            } else {
+                "new Set()".to_string()
+            }
+        }
+        Multiplicity::Seq => {
+            if safe_targets.contains(target) {
+                format!("[default{}()]", target)
+            } else {
+                "[]".to_string()
+            }
+        }
         Multiplicity::One => format!("default{}()", target),
     }
+}
+
+/// Check if populating a set/seq field of `owner` with `default{target}()`
+/// would cause infinite recursion in TS fixtures.
+fn ts_is_safe_set_population(
+    owner: &str, target: &str,
+    ir: &OxidtrIR, fixture_types: &HashSet<String>,
+) -> bool {
+    if !fixture_types.contains(target) { return false; }
+    let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    let mut visited = HashSet::new();
+    let mut stack = vec![target.to_string()];
+    while let Some(cur) = stack.pop() {
+        if cur == owner { return false; }
+        if !visited.insert(cur.clone()) { continue; }
+        if let Some(s) = struct_map.get(cur.as_str()) {
+            for f in &s.fields {
+                if f.mult == Multiplicity::One && fixture_types.contains(&f.target) {
+                    stack.push(f.target.clone());
+                }
+            }
+        }
+    }
+    true
 }
 
 // ── validators.ts ──────────────────────────────────────────────────────────

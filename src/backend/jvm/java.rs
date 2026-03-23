@@ -4,6 +4,7 @@ use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::{Multiplicity, SigMultiplicity};
 use crate::analyze;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 struct JavaLang;
@@ -28,10 +29,13 @@ impl JvmLang for JavaLang {
         format!("java.util.Objects.equals({base}.{field}(), {value})")
     }
     fn tc_call(&self, field: &str, base: &str) -> String {
-        format!("tc{}({base})", capitalize(field))
+        format!("Helpers.tc{}({base})", capitalize(field))
     }
     fn eq_op(&self) -> &str { "==" }
     fn neq_op(&self) -> &str { "!=" }
+    fn field_access(&self, base: &str, field: &str) -> String {
+        format!("{base}.{field}()")
+    }
 }
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
@@ -117,14 +121,14 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → Java enum with INSTANCE
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
-        writeln!(out, "public enum {} {{", s.name).unwrap();
+        writeln!(out, "enum {} {{", s.name).unwrap();
         writeln!(out, "    INSTANCE").unwrap();
         writeln!(out, "}}").unwrap();
         return;
     }
 
     if s.fields.is_empty() {
-        writeln!(out, "public record {}() {{}}", s.name).unwrap();
+        writeln!(out, "record {}() {{}}", s.name).unwrap();
     } else {
         let params: Vec<String> = s.fields.iter()
             .map(|f| {
@@ -136,7 +140,7 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         if target_mult == SigMultiplicity::Lone {
                             annotations.push("/* @Nullable — lone sig may not exist */".to_string());
                         } else {
-                            annotations.push("@NotNull".to_string());
+                            annotations.push("/* @NotNull */".to_string());
                         }
                     }
                     _ => {}
@@ -154,7 +158,7 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                                 let mut parts = Vec::new();
                                 if let Some(n) = min { parts.push(format!("min = {n}")); }
                                 if let Some(n) = max { parts.push(format!("max = {n}")); }
-                                annotations.push(format!("@Size({})", parts.join(", ")));
+                                annotations.push(format!("/* @Size({}) */", parts.join(", ")));
                             } else {
                                 annotations.push(format!("/* @Size see fact: {fact_name} */"));
                             }
@@ -184,28 +188,7 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
             })
             .collect();
 
-        // Check if compact constructor is needed (Item 4)
-        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
-        if constraint_names.is_empty() {
-            writeln!(out, "public record {}({}) {{}}", s.name, params.join(", ")).unwrap();
-        } else {
-            let lang = JavaLang;
-            writeln!(out, "public record {}({}) {{", s.name, params.join(", ")).unwrap();
-            writeln!(out, "    public {} {{", s.name).unwrap();
-            for cn in &constraint_names {
-                // Inline constraint expression in compact constructor
-                let constraint_expr = ir.constraints.iter()
-                    .find(|c| c.name.as_deref() == Some(cn))
-                    .map(|c| expr_translator::translate_with_ir(&c.expr, ir, &lang));
-                if let Some(expr) = constraint_expr {
-                    writeln!(out, "        assert {expr} : \"{cn} violated\";").unwrap();
-                } else {
-                    writeln!(out, "        // Validated by: {cn}").unwrap();
-                }
-            }
-            writeln!(out, "    }}").unwrap();
-            writeln!(out, "}}").unwrap();
-        }
+        writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
     }
 }
 
@@ -218,7 +201,7 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
 
     if all_unit {
         // Java enum
-        writeln!(out, "public enum {} {{", s.name).unwrap();
+        writeln!(out, "enum {} {{", s.name).unwrap();
         if let Some(variants) = variants {
             let entries: Vec<&str> = variants.iter().map(|v| v.as_str()).collect();
             writeln!(out, "    {}", entries.join(", ")).unwrap();
@@ -226,7 +209,7 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
         writeln!(out, "}}").unwrap();
     } else {
         // Sealed interface with record variants
-        write!(out, "public sealed interface {}",  s.name).unwrap();
+        write!(out, "sealed interface {}",  s.name).unwrap();
         if let Some(variants) = variants {
             let permits: Vec<&str> = variants.iter().map(|v| v.as_str()).collect();
             write!(out, " permits {}", permits.join(", ")).unwrap();
@@ -249,9 +232,9 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
                             format!("{} {}", t, f.name)
                         })
                         .collect();
-                    writeln!(out, "public record {}({}) implements {} {{}}", v, params.join(", "), s.name).unwrap();
+                    writeln!(out, "record {}({}) implements {} {{}}", v, params.join(", "), s.name).unwrap();
                 } else {
-                    writeln!(out, "public record {}() implements {} {{}}", v, s.name).unwrap();
+                    writeln!(out, "record {}() implements {} {{}}", v, s.name).unwrap();
                 }
                 writeln!(out).unwrap();
             }
@@ -276,7 +259,7 @@ fn generate_helpers(ir: &OxidtrIR) -> String {
 
     writeln!(out, "import java.util.List;").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "public class Helpers {{").unwrap();
+    writeln!(out, "class Helpers {{").unwrap();
 
     // TC functions
     let mut tc_fields = Vec::new();
@@ -305,7 +288,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
     writeln!(out, "    /** Transitive closure traversal for {sig}.{field}. */").unwrap();
     match tc.mult {
         Multiplicity::Lone => {
-            writeln!(out, "    public static List<{sig}> {fn_name}({sig} start) {{").unwrap();
+            writeln!(out, "    static List<{sig}> {fn_name}({sig} start) {{").unwrap();
             writeln!(out, "        var result = new java.util.ArrayList<{sig}>();").unwrap();
             writeln!(out, "        var current = start.{field}();").unwrap();
             writeln!(out, "        while (current != null) {{").unwrap();
@@ -316,7 +299,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "    }}").unwrap();
         }
         Multiplicity::Set | Multiplicity::Seq => {
-            writeln!(out, "    public static List<{sig}> {fn_name}({sig} start) {{").unwrap();
+            writeln!(out, "    static List<{sig}> {fn_name}({sig} start) {{").unwrap();
             writeln!(out, "        var result = new java.util.ArrayList<{sig}>();").unwrap();
             writeln!(out, "        var queue = new java.util.ArrayDeque<>(start.{field}());").unwrap();
             writeln!(out, "        while (!queue.isEmpty()) {{").unwrap();
@@ -330,7 +313,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "    }}").unwrap();
         }
         Multiplicity::One => {
-            writeln!(out, "    public static List<{sig}> {fn_name}({sig} start) {{").unwrap();
+            writeln!(out, "    static List<{sig}> {fn_name}({sig} start) {{").unwrap();
             writeln!(out, "        var result = new java.util.ArrayList<{sig}>();").unwrap();
             writeln!(out, "        var current = start.{field}();").unwrap();
             writeln!(out, "        for (int i = 0; i < 1000; i++) {{").unwrap();
@@ -350,7 +333,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
 fn generate_operations(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
-    writeln!(out, "public class Operations {{").unwrap();
+    writeln!(out, "class Operations {{").unwrap();
 
     for op in &ir.operations {
         let params = op.params.iter()
@@ -383,7 +366,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             None => "void".to_string(),
         };
 
-        writeln!(out, "    public static {} {}({params}) {{", return_type, op.name).unwrap();
+        writeln!(out, "    static {} {}({params}) {{", return_type, op.name).unwrap();
         writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement {}\");", op.name).unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
@@ -404,6 +387,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "import org.junit.jupiter.api.Disabled;").unwrap();
     writeln!(out, "import static org.junit.jupiter.api.Assertions.*;").unwrap();
     writeln!(out, "import java.util.List;").unwrap();
+
     writeln!(out).unwrap();
     writeln!(out, "class PropertyTests {{").unwrap();
 
@@ -553,7 +537,62 @@ fn capitalize(s: &str) -> String {
 fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
 
-    writeln!(out, "public class Fixtures {{").unwrap();
+    writeln!(out, "import java.util.List;").unwrap();
+    writeln!(out, "import java.util.Set;").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "class Fixtures {{").unwrap();
+
+    let fixture_types = super::super::collect_fixture_types(ir);
+
+    // Generate enum default fixtures
+    {
+        let children: HashMap<String, Vec<String>> = {
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for s in &ir.structures {
+                if let Some(parent) = &s.parent {
+                    map.entry(parent.clone()).or_default().push(s.name.clone());
+                }
+            }
+            map
+        };
+        let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        for s in &ir.structures {
+            if !s.is_enum { continue; }
+            let variants = match children.get(&s.name) {
+                Some(v) if !v.is_empty() => v,
+                _ => continue,
+            };
+            let all_unit = variants.iter().all(|v| {
+                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+            });
+            let first_unit = variants.iter().find(|v| {
+                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+            });
+            if let Some(variant) = first_unit {
+                if all_unit {
+                    // Java enum → qualified access: EnumName.Variant
+                    writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
+                    writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
+                    writeln!(out, "        return {}.{};", s.name, variant).unwrap();
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out).unwrap();
+                } else {
+                    // Sealed interface → first unit variant as record instance
+                    let has_fields = struct_map.get(variant.as_str())
+                        .map_or(false, |st| !st.fields.is_empty());
+                    if !has_fields {
+                        writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
+                        writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
+                        writeln!(out, "        return new {}();", variant).unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
@@ -563,6 +602,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             .map(|f| {
                 if f.value_type.is_some() {
                     "Map.of()".to_string()
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                    && super::super::is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                    let safe = HashSet::from([f.target.clone()]);
+                    java_default_value_inner(&f.target, &f.mult, &safe)
                 } else {
                     java_default_value(&f.target, &f.mult)
                 }
@@ -570,7 +613,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             .collect();
 
         writeln!(out, "    /** Factory: create a default valid {} */", s.name).unwrap();
-        writeln!(out, "    public static {} default{}() {{", s.name, s.name).unwrap();
+        writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
         writeln!(out, "        return new {}({});", s.name, params.join(", ")).unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
@@ -600,7 +643,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                 })
                 .collect();
             writeln!(out, "    /** Factory: create {} at cardinality boundary */", s.name).unwrap();
-            writeln!(out, "    public static {} boundary{}() {{", s.name, s.name).unwrap();
+            writeln!(out, "    static {} boundary{}() {{", s.name, s.name).unwrap();
             writeln!(out, "        return new {}({});", s.name, boundary_params.join(", ")).unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
@@ -624,7 +667,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                 })
                 .collect();
             writeln!(out, "    /** Factory: create {} that violates cardinality constraint */", s.name).unwrap();
-            writeln!(out, "    public static {} invalid{}() {{", s.name, s.name).unwrap();
+            writeln!(out, "    static {} invalid{}() {{", s.name, s.name).unwrap();
             writeln!(out, "        return new {}({});", s.name, invalid_params.join(", ")).unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
@@ -667,10 +710,26 @@ fn java_return_type(type_name: &str, mult: &Multiplicity) -> String {
 }
 
 fn java_default_value(target: &str, mult: &Multiplicity) -> String {
+    java_default_value_inner(target, mult, &HashSet::new())
+}
+
+fn java_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set => "Set.of()".to_string(),
-        Multiplicity::Seq => "List.of()".to_string(),
+        Multiplicity::Set => {
+            if safe_targets.contains(target) {
+                format!("new java.util.HashSet<>(Set.of(default{target}()))")
+            } else {
+                "Set.of()".to_string()
+            }
+        }
+        Multiplicity::Seq => {
+            if safe_targets.contains(target) {
+                format!("new java.util.ArrayList<>(List.of(default{target}()))")
+            } else {
+                "List.of()".to_string()
+            }
+        }
         Multiplicity::One => format!("default{target}()"),
     }
 }

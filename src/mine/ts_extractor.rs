@@ -106,7 +106,7 @@ fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if variants.len() < 2 { return None; }
+    if variants.is_empty() { return None; }
 
     Some((name, variants))
 }

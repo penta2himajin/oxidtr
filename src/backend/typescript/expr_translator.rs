@@ -144,9 +144,9 @@ fn translate_inner(
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
-                format!("tc{}({})", capitalize(field), ti(base, false))
+                format!("helpers.tc{}({})", capitalize(field), ti(base, false))
             } else {
-                format!("transitiveClosure({})", ti(inner, false))
+                format!("helpers.transitiveClosure({})", ti(inner, false))
             }
         }
 
@@ -267,18 +267,20 @@ fn build_nested_quantifier_ts(
         }
     };
 
-    // Build from inside-out
+    // Build from inside-out.
+    // Wrap domain in [...domain] to handle both Set and Array uniformly.
     let mut result = guarded_body;
     for idx in (0..vars.len()).rev() {
         let (ref var, ref domain, _) = vars[idx];
+        let arr = format!("[...{domain}]");
         result = match kind {
-            QuantKind::All => format!("{domain}.every(({var}) => {result})"),
-            QuantKind::Some => format!("{domain}.some(({var}) => {result})"),
+            QuantKind::All => format!("{arr}.every(({var}) => {result})"),
+            QuantKind::Some => format!("{arr}.some(({var}) => {result})"),
             QuantKind::No => {
                 if idx == 0 {
-                    format!("!{domain}.some(({var}) => {result})")
+                    format!("!{arr}.some(({var}) => {result})")
                 } else {
-                    format!("{domain}.some(({var}) => {result})")
+                    format!("{arr}.some(({var}) => {result})")
                 }
             }
         };
@@ -298,14 +300,47 @@ fn lone_comparison<F>(
     left: &Expr,
     right: &Expr,
     op: &str,
-    _ir: &OxidtrIR,
+    ir: &OxidtrIR,
     ti: &F,
 ) -> String
 where
     F: Fn(&Expr, bool) -> String,
 {
-    // In TypeScript, lone fields are `T | null`, so direct === works
-    format!("{} {op} {}", ti(left, false), ti(right, false))
+    let l = ti(left, false);
+    let r = ti(right, false);
+    // For struct types (non-primitive), use JSON.stringify for deep comparison.
+    // Detect: if either side is a VarRef bound to a sig, or a FieldAccess to a
+    // struct field (One mult), we need deep comparison.
+    let needs_deep = is_struct_expr(left, ir) || is_struct_expr(right, ir);
+    if needs_deep {
+        if op == "===" {
+            format!("JSON.stringify({l}) === JSON.stringify({r})")
+        } else {
+            format!("JSON.stringify({l}) !== JSON.stringify({r})")
+        }
+    } else {
+        format!("{l} {op} {r}")
+    }
+}
+
+/// Check if an expression likely evaluates to a struct (non-primitive) value.
+fn is_struct_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::FieldAccess { field, .. } => {
+            // Look up field type in IR. If target is a sig with fields, it's a struct.
+            for s in &ir.structures {
+                for f in &s.fields {
+                    if f.name == *field && f.mult == Multiplicity::One {
+                        return ir.structures.iter()
+                            .any(|target_sig| target_sig.name == f.target && !target_sig.fields.is_empty());
+                    }
+                }
+            }
+            false
+        }
+        // Deref: *expr in Rust, just expr in TS — check inner
+        _ => false,
+    }
 }
 
 fn to_camel_case(s: &str) -> String {

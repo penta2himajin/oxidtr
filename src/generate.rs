@@ -3,6 +3,7 @@ use crate::parser::ast::SigMultiplicity;
 use crate::ir;
 use crate::backend::rust;
 use crate::backend::typescript;
+use crate::backend::typescript::{TsTestRunner, TsBackendConfig};
 use crate::backend::jvm::{kotlin, java};
 use crate::backend::schema;
 use crate::analyze::guarantee::TargetLang;
@@ -48,6 +49,22 @@ pub struct GenerateConfig {
     pub features: Vec<String>,
     /// Force schema generation (overrides per-language default).
     pub schema: Option<bool>,
+    /// Test runner for TypeScript target (default: Bun).
+    pub ts_test_runner: TsTestRunner,
+}
+
+impl GenerateConfig {
+    /// Create config with defaults for non-essential fields.
+    pub fn new(target: &str, output_dir: &str) -> Self {
+        Self {
+            target: target.to_string(),
+            output_dir: output_dir.to_string(),
+            warnings: WarningLevel::Warn,
+            features: Vec::new(),
+            schema: None,
+            ts_test_runner: TsTestRunner::Bun,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +136,12 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
             };
             rust::generate_with_config(&ir, &rust_config)
         }
-        "typescript" | "ts" => typescript::generate(&ir),
+        "typescript" | "ts" => {
+            let ts_config = TsBackendConfig {
+                test_runner: config.ts_test_runner,
+            };
+            typescript::generate_with_config(&ir, &ts_config)
+        }
         "kotlin" | "kt" => kotlin::generate(&ir),
         "java" => java::generate(&ir),
         other => {

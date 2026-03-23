@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -519,14 +519,43 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if any_partial {
             writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
         }
+        // Detect ownership facts: `all x: A | some y: B | x in y.field`
+        // These need linked fixture setup where B.field contains x.
+        let ownership = detect_ownership_pattern(&constraint.expr, ir);
+
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
-        for (pname, tname) in &params {
-            if has_fixture.contains(tname) {
-                let snake = to_snake_case(tname);
-                writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
-            } else {
-                writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+        if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
+            // Generate linked setup: create owned item, insert into owner's field
+            let owned_param = params.iter().find(|(p, _)| p == owned_var);
+            let owner_param = params.iter().find(|(p, _)| p == owner_var);
+            if let (Some((opname, otname)), Some((cpname, ctname))) = (owned_param, owner_param) {
+                let owned_snake = to_snake_case(otname);
+                let owner_snake = to_snake_case(ctname);
+                writeln!(out, "        let item = default_{owned_snake}();").unwrap();
+                writeln!(out, "        let mut owner = default_{owner_snake}();").unwrap();
+                writeln!(out, "        owner.{field_name}.insert(item.clone());").unwrap();
+                writeln!(out, "        let {opname}: Vec<{otname}> = vec![item];").unwrap();
+                writeln!(out, "        let {cpname}: Vec<{ctname}> = vec![owner];").unwrap();
+                // Emit remaining params normally
+                for (pname, tname) in &params {
+                    if pname == opname || pname == cpname { continue; }
+                    if has_fixture.contains(tname) {
+                        let snake = to_snake_case(tname);
+                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    } else {
+                        writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    }
+                }
+            }
+        } else {
+            for (pname, tname) in &params {
+                if has_fixture.contains(tname) {
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
             }
         }
         writeln!(out, "        assert!({body});").unwrap();
@@ -555,24 +584,26 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         if has_boundary {
             let test_name = format!("boundary_{}", to_snake_case(&fact_name));
+            // For boundary tests, use default fixtures for container types
+            // (ownership pattern linking is handled by populated set fields in fixtures)
             writeln!(out, "    #[test]").unwrap();
             writeln!(out, "    fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
-                let snake = to_snake_case(tname);
-                let has_b = ir.structures.iter().any(|s| {
-                    s.name == *tname && s.fields.iter().any(|f| {
-                        matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
-                            && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
-                    })
-                });
-                if has_b {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![boundary_{snake}()];").unwrap();
-                } else if has_fixture.contains(tname) {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
-                } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    let snake = to_snake_case(tname);
+                    let has_b = ir.structures.iter().any(|s| {
+                        s.name == *tname && s.fields.iter().any(|f| {
+                            matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                                && analyze::bounds_for_field(ir, &s.name, &f.name).is_some()
+                        })
+                    });
+                    if has_b {
+                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![boundary_{snake}()];").unwrap();
+                    } else if has_fixture.contains(tname) {
+                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    } else {
+                        writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    }
                 }
-            }
             writeln!(out, "        assert!({body}, \"boundary values should satisfy invariant\");").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
@@ -975,6 +1006,15 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         }
     }
 
+    // Collect which types have fixture factories (for populating set/seq fields).
+    // Only populate set/seq fields when the target fixture doesn't create a cycle.
+    let fixture_types: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Note: safe_set_targets is computed per-field below using is_safe_set_population()
+
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
         if s.fields.is_empty() { continue; }
@@ -990,7 +1030,16 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                 "BTreeMap::new()".to_string()
             } else {
                 let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                default_value_for_field(&f.target, &f.mult, is_boxed)
+                {
+                    let safe_targets: HashSet<String> = if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                        && is_safe_set_population(&s.name, &f.target, ir, &fixture_types)
+                    {
+                        HashSet::from([f.target.clone()])
+                    } else {
+                        HashSet::new()
+                    };
+                    default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets)
+                }
             };
             writeln!(out, "        {}: {},", f.name, val).unwrap();
         }
@@ -1022,7 +1071,10 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         boundary_value_for_field(&f.target, &f.mult, count)
                     } else {
                         let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                        let safe_targets: HashSet<String> = if is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                            HashSet::from([f.target.clone()])
+                        } else { HashSet::new() };
+                        default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets)
                     }
                 } else {
                     let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
@@ -1096,11 +1148,70 @@ fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> 
     }
 }
 
+fn detect_ownership_pattern(expr: &Expr, ir: &OxidtrIR) -> Option<(String, String, String, String)> {
+    super::detect_ownership_pattern(expr, ir, to_snake_plural)
+}
+
+
+fn to_snake_plural(name: &str) -> String {
+    let snake = to_snake_case(name);
+    // Simple pluralization: add 's'
+    format!("{snake}s")
+}
+
+/// Check if populating a set/seq field of `owner` with `default_target()`
+/// would cause infinite recursion. Returns true if safe.
+/// Unsafe when: default_target() transitively depends on owner through One fields.
+fn is_safe_set_population(
+    owner: &str, target: &str,
+    ir: &OxidtrIR,
+    fixture_types: &HashSet<String>,
+) -> bool {
+    if !fixture_types.contains(target) { return false; }
+    // BFS: does default_target() transitively reach owner through One-mult fields?
+    let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+        .map(|s| (s.name.as_str(), s))
+        .collect();
+    let mut visited = HashSet::new();
+    let mut stack = vec![target.to_string()];
+    while let Some(cur) = stack.pop() {
+        if cur == owner { return false; } // cycle detected
+        if !visited.insert(cur.clone()) { continue; }
+        if let Some(s) = struct_map.get(cur.as_str()) {
+            for f in &s.fields {
+                if f.mult == Multiplicity::One && fixture_types.contains(&f.target) {
+                    stack.push(f.target.clone());
+                }
+            }
+        }
+    }
+    true
+}
+
 fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool) -> String {
+    default_value_for_field_inner(target, mult, is_boxed, &HashSet::new())
+}
+
+fn default_value_for_field_inner(
+    target: &str, mult: &Multiplicity, is_boxed: bool,
+    has_fixture: &HashSet<String>,
+) -> String {
     match mult {
         Multiplicity::Lone => "None".to_string(),
-        Multiplicity::Set => "BTreeSet::new()".to_string(),
-        Multiplicity::Seq => "Vec::new()".to_string(),
+        Multiplicity::Set => {
+            if has_fixture.contains(target) {
+                format!("BTreeSet::from([default_{}()])", to_snake_case(target))
+            } else {
+                "BTreeSet::new()".to_string()
+            }
+        }
+        Multiplicity::Seq => {
+            if has_fixture.contains(target) {
+                format!("vec![default_{}()]", to_snake_case(target))
+            } else {
+                "Vec::new()".to_string()
+            }
+        }
         Multiplicity::One => {
             if is_boxed {
                 format!("Box::new(default_{}())", to_snake_case(target))

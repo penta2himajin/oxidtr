@@ -1,4 +1,5 @@
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 use std::path::Path;
 
 fn test_config(dir: &str) -> GenerateConfig {
@@ -8,6 +9,7 @@ fn test_config(dir: &str) -> GenerateConfig {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     }
 }
 
@@ -75,6 +77,7 @@ fn generate_detects_warnings() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -99,6 +102,7 @@ fn generate_warnings_error_level_fails() {
         warnings: WarningLevel::Error,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config);
@@ -108,6 +112,7 @@ fn generate_warnings_error_level_fails() {
 #[test]
 fn generate_detects_missing_inverse() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -122,6 +127,7 @@ fn generate_detects_missing_inverse() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -135,6 +141,7 @@ fn generate_detects_missing_inverse() {
 #[test]
 fn generate_no_missing_inverse_when_constrained() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -152,6 +159,7 @@ fn generate_no_missing_inverse_when_constrained() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -164,6 +172,7 @@ fn generate_no_missing_inverse_when_constrained() {
 #[test]
 fn generate_detects_unconstrained_transitivity() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -178,6 +187,7 @@ fn generate_detects_unconstrained_transitivity() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -191,6 +201,7 @@ fn generate_detects_unconstrained_transitivity() {
 #[test]
 fn generate_no_unconstrained_transitivity_when_fact_exists() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -206,6 +217,7 @@ fn generate_no_unconstrained_transitivity_when_fact_exists() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -220,6 +232,7 @@ fn generate_no_unconstrained_transitivity_when_fact_exists() {
 #[test]
 fn generate_detects_unhandled_response_pattern() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -236,6 +249,7 @@ fn generate_detects_unhandled_response_pattern() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -249,6 +263,7 @@ fn generate_detects_unhandled_response_pattern() {
 #[test]
 fn generate_detects_missing_error_propagation() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -265,6 +280,7 @@ fn generate_detects_missing_error_propagation() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -278,6 +294,7 @@ fn generate_detects_missing_error_propagation() {
 #[test]
 fn generate_no_unhandled_when_all_variants_have_preds() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -295,6 +312,7 @@ fn generate_no_unhandled_when_all_variants_have_preds() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -311,6 +329,7 @@ fn generate_no_unhandled_when_all_variants_have_preds() {
 #[test]
 fn generate_no_unhandled_for_single_child_abstract() {
     use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+use oxidtr::backend::typescript::TsTestRunner;
 
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");
@@ -325,6 +344,7 @@ fn generate_no_unhandled_for_single_child_abstract() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     let result = generate::run(&model_path, &config).unwrap();
 

@@ -7,6 +7,7 @@ use oxidtr::backend::{rust, typescript};
 use oxidtr::mine::{rust_extractor, ts_extractor, MinedMultiplicity};
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -252,6 +253,7 @@ fn check_ts_self_hosting() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

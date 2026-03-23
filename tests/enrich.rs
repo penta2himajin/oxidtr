@@ -147,7 +147,7 @@ fn java_generates_fixtures() {
     let fixtures = find_file(&files, "Fixtures.java");
 
     assert!(
-        fixtures.contains("public static User defaultUser()"),
+        fixtures.contains("static User defaultUser()"),
         "Java fixtures should contain defaultUser()"
     );
 }
@@ -173,13 +173,13 @@ fn java_generates_notnull() {
     let models = find_file(&files, "Models.java");
 
     assert!(
-        models.contains("@NotNull"),
-        "Java models should contain @NotNull annotation on `one` fields"
+        models.contains("/* @NotNull */"),
+        "Java models should contain /* @NotNull */ comment on `one` fields"
     );
-    // Specifically: `role` is `one Role` so it should be @NotNull
+    // Specifically: `role` is `one Role` so it should be /* @NotNull */
     assert!(
-        models.contains("@NotNull Role role"),
-        "Java record for User should have @NotNull Role role"
+        models.contains("/* @NotNull */ Role role"),
+        "Java record for User should have /* @NotNull */ Role role"
     );
 }
 
@@ -405,17 +405,17 @@ fn self_hosting_enriched_output() {
         "Kotlin self-hosting should generate fixture functions"
     );
 
-    // Java: fixtures generated with @NotNull
+    // Java: fixtures generated with /* @NotNull */
     let java_files = java::generate(&ir);
     let java_fixtures = find_file(&java_files, "Fixtures.java");
     assert!(
-        java_fixtures.contains("public static"),
+        java_fixtures.contains("static ") && java_fixtures.contains("default"),
         "Java self-hosting should generate fixture functions"
     );
     let java_models = find_file(&java_files, "Models.java");
     assert!(
-        java_models.contains("@NotNull"),
-        "Java self-hosting should have @NotNull annotations"
+        java_models.contains("/* @NotNull */"),
+        "Java self-hosting should have /* @NotNull */ comments"
     );
 
     // Schema: generated and mineable
