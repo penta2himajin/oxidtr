@@ -81,8 +81,27 @@ pub fn extract(source: &str) -> MinedModel {
             }
         }
 
-        // Fact candidates from function bodies
-        if trimmed.starts_with("export function ") || trimmed.starts_with("function ") {
+        // Invariant functions: export function assertXxx(...): boolean { return BODY; }
+        if (trimmed.starts_with("export function ") || trimmed.starts_with("function "))
+            && trimmed.contains(": boolean")
+        {
+            let fn_name = extract_ts_fn_name(trimmed);
+            let body = collect_block(&mut lines);
+            if let Some(ref name) = fn_name {
+                if name.starts_with("assert") && name.len() > 6 && name.as_bytes()[6].is_ascii_uppercase() {
+                    let body_text = body.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(" ");
+                    if let Some(alloy_text) = reverse_translate_invariant_body(&body_text) {
+                        fact_candidates.push(MinedFactCandidate {
+                            alloy_text,
+                            confidence: Confidence::Medium,
+                            source_location: format!("line {}", line_num + 1),
+                            source_pattern: format!("reverse-translated fn {name}"),
+                        });
+                    }
+                }
+            }
+            extract_ts_facts(&body, line_num, &mut fact_candidates);
+        } else if trimmed.starts_with("export function ") || trimmed.starts_with("function ") {
             let body = collect_block(&mut lines);
             extract_ts_facts(&body, line_num, &mut fact_candidates);
         }
@@ -254,58 +273,260 @@ fn extract_alloy_comments(
     }
 }
 
+/// Extract function name from a TS function declaration line.
+fn extract_ts_fn_name(line: &str) -> Option<String> {
+    let rest = line.trim()
+        .strip_prefix("export function ")
+        .or_else(|| line.trim().strip_prefix("function "))?;
+    let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Reverse-translate the body of a TS invariant function.
+/// Converts camelCase plural param names back to PascalCase sig names.
+fn reverse_translate_invariant_body(body_text: &str) -> Option<String> {
+    let s = body_text.trim();
+    let expr = if let Some(pos) = s.find("return ") {
+        s[pos + "return ".len()..].trim().trim_end_matches(';').trim()
+    } else {
+        s.trim_end_matches(';').trim()
+    };
+    if expr.is_empty() { return None; }
+    let alloy = reverse_translate_expr(expr)?;
+    Some(fix_quantifier_domains(&alloy))
+}
+
+/// Fix quantifier domains: "all s: sigDecls | ..." → "all s: SigDecl | ..."
+fn fix_quantifier_domains(alloy: &str) -> String {
+    let mut result = alloy.to_string();
+    for quant in &["all ", "some ", "no "] {
+        if let Some(qpos) = result.find(quant) {
+            let after_quant = &result[qpos + quant.len()..];
+            if let Some(colon) = after_quant.find(": ") {
+                let domain_start = qpos + quant.len() + colon + 2;
+                let after_domain = &result[domain_start..];
+                if let Some(pipe) = after_domain.find(" | ") {
+                    let domain = &result[domain_start..domain_start + pipe];
+                    let converted = camel_to_pascal(domain);
+                    if converted != domain {
+                        result = format!(
+                            "{}{}{}",
+                            &result[..domain_start],
+                            converted,
+                            &result[domain_start + pipe..]
+                        );
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Reverse-translate a TypeScript expression back to Alloy syntax.
+/// Robust: handles balanced parens, TC calls, camelCase → snake_case field conversion.
 pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
     let s = code_line.trim();
-    // .every(v => body) → all v: Xxx | body
-    if let Some(pos) = s.find(".every(") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".every(".len()..];
-        let arrow = rest.find("=>")?;
-        let var = rest[..arrow].trim();
-        let body = rest[arrow + 2..].trim().trim_end_matches(')');
-        let body_alloy = reverse_translate_expr(body).unwrap_or_else(|| body.to_string());
-        return Some(format!("all {var}: {collection} | {body_alloy}"));
+    if s.is_empty() { return None; }
+
+    // Strip outer parens
+    let s = strip_balanced_parens(s);
+
+    // tcField(base) → base.^field
+    if let Some(result) = try_reverse_tc_call(s) {
+        return Some(result);
     }
-    // .some(v => body) → some v: Xxx | body
-    if let Some(pos) = s.find(".some(") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".some(".len()..];
-        let arrow = rest.find("=>")?;
-        let var = rest[..arrow].trim();
-        let body = rest[arrow + 2..].trim().trim_end_matches(')');
-        let body_alloy = reverse_translate_expr(body).unwrap_or_else(|| body.to_string());
-        return Some(format!("some {var}: {collection} | {body_alloy}"));
+
+    // !xxx.some(...) → no quantifier (must come before bare .some)
+    if s.starts_with('!') {
+        let inner = &s[1..];
+        if let Some(result) = try_reverse_ts_some(inner, "no") {
+            return Some(result);
+        }
     }
+
+    // .every((v) => body) → all v: Xxx | body
+    if let Some(result) = try_reverse_ts_every(s) {
+        return Some(result);
+    }
+
+    // .some((v) => body) → some v: Xxx | body
+    if let Some(result) = try_reverse_ts_some(s, "some") {
+        return Some(result);
+    }
+
     // .includes(v) → v in xxx
-    if let Some(pos) = s.find(".includes(") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".includes(".len()..];
-        let end = rest.find(')')?;
-        let element = rest[..end].trim();
-        return Some(format!("{element} in {collection}"));
+    if let Some(result) = try_reverse_includes(s) {
+        return Some(result);
     }
+
     // .has(v) → v in xxx
-    if let Some(pos) = s.find(".has(") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".has(".len()..];
-        let end = rest.find(')')?;
-        let element = rest[..end].trim();
-        return Some(format!("{element} in {collection}"));
+    if let Some(result) = try_reverse_has(s) {
+        return Some(result);
     }
-    // .length → #xxx or .size → #xxx
-    if let Some(pos) = s.find(".length") {
-        let inner = s[..pos].trim();
-        return Some(format!("#{inner}"));
+
+    // .length → #xxx
+    if let Some(result) = try_reverse_length(s) {
+        return Some(result);
     }
-    if let Some(pos) = s.find(".size") {
-        let inner = s[..pos].trim();
-        return Some(format!("#{inner}"));
+
+    // .size → #xxx
+    if let Some(result) = try_reverse_size(s) {
+        return Some(result);
     }
-    // === / !== → = / !=
+
+    // Comparison operators
+    if let Some(result) = try_reverse_comparison(s) {
+        return Some(result);
+    }
+
+    // Boolean logic
+    if let Some(result) = try_reverse_logic(s) {
+        return Some(result);
+    }
+
+    // Integer literals
+    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+        return Some(s.to_string());
+    }
+
+    // Variable references and field access chains
+    if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !s.is_empty() {
+        return Some(s.to_string());
+    }
+
+    None
+}
+
+fn strip_balanced_parens(s: &str) -> &str {
+    let s = s.trim();
+    if !s.starts_with('(') || !s.ends_with(')') { return s; }
+    let inner = &s[1..s.len() - 1];
+    let mut depth = 0i32;
+    for ch in inner.chars() {
+        match ch { '(' => depth += 1, ')' => { depth -= 1; if depth < 0 { return s; } } _ => {} }
+    }
+    if depth == 0 { inner.trim() } else { s }
+}
+
+fn try_reverse_tc_call(s: &str) -> Option<String> {
+    // Pattern: tcFieldName(base) → base.^fieldName
+    let rest = s.strip_prefix("tc")?;
+    if rest.is_empty() || !rest.chars().next()?.is_ascii_uppercase() { return None; }
+    let paren = rest.find('(')?;
+    let field_pascal = &rest[..paren];
+    let field = {
+        let mut chars = field_pascal.chars();
+        match chars.next() {
+            None => return None,
+            Some(c) => format!("{}{}", c.to_lowercase(), chars.as_str()),
+        }
+    };
+    // Find matching close paren
+    let close = find_matching_close_ts(&rest[paren + 1..])?;
+    let args = &rest[paren + 1..paren + 1 + close];
+    let base_alloy = reverse_translate_expr(args.trim()).unwrap_or_else(|| args.trim().to_string());
+    let tc_expr = format!("{base_alloy}.^{field}");
+
+    let after = &rest[paren + 1 + close + 1..];
+    if after.is_empty() {
+        return Some(tc_expr);
+    }
+    let full_after = format!("{tc_expr}{after}");
+    reverse_translate_expr(&full_after).or(Some(tc_expr))
+}
+
+fn try_reverse_ts_every(s: &str) -> Option<String> {
+    let pos = s.find(".every(")?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + ".every(".len()..];
+    let (var, body) = extract_arrow_fn(rest)?;
+    let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+    Some(format!("all {var}: {collection} | {body_alloy}"))
+}
+
+fn try_reverse_ts_some(s: &str, quant: &str) -> Option<String> {
+    let pos = s.find(".some(")?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + ".some(".len()..];
+    let (var, body) = extract_arrow_fn(rest)?;
+    let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+    Some(format!("{quant} {var}: {collection} | {body_alloy}"))
+}
+
+/// Extract `(var) => body)` or `var => body)` from arrow function in a method call.
+/// Returns (var_name, body_str).
+fn extract_arrow_fn(s: &str) -> Option<(&str, &str)> {
+    let arrow = s.find("=>")?;
+    let var_part = s[..arrow].trim();
+    // Strip parens from (v)
+    let var = var_part.trim_start_matches('(').trim_end_matches(')').trim();
+    let body_start = arrow + 2;
+    // The body is everything after => up to the matching close paren of the method call
+    let body_rest = &s[body_start..];
+    // Find the point where parens become unbalanced (the closing paren of .every/.some)
+    let mut depth = 0i32;
+    let mut end = body_rest.len();
+    for (i, ch) in body_rest.chars().enumerate() {
+        match ch {
+            '(' | '{' | '[' => depth += 1,
+            ')' | '}' | ']' => {
+                depth -= 1;
+                if depth < 0 { end = i; break; }
+            }
+            _ => {}
+        }
+    }
+    let body = body_rest[..end].trim();
+    if var.is_empty() || body.is_empty() { return None; }
+    Some((var, body))
+}
+
+fn try_reverse_includes(s: &str) -> Option<String> {
+    let pos = s.find(".includes(")?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + ".includes(".len()..];
+    let end = find_matching_close_ts(rest)?;
+    let element = rest[..end].trim();
+    let element_alloy = reverse_translate_expr(element).unwrap_or_else(|| element.to_string());
+    let collection_alloy = reverse_translate_expr(collection).unwrap_or_else(|| collection.to_string());
+    Some(format!("{element_alloy} in {collection_alloy}"))
+}
+
+fn try_reverse_has(s: &str) -> Option<String> {
+    let pos = s.find(".has(")?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + ".has(".len()..];
+    let end = find_matching_close_ts(rest)?;
+    let element = rest[..end].trim();
+    let element_alloy = reverse_translate_expr(element).unwrap_or_else(|| element.to_string());
+    let collection_alloy = reverse_translate_expr(collection).unwrap_or_else(|| collection.to_string());
+    Some(format!("{element_alloy} in {collection_alloy}"))
+}
+
+fn try_reverse_length(s: &str) -> Option<String> {
+    let pos = s.rfind(".length")?;
+    // Make sure .length is at end or followed by space/operator
+    let after = &s[pos + 7..];
+    if !after.is_empty() && !after.starts_with(' ') { return None; }
+    let inner = s[..pos].trim();
+    let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+    Some(format!("#{inner_alloy}"))
+}
+
+fn try_reverse_size(s: &str) -> Option<String> {
+    let pos = s.rfind(".size")?;
+    let after = &s[pos + 5..];
+    if !after.is_empty() && !after.starts_with(' ') { return None; }
+    let inner = s[..pos].trim();
+    let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+    Some(format!("#{inner_alloy}"))
+}
+
+fn try_reverse_comparison(s: &str) -> Option<String> {
     for (ts_op, alloy_op) in &[(" === ", " = "), (" !== ", " != "), (" <= ", " <= "),
                                  (" >= ", " >= "), (" < ", " < "), (" > ", " > ")] {
-        if let Some(pos) = s.find(ts_op) {
+        if let Some(pos) = find_top_level(s, ts_op) {
             let left = s[..pos].trim();
             let right = s[pos + ts_op.len()..].trim();
             let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
@@ -313,15 +534,29 @@ pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
             return Some(format!("{left_alloy}{alloy_op}{right_alloy}"));
         }
     }
-    // && → and, || → or
-    if let Some(pos) = s.find(" && ") {
+    None
+}
+
+fn try_reverse_logic(s: &str) -> Option<String> {
+    // !a || b → a implies b
+    if s.starts_with('!') {
+        let inner = &s[1..];
+        if let Some(pos) = find_top_level(inner, " || ") {
+            let a = strip_balanced_parens(inner[..pos].trim());
+            let b = inner[pos + 4..].trim();
+            let a_alloy = reverse_translate_expr(a).unwrap_or_else(|| a.to_string());
+            let b_alloy = reverse_translate_expr(b).unwrap_or_else(|| b.to_string());
+            return Some(format!("{a_alloy} implies {b_alloy}"));
+        }
+    }
+    if let Some(pos) = find_top_level(s, " && ") {
         let left = s[..pos].trim();
         let right = s[pos + 4..].trim();
         let l = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
         let r = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
         return Some(format!("{l} and {r}"));
     }
-    if let Some(pos) = s.find(" || ") {
+    if let Some(pos) = find_top_level(s, " || ") {
         let left = s[..pos].trim();
         let right = s[pos + 4..].trim();
         let l = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
@@ -334,6 +569,52 @@ pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
         return Some(format!("not {inner_alloy}"));
     }
     None
+}
+
+fn find_top_level(s: &str, pattern: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    let pat_bytes = pattern.as_bytes();
+    if pat_bytes.len() > bytes.len() { return None; }
+    for i in 0..=bytes.len() - pat_bytes.len() {
+        match bytes[i] {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && &bytes[i..i + pat_bytes.len()] == pat_bytes {
+            return Some(i);
+        }
+    }
+    None
+}
+
+fn find_matching_close_ts(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, ch) in s.chars().enumerate() {
+        match ch {
+            '(' | '{' => depth += 1,
+            ')' | '}' => {
+                if depth == 0 { return Some(i); }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Convert camelCase plural to PascalCase singular (e.g., "sigDecls" → "SigDecl").
+fn camel_to_pascal(s: &str) -> String {
+    // Strip trailing 's' for plural
+    let s = s.strip_suffix('s').unwrap_or(s);
+    let mut result = String::new();
+    let mut chars = s.chars();
+    if let Some(first) = chars.next() {
+        result.push(first.to_ascii_uppercase());
+    }
+    result.extend(chars);
+    result
 }
 
 fn extract_ts_facts(

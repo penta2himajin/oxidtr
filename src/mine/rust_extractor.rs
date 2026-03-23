@@ -65,8 +65,28 @@ pub fn extract(source: &str) -> MinedModel {
             }
         }
 
-        // Fact candidates from function bodies
-        if trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ") {
+        // Invariant functions: pub fn assert_xxx(...) -> bool { BODY }
+        if (trimmed.starts_with("pub fn ") || trimmed.starts_with("fn "))
+            && trimmed.contains("-> bool")
+        {
+            let fn_name = extract_rust_fn_name(trimmed);
+            let body = collect_fn_body(&mut lines);
+            // Try commentless reverse translation first
+            if let Some(ref name) = fn_name {
+                if name.starts_with("assert_") {
+                    let body_text = body.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(" ");
+                    if let Some(alloy_text) = reverse_translate_invariant_body(&body_text) {
+                        fact_candidates.push(MinedFactCandidate {
+                            alloy_text,
+                            confidence: Confidence::Medium,
+                            source_location: format!("line {}", line_num + 1),
+                            source_pattern: format!("reverse-translated fn {name}"),
+                        });
+                    }
+                }
+            }
+            extract_facts_from_lines(&body, line_num, &mut fact_candidates);
+        } else if trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ") {
             let body = collect_fn_body(&mut lines);
             extract_facts_from_lines(&body, line_num, &mut fact_candidates);
         }
@@ -252,68 +272,257 @@ fn extract_alloy_comments(
     }
 }
 
+/// Extract function name from a Rust fn declaration line.
+fn extract_rust_fn_name(line: &str) -> Option<String> {
+    let rest = line.trim()
+        .strip_prefix("pub fn ")
+        .or_else(|| line.trim().strip_prefix("fn "))?;
+    let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// Reverse-translate the body of a Rust invariant function.
+/// Handles `{ let v = v.clone(); BODY }` wrapping and `return EXPR` patterns.
+/// Also converts snake_case plural param names back to PascalCase sig names.
+fn reverse_translate_invariant_body(body_text: &str) -> Option<String> {
+    let s = body_text.trim();
+    // Extract the return expression: may be just the expression or `return EXPR`
+    let expr = if let Some(pos) = s.find("return ") {
+        s[pos + "return ".len()..].trim().trim_end_matches(';').trim()
+    } else {
+        s.trim_end_matches(';').trim()
+    };
+    if expr.is_empty() {
+        return None;
+    }
+    let alloy = reverse_translate_expr(expr)?;
+    // Post-process: convert quantifier domain names from snake_plural to PascalCase
+    Some(fix_quantifier_domains_rust(&alloy))
+}
+
+/// Fix quantifier domains: "all s: sig_decls | ..." → "all s: SigDecl | ..."
+fn fix_quantifier_domains_rust(alloy: &str) -> String {
+    // Pattern: "all/some/no VAR: DOMAIN | BODY"
+    let mut result = alloy.to_string();
+    for quant in &["all ", "some ", "no "] {
+        while let Some(qpos) = result.find(quant) {
+            let after_quant = &result[qpos + quant.len()..];
+            if let Some(colon) = after_quant.find(": ") {
+                let domain_start = qpos + quant.len() + colon + 2;
+                let after_domain = &result[domain_start..];
+                if let Some(pipe) = after_domain.find(" | ") {
+                    let domain = &result[domain_start..domain_start + pipe];
+                    let converted = snake_to_pascal(domain);
+                    if converted != domain {
+                        result = format!(
+                            "{}{}{}",
+                            &result[..domain_start],
+                            converted,
+                            &result[domain_start + pipe..]
+                        );
+                    }
+                }
+            }
+            // Prevent infinite loop: move past this occurrence
+            break;
+        }
+    }
+    result
+}
+
 /// Reverse-translate a Rust expression back to Alloy syntax.
 /// Only handles patterns we know our own generator produces.
+/// Robust: handles balanced parens, clone blocks, TC calls.
 pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
     let s = code_line.trim();
-    // .iter().all(|v| body) → all v: Xxx | body
+    if s.is_empty() {
+        return None;
+    }
+
+    // Strip outer parens if balanced: "(expr)" → "expr"
+    let s = strip_balanced_parens(s);
+
+    // Strip Rust clone blocks: { let v = v.clone(); body } → body
+    let s = strip_clone_block(s);
+
+    // tc_field(&v) → v.^field
+    if let Some(result) = try_reverse_tc_call(s) {
+        return Some(result);
+    }
+
+    // Quantifiers (must come before contains/logic to handle nested cases)
     if let Some(result) = try_reverse_quantifier(s) {
         return Some(result);
     }
-    // .contains(&v) → v in xxx
+
+    // (*base.field) → strip deref for Box<T> fields
+    if let Some(inner) = s.strip_prefix("(*").and_then(|s| s.strip_suffix(')')) {
+        return reverse_translate_expr(inner);
+    }
+
+    // .contains(&v) → v in xxx (must come before .len check)
     if let Some(result) = try_reverse_contains(s) {
         return Some(result);
     }
+
     // .len() → #xxx
     if let Some(result) = try_reverse_cardinality(s) {
         return Some(result);
     }
-    // Comparison operators
+
+    // Comparison operators (balanced — find at top level)
     if let Some(result) = try_reverse_comparison(s) {
         return Some(result);
     }
-    // Boolean logic
+
+    // Boolean logic (balanced — find at top level)
     if let Some(result) = try_reverse_logic(s) {
+        return Some(result);
+    }
+
+    // Integer literals
+    if s.chars().all(|c| c.is_ascii_digit()) && !s.is_empty() {
+        return Some(s.to_string());
+    }
+
+    // Variable references and field access chains: v.field → v.field
+    if s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !s.is_empty() {
+        return Some(s.to_string());
+    }
+
+    None
+}
+
+/// Strip balanced outer parentheses.
+fn strip_balanced_parens(s: &str) -> &str {
+    let s = s.trim();
+    if !s.starts_with('(') || !s.ends_with(')') {
+        return s;
+    }
+    // Check that the parens are actually balanced at the outermost level
+    let inner = &s[1..s.len() - 1];
+    let mut depth = 0i32;
+    for ch in inner.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 { return s; } // unbalanced
+            }
+            _ => {}
+        }
+    }
+    if depth == 0 { inner.trim() } else { s }
+}
+
+/// Strip Rust clone block: `{ let v = v.clone(); BODY }` → `BODY`
+fn strip_clone_block(s: &str) -> &str {
+    let s = s.trim();
+    if !s.starts_with('{') || !s.ends_with('}') {
+        return s;
+    }
+    let inner = s[1..s.len() - 1].trim();
+    // Pattern: "let v = v.clone(); BODY"
+    if let Some(semi) = inner.find(';') {
+        let prefix = inner[..semi].trim();
+        if prefix.starts_with("let ") && prefix.contains(".clone()") {
+            return inner[semi + 1..].trim();
+        }
+    }
+    s
+}
+
+/// Reverse tc_field(&v) → v.^field
+fn try_reverse_tc_call(s: &str) -> Option<String> {
+    // Pattern: tc_fieldname(&base) — only match if the tc call is the WHOLE expression
+    // or directly followed by a method call like .contains(...)
+    let rest = s.strip_prefix("tc_")?;
+    let paren = rest.find('(')?;
+    let field = &rest[..paren];
+    if field.is_empty() { return None; }
+    // Find the matching close paren
+    let close = find_matching_close(&rest[paren + 1..], '(', ')')?;
+    let args = &rest[paren + 1..paren + 1 + close];
+    let base = args.trim().strip_prefix('&').unwrap_or(args.trim());
+    let base_alloy = reverse_translate_expr(base).unwrap_or_else(|| base.to_string());
+    let tc_expr = format!("{base_alloy}.^{field}");
+
+    // Check if there's a method call after the tc call
+    let after = &rest[paren + 1 + close + 1..];
+    if after.is_empty() {
+        return Some(tc_expr);
+    }
+    // If there's .contains(&x) or similar after, recursively translate the whole thing
+    // by treating tc_result as a normal expression
+    let full_after = format!("{tc_expr}{after}");
+    reverse_translate_expr(&full_after).or(Some(tc_expr))
+}
+
+fn try_reverse_quantifier(s: &str) -> Option<String> {
+    // !xxx.iter().any(|v| body) → no v: Xxx | body
+    // Must check before bare `.iter().any` to catch the negation
+    if s.starts_with('!') {
+        let inner = &s[1..];
+        if let Some(result) = try_reverse_iter_any(inner, "no") {
+            return Some(result);
+        }
+    }
+    // xxx.iter().all(|v| body) → all v: Xxx | body
+    if let Some(result) = try_reverse_iter_method(s, ".iter().all(|", "all") {
+        return Some(result);
+    }
+    // xxx.iter().any(|v| body) → some v: Xxx | body
+    if let Some(result) = try_reverse_iter_any(s, "some") {
         return Some(result);
     }
     None
 }
 
-fn try_reverse_quantifier(s: &str) -> Option<String> {
-    // xxx.iter().all(|v| body)
-    if let Some(pos) = s.find(".iter().all(|") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".iter().all(|".len()..];
-        let pipe_pos = rest.find('|')?;
-        let var = rest[..pipe_pos].trim();
-        let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
-        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
-        return Some(format!("all {var}: {collection} | {body_alloy}"));
-    }
-    // !xxx.iter().any(|v| body) → no v: Xxx | body
-    if s.starts_with('!') {
-        let inner = &s[1..];
-        if let Some(pos) = inner.find(".iter().any(|") {
-            let collection = inner[..pos].trim();
-            let rest = &inner[pos + ".iter().any(|".len()..];
-            let pipe_pos = rest.find('|')?;
-            let var = rest[..pipe_pos].trim();
-            let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
-            let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
-            return Some(format!("no {var}: {collection} | {body_alloy}"));
+fn try_reverse_iter_method(s: &str, pattern: &str, quant: &str) -> Option<String> {
+    let pos = s.find(pattern)?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + pattern.len()..];
+    let pipe_pos = rest.find('|')?;
+    let var = rest[..pipe_pos].trim();
+    let body_start = pipe_pos + 1;
+    let body = extract_balanced_body(&rest[body_start..]);
+    let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+    Some(format!("{quant} {var}: {collection} | {body_alloy}"))
+}
+
+fn try_reverse_iter_any(s: &str, quant: &str) -> Option<String> {
+    let pattern = ".iter().any(|";
+    let pos = s.find(pattern)?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + pattern.len()..];
+    let pipe_pos = rest.find('|')?;
+    let var = rest[..pipe_pos].trim();
+    let body_start = pipe_pos + 1;
+    let body = extract_balanced_body(&rest[body_start..]);
+    let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+    Some(format!("{quant} {var}: {collection} | {body_alloy}"))
+}
+
+/// Extract body from inside a closure, respecting balanced parens/braces.
+/// Finds the point where depth goes negative (the closing paren of the enclosing call).
+fn extract_balanced_body(s: &str) -> &str {
+    let s = s.trim();
+    let mut depth = 0i32;
+    let mut end = s.len();
+    for (i, ch) in s.chars().enumerate() {
+        match ch {
+            '(' | '{' => depth += 1,
+            ')' | '}' => {
+                depth -= 1;
+                if depth < 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
         }
     }
-    // xxx.iter().any(|v| body) → some v: Xxx | body
-    if let Some(pos) = s.find(".iter().any(|") {
-        let collection = s[..pos].trim();
-        let rest = &s[pos + ".iter().any(|".len()..];
-        let pipe_pos = rest.find('|')?;
-        let var = rest[..pipe_pos].trim();
-        let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
-        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
-        return Some(format!("some {var}: {collection} | {body_alloy}"));
-    }
-    None
+    s[..end].trim()
 }
 
 fn try_reverse_contains(s: &str) -> Option<String> {
@@ -321,23 +530,40 @@ fn try_reverse_contains(s: &str) -> Option<String> {
     let pos = s.find(".contains(&")?;
     let collection = s[..pos].trim();
     let rest = &s[pos + ".contains(&".len()..];
-    let end = rest.find(')')?;
+    // Find matching close paren
+    let end = find_matching_close(rest, '(', ')')?;
     let element = rest[..end].trim();
-    Some(format!("{element} in {collection}"))
+    let element_alloy = reverse_translate_expr(element).unwrap_or_else(|| element.to_string());
+    let collection_alloy = reverse_translate_expr(collection).unwrap_or_else(|| collection.to_string());
+    Some(format!("{element_alloy} in {collection_alloy}"))
 }
 
 fn try_reverse_cardinality(s: &str) -> Option<String> {
     // xxx.len() → #xxx
-    let pos = s.find(".len()")?;
+    if !s.ends_with(".len()") && !s.contains(".len() ") {
+        // Only match .len() at end or before an operator
+        if let Some(pos) = s.rfind(".len()") {
+            let after = &s[pos + 6..];
+            if !after.is_empty() && !after.starts_with(' ') {
+                return None;
+            }
+            let inner = s[..pos].trim();
+            let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+            return Some(format!("#{inner_alloy}"));
+        }
+        return None;
+    }
+    let pos = s.rfind(".len()")?;
     let inner = s[..pos].trim();
-    Some(format!("#{inner}"))
+    let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+    Some(format!("#{inner_alloy}"))
 }
 
 fn try_reverse_comparison(s: &str) -> Option<String> {
-    // a == b → a = b, a != b → a != b, a < b → a < b, etc.
+    // Find comparison operators at the top level (not inside parens/braces/closures)
     for (rust_op, alloy_op) in &[(" == ", " = "), (" != ", " != "), (" <= ", " <= "),
                                    (" >= ", " >= "), (" < ", " < "), (" > ", " > ")] {
-        if let Some(pos) = s.find(rust_op) {
+        if let Some(pos) = find_top_level(s, rust_op) {
             let left = s[..pos].trim();
             let right = s[pos + rust_op.len()..].trim();
             let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
@@ -349,11 +575,12 @@ fn try_reverse_comparison(s: &str) -> Option<String> {
 }
 
 fn try_reverse_logic(s: &str) -> Option<String> {
-    // !a || b → a implies b (only at top level)
-    if s.starts_with('!') && s.contains(" || ") {
+    // !a || b → a implies b (only when ! applies to the left side of ||)
+    if s.starts_with('!') {
         let inner = &s[1..];
-        if let Some(pos) = inner.find(" || ") {
-            let a = inner[..pos].trim().trim_start_matches('(').trim_end_matches(')');
+        if let Some(pos) = find_top_level(inner, " || ") {
+            let a = inner[..pos].trim();
+            let a = strip_balanced_parens(a);
             let b = inner[pos + 4..].trim();
             let a_alloy = reverse_translate_expr(a).unwrap_or_else(|| a.to_string());
             let b_alloy = reverse_translate_expr(b).unwrap_or_else(|| b.to_string());
@@ -361,7 +588,7 @@ fn try_reverse_logic(s: &str) -> Option<String> {
         }
     }
     // a && b → a and b
-    if let Some(pos) = s.find(" && ") {
+    if let Some(pos) = find_top_level(s, " && ") {
         let left = s[..pos].trim();
         let right = s[pos + 4..].trim();
         let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
@@ -369,7 +596,7 @@ fn try_reverse_logic(s: &str) -> Option<String> {
         return Some(format!("{left_alloy} and {right_alloy}"));
     }
     // a || b → a or b
-    if let Some(pos) = s.find(" || ") {
+    if let Some(pos) = find_top_level(s, " || ") {
         let left = s[..pos].trim();
         let right = s[pos + 4..].trim();
         let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
@@ -383,6 +610,57 @@ fn try_reverse_logic(s: &str) -> Option<String> {
         return Some(format!("not {inner_alloy}"));
     }
     None
+}
+
+/// Find a pattern at the top level (not inside parens, braces, or closures).
+fn find_top_level(s: &str, pattern: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let bytes = s.as_bytes();
+    let pat_bytes = pattern.as_bytes();
+    if pat_bytes.len() > bytes.len() { return None; }
+    for i in 0..=bytes.len() - pat_bytes.len() {
+        match bytes[i] {
+            b'(' | b'{' | b'[' => depth += 1,
+            b')' | b'}' | b']' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && &bytes[i..i + pat_bytes.len()] == pat_bytes {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// Find matching close delimiter, starting after the opening one.
+fn find_matching_close(s: &str, _open: char, close: char) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, ch) in s.chars().enumerate() {
+        if ch == '(' || ch == '{' { depth += 1; }
+        if ch == ')' || ch == '}' {
+            if depth == 0 && ch == close { return Some(i); }
+            depth -= 1;
+        }
+    }
+    None
+}
+
+/// Convert snake_case_plural to PascalCase (e.g., "sig_decls" → "SigDecl").
+fn snake_to_pascal(s: &str) -> String {
+    // Strip trailing 's' for plural
+    let s = s.strip_suffix('s').unwrap_or(s);
+    let mut result = String::new();
+    let mut capitalize_next = true;
+    for ch in s.chars() {
+        if ch == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(ch.to_ascii_uppercase());
+            capitalize_next = false;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
 }
 
 /// Extract fact candidates from code patterns.
