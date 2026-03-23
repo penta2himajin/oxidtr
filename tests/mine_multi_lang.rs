@@ -14,6 +14,7 @@ fn multi_lang_merge_rust_and_schema() {
         output_dir: dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config_rs).unwrap();
 
@@ -43,6 +44,7 @@ fn multi_lang_merge_ts_and_schema() {
         output_dir: dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config_ts).unwrap();
 

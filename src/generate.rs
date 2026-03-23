@@ -4,6 +4,8 @@ use crate::ir;
 use crate::backend::rust;
 use crate::backend::typescript;
 use crate::backend::jvm::{kotlin, java};
+use crate::backend::schema;
+use crate::analyze::guarantee::TargetLang;
 
 use std::path::Path;
 
@@ -44,6 +46,8 @@ pub struct GenerateConfig {
     pub output_dir: String,
     pub warnings: WarningLevel,
     pub features: Vec<String>,
+    /// Force schema generation (overrides per-language default).
+    pub schema: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,7 +112,7 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     }
 
     // Generate target code
-    let files = match config.target.as_str() {
+    let mut files = match config.target.as_str() {
         "rust" => {
             let rust_config = rust::RustBackendConfig {
                 features: config.features.clone(),
@@ -125,6 +129,26 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
             }));
         }
     };
+
+    // Schema generation: based on language default or explicit --schema flag
+    let lang = TargetLang::from_target_str(&config.target);
+    let should_generate_schema = config.schema.unwrap_or_else(|| {
+        lang.map_or(false, |l| l.schema_default())
+    });
+    if should_generate_schema {
+        files.push(schema::generate(&ir));
+    }
+
+    // TS-specific: generate runtime validators
+    if matches!(config.target.as_str(), "typescript" | "ts") {
+        let validators = typescript::generate_validators(&ir);
+        if !validators.is_empty() {
+            files.push(crate::backend::GeneratedFile {
+                path: "validators.ts".to_string(),
+                content: validators,
+            });
+        }
+    }
 
     // Write output files
     let output_dir = Path::new(&config.output_dir);

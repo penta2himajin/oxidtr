@@ -165,6 +165,7 @@ fn unhandled_response_not_fired_for_singleton_children() {
         output_dir: dir.path().join("out").to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
@@ -224,6 +225,7 @@ fn unhandled_response_not_fired_for_some_and_lone_children() {
         output_dir: dir.path().join("out").to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
@@ -250,6 +252,7 @@ fn unhandled_response_still_fires_for_non_singleton_children() {
         output_dir: dir.path().join("out").to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     // ErrResponse は is_error_name() でエラー扱い → MissingErrorPropagation

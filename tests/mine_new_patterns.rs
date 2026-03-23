@@ -161,6 +161,7 @@ fn mine_directory_round_trip_rust_with_all_enrichments() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: oxidtr::generate::WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -181,6 +182,7 @@ fn mine_directory_round_trip_ts_with_all_enrichments() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: oxidtr::generate::WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 

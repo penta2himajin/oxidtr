@@ -738,3 +738,93 @@ fn ts_default_value(target: &str, mult: &Multiplicity) -> String {
         Multiplicity::One => format!("default{}()", target),
     }
 }
+
+// ── validators.ts ──────────────────────────────────────────────────────────
+// TS has the weakest type system → generate runtime validation functions.
+
+/// Generate runtime validation functions for TypeScript.
+/// Returns empty string if there are no constraints and no collection fields to validate.
+pub fn generate_validators(ir: &OxidtrIR) -> String {
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+
+    // Only generate validators for concrete sigs with fields
+    let sigs_to_validate: Vec<&StructureNode> = ir.structures.iter()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .collect();
+
+    if sigs_to_validate.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::new();
+
+    writeln!(out, "import type * as M from './models';").unwrap();
+    writeln!(out).unwrap();
+
+    for s in &sigs_to_validate {
+        let fn_name = format!("validate{}", s.name);
+        let param_name = s.name[..1].to_lowercase();
+        let constraints = analyze::constraints_for_sig(ir, &s.name);
+
+        writeln!(out, "/** Runtime validator for {} — checks all known constraints. */", s.name).unwrap();
+        writeln!(out, "export function {fn_name}({param_name}: M.{}): string[] {{", s.name).unwrap();
+        writeln!(out, "  const errors: string[] = [];").unwrap();
+
+        // Null/presence checks for lone fields
+        for f in &s.fields {
+            match f.mult {
+                Multiplicity::One => {
+                    // In TS, "one" fields could still be null at runtime
+                    writeln!(out, "  if ({param_name}.{} == null) errors.push(\"{} must not be null\");",
+                        f.name, f.name).unwrap();
+                }
+                _ => {}
+            }
+        }
+
+        // Constraint-derived checks
+        for c in &constraints {
+            match c {
+                analyze::ConstraintInfo::CardinalityBound { field_name, bound, .. } => {
+                    // Find the field to determine if it's Set or Seq
+                    let field_opt = s.fields.iter().find(|f| f.name == *field_name);
+                    let size_expr = match field_opt {
+                        Some(f) if f.mult == Multiplicity::Set => format!("{param_name}.{field_name}.size"),
+                        _ => format!("{param_name}.{field_name}.length"),
+                    };
+                    match bound {
+                        analyze::BoundKind::Exact(n) => {
+                            writeln!(out, "  if ({size_expr} !== {n}) errors.push(\"{field_name} must have exactly {n} element(s)\");").unwrap();
+                        }
+                        analyze::BoundKind::AtMost(n) => {
+                            writeln!(out, "  if ({size_expr} > {n}) errors.push(\"{field_name} exceeds max size {n}\");").unwrap();
+                        }
+                        analyze::BoundKind::AtLeast(n) => {
+                            writeln!(out, "  if ({size_expr} < {n}) errors.push(\"{field_name} must have at least {n} element(s)\");").unwrap();
+                        }
+                    }
+                }
+                analyze::ConstraintInfo::Presence { field_name, kind: analyze::PresenceKind::Required, .. } => {
+                    writeln!(out, "  if ({param_name}.{field_name} == null) errors.push(\"{field_name} must not be null\");").unwrap();
+                }
+                analyze::ConstraintInfo::Presence { field_name, kind: analyze::PresenceKind::Absent, .. } => {
+                    writeln!(out, "  if ({param_name}.{field_name} != null) errors.push(\"{field_name} must be null\");").unwrap();
+                }
+                analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
+                    writeln!(out, "  if ({param_name}.{field_name} === {param_name}) errors.push(\"{field_name} must not reference self\");").unwrap();
+                }
+                _ => {} // Named, Membership, Acyclic — too complex for simple validators
+            }
+        }
+
+        writeln!(out, "  return errors;").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}

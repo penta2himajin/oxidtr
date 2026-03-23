@@ -1,6 +1,8 @@
 /// Constraint analysis: extract structured information from ConstraintNode expressions.
 /// Used by fixtures, schemas, doc comments, Bean Validation, and TryFrom generation.
 
+pub mod guarantee;
+
 use crate::parser::ast::*;
 use crate::ir::nodes::*;
 

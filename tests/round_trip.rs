@@ -251,6 +251,7 @@ fn check_ts_self_hosting() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

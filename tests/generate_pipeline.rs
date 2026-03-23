@@ -7,6 +7,7 @@ fn test_config(dir: &str) -> GenerateConfig {
         output_dir: dir.to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     }
 }
 
@@ -73,6 +74,7 @@ fn generate_detects_warnings() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -96,6 +98,7 @@ fn generate_warnings_error_level_fails() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Error,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config);
@@ -118,6 +121,7 @@ fn generate_detects_missing_inverse() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -147,6 +151,7 @@ fn generate_no_missing_inverse_when_constrained() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -172,6 +177,7 @@ fn generate_detects_unconstrained_transitivity() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -199,6 +205,7 @@ fn generate_no_unconstrained_transitivity_when_fact_exists() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -228,6 +235,7 @@ fn generate_detects_unhandled_response_pattern() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -256,6 +264,7 @@ fn generate_detects_missing_error_propagation() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -285,6 +294,7 @@ fn generate_no_unhandled_when_all_variants_have_preds() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -314,6 +324,7 @@ fn generate_no_unhandled_for_single_child_abstract() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     let result = generate::run(&model_path, &config).unwrap();
 

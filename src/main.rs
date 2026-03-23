@@ -26,6 +26,9 @@ enum Commands {
         /// Comma-separated feature flags (e.g., serde)
         #[arg(long, value_delimiter = ',')]
         features: Vec<String>,
+        /// Force JSON Schema generation (default: auto per language — on for TS/Java, off for Rust/Kotlin)
+        #[arg(long)]
+        schema: Option<bool>,
     },
     /// Check structural consistency between Alloy model and implementation
     Check {
@@ -69,7 +72,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { model, target, output, warnings, features } => {
+        Commands::Generate { model, target, output, warnings, features, schema } => {
             let config = GenerateConfig {
                 target,
                 output_dir: output,
@@ -79,6 +82,7 @@ fn main() {
                     WarningArg::Off   => WarningLevel::Off,
                 },
                 features,
+                schema,
             };
             match generate::run(&model, &config) {
                 Ok(result) => {

@@ -410,6 +410,29 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // Rust-specific: annotate type-level guarantees
+        {
+            let sig_constraints = analyze::analyze(ir);
+            let related: Vec<_> = params.iter()
+                .flat_map(|(_, tname)| {
+                    sig_constraints.iter().filter(move |c| match c {
+                        analyze::ConstraintInfo::Presence { sig_name, .. } => sig_name == tname,
+                        _ => false,
+                    })
+                })
+                .collect();
+            use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};
+            for c in &related {
+                if can_guarantee_by_type(c, TargetLang::Rust) == Guarantee::FullyByType {
+                    match c {
+                        analyze::ConstraintInfo::Presence { field_name, .. } => {
+                            writeln!(out, "/// Type-guaranteed: null safety via Option<T> for field `{field_name}`").unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
         writeln!(out, "/// Invariant derived from Alloy fact.").unwrap();
         // Feature 6: add @unique annotation when disj is used
         if expr_uses_disj(&constraint.expr) {
@@ -514,6 +537,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     }
 
     // Invariant tests — call each invariant function
+    // Rust has a strong type system: skip tests for constraints guaranteed by types.
+    let all_constraints = analyze::analyze(ir);
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
@@ -523,7 +548,42 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let test_name = format!("invariant_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
 
+        // Check the analyzed constraints for the sigs referenced by this fact
+        let sig_constraints: Vec<&analyze::ConstraintInfo> = params.iter()
+            .flat_map(|(_, tname)| {
+                all_constraints.iter().filter(move |c| match c {
+                    analyze::ConstraintInfo::Presence { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::CardinalityBound { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::NoSelfRef { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::Acyclic { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::Membership { sig_name, .. } => sig_name == tname,
+                    _ => false,
+                })
+            })
+            .collect();
+
+        use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};
+
+        // If ALL related constraints are FullyByType, skip this test
+        let all_fully = !sig_constraints.is_empty() && sig_constraints.iter().all(|c| {
+            can_guarantee_by_type(c, TargetLang::Rust) == Guarantee::FullyByType
+        });
+
+        if all_fully {
+            writeln!(out, "    // Type-guaranteed: {} — no test needed (Rust type system encodes this)", fact_name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        // Check if any constraint is PartiallyByType → generate regression test
+        let any_partial = sig_constraints.iter().any(|c| {
+            can_guarantee_by_type(c, TargetLang::Rust) == Guarantee::PartiallyByType
+        });
+
         writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
+        if any_partial {
+            writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
+        }
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
         for (pname, tname) in &params {

@@ -111,6 +111,26 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
         return;
     }
 
+    // Kotlin-specific: single-field wrappers with constraints → @JvmInline value class
+    // Only when: single field, has cardinality constraint (suggests validated wrapper),
+    // not self-referential, not targeting a lone/some sig
+    if s.fields.len() == 1 && s.parent.is_none() && !s.is_enum {
+        let f = &s.fields[0];
+        let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
+        let has_constraint = analyze::constraints_for_sig(ir, &s.name).iter().any(|c| {
+            matches!(c, analyze::ConstraintInfo::CardinalityBound { .. })
+        });
+        if has_constraint
+            && f.mult == Multiplicity::One && f.target != s.name && f.value_type.is_none()
+            && target_mult == SigMultiplicity::Default
+        {
+            let type_str = mult_to_kt_type(&f.target, &f.mult);
+            writeln!(out, "@JvmInline").unwrap();
+            writeln!(out, "value class {}(val {}: {type_str})", s.name, f.name).unwrap();
+            return;
+        }
+    }
+
     if s.fields.is_empty() {
         writeln!(out, "data class {}(val placeholder: Unit = Unit)", s.name).unwrap();
     } else {
@@ -399,6 +419,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // Kotlin has strong null safety (T?) — skip tests for null-safety constraints
+    let all_constraints = analyze::analyze(ir);
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
@@ -406,6 +428,28 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         };
         let fn_name = format!("assert{fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+
+        // Check if all related constraints are type-guaranteed in Kotlin
+        use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};
+        let sig_constraints: Vec<_> = params.iter()
+            .flat_map(|(_, tname)| {
+                all_constraints.iter().filter(move |c| match c {
+                    analyze::ConstraintInfo::Presence { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::CardinalityBound { sig_name, .. } => sig_name == tname,
+                    _ => false,
+                })
+            })
+            .collect();
+
+        let all_fully = !sig_constraints.is_empty() && sig_constraints.iter().all(|c| {
+            can_guarantee_by_type(c, TargetLang::Kotlin) == Guarantee::FullyByType
+        });
+
+        if all_fully {
+            writeln!(out, "    // Type-guaranteed: {} — Kotlin type system handles this", fact_name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "    @Test").unwrap();

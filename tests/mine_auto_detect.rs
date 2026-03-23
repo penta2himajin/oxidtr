@@ -85,6 +85,7 @@ fn mine_run_directory_auto_detect_rust() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -104,6 +105,7 @@ fn mine_run_directory_auto_detect_ts() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -121,6 +123,7 @@ fn mine_run_directory_auto_detect_kotlin() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -138,6 +141,7 @@ fn mine_run_directory_auto_detect_java() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

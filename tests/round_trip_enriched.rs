@@ -128,6 +128,7 @@ fn check_rust_self_hosting_with_enriched_output() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -150,6 +151,7 @@ fn check_rust_serde_self_hosting() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec!["serde".to_string()],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -168,6 +170,7 @@ fn check_ts_self_hosting_with_enriched_output() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -188,6 +191,7 @@ fn check_kotlin_self_hosting_with_enriched_output() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -209,6 +213,7 @@ fn check_java_self_hosting_with_enriched_output() {
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
         features: vec![],
+        schema: None,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
