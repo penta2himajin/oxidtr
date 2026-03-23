@@ -379,14 +379,19 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
         }
     }
 
-    // Case 2: "type": "array", "items": {"$ref": ...} -> Set
+    // Case 2: "type": "array", "items": {"$ref": ...} -> Set (if uniqueItems) or Seq
     if body.contains("\"array\"") {
         if let Some(items_pos) = body.find("\"items\"") {
             let rest = &body[items_pos..];
             if let Some(target) = extract_ref_from(rest) {
+                let mult = if body.contains("\"uniqueItems\"") && body.contains("true") {
+                    MinedMultiplicity::Set
+                } else {
+                    MinedMultiplicity::Seq
+                };
                 return Some(MinedField {
                     name: name.to_string(),
-                    mult: MinedMultiplicity::Set,
+                    mult,
                     target,
                 });
             }

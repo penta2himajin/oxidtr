@@ -25,8 +25,15 @@ fn type_to_mult_lone() {
 
 #[test]
 fn type_to_mult_set() {
-    let (mult, target) = impl_parser::type_to_mult("Vec<User>");
+    let (mult, target) = impl_parser::type_to_mult("BTreeSet<User>");
     assert_eq!(mult, Multiplicity::Set);
+    assert_eq!(target, "User");
+}
+
+#[test]
+fn type_to_mult_seq() {
+    let (mult, target) = impl_parser::type_to_mult("Vec<User>");
+    assert_eq!(mult, Multiplicity::Seq);
     assert_eq!(target, "User");
 }
 
@@ -61,7 +68,7 @@ pub struct User {
     assert_eq!(manager.target, "User");
 
     let reports = s.fields.iter().find(|f| f.name == "reports").expect("reports field");
-    assert_eq!(reports.mult, Multiplicity::Set);
+    assert_eq!(reports.mult, Multiplicity::Seq);
     assert_eq!(reports.target, "User");
 }
 

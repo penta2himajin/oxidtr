@@ -199,15 +199,19 @@ fn kt_type_to_mult(kt_type: &str) -> (MinedMultiplicity, String) {
     if let Some(inner) = t.strip_suffix('?') {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
-    // List<T> → set
-    if let Some(inner) = strip_wrapper(t, "List<", ">") {
-        return (MinedMultiplicity::Set, inner.to_string());
-    }
-    if let Some(inner) = strip_wrapper(t, "MutableList<", ">") {
-        return (MinedMultiplicity::Set, inner.to_string());
-    }
+    // Set<T> → set
     if let Some(inner) = strip_wrapper(t, "Set<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "MutableSet<", ">") {
+        return (MinedMultiplicity::Set, inner.to_string());
+    }
+    // List<T> → seq
+    if let Some(inner) = strip_wrapper(t, "List<", ">") {
+        return (MinedMultiplicity::Seq, inner.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "MutableList<", ">") {
+        return (MinedMultiplicity::Seq, inner.to_string());
     }
     (MinedMultiplicity::One, t.to_string())
 }

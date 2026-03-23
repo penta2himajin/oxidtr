@@ -42,7 +42,7 @@ fn kt_nullable_for_lone() {
 fn kt_list_for_set() {
     let files = generate_kt("sig Group { members: set User }\nsig User {}");
     let m = find_file(&files, "Models.kt");
-    assert!(m.contains("val members: List<User>"));
+    assert!(m.contains("val members: Set<User>"));
 }
 
 #[test]
@@ -176,7 +176,7 @@ fn java_nullable_for_lone() {
 fn java_list_for_set() {
     let files = generate_java("sig Group { members: set User }\nsig User {}");
     let m = find_file(&files, "Models.java");
-    assert!(m.contains("List<User> members"));
+    assert!(m.contains("Set<User> members"));
 }
 
 #[test]

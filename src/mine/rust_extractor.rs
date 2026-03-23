@@ -111,6 +111,9 @@ fn parse_rust_field(line: &str) -> Option<MinedField> {
 fn rust_type_to_mult(rust_type: &str) -> (MinedMultiplicity, String) {
     let t = rust_type.trim();
     if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
+        return (MinedMultiplicity::Seq, inner.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "BTreeSet<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());
     }
     if let Some(inner) = strip_wrapper(t, "HashSet<", ">") {

@@ -119,7 +119,19 @@ fn translate_inner(
             format!("{}.{}", ti(base, false), to_camel_case(field))
         }
 
-        Expr::Cardinality(inner) => format!("{}.length", ti(inner, false)),
+        Expr::Cardinality(inner) => {
+            // Set<T> uses .size, T[] uses .length
+            let is_set = if let Expr::FieldAccess { field, .. } = inner.as_ref() {
+                matches!(field_mult(field, ir), Some((Multiplicity::Set, _)))
+            } else {
+                false
+            };
+            if is_set {
+                format!("{}.size", ti(inner, false))
+            } else {
+                format!("{}.length", ti(inner, false))
+            }
+        }
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
@@ -143,6 +155,10 @@ fn translate_inner(
                         let r_base = ti(base, false);
                         if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
                             return format!("{r_base}.{} === {l}", to_camel_case(field));
+                        }
+                        // Set<T> uses .has(), T[] uses .includes()
+                        if let Some((Multiplicity::Set, _)) = field_mult(field, ir) {
+                            return format!("{r_base}.{}.has({l})", to_camel_case(field));
                         }
                     }
                     let r = ti(right, false);

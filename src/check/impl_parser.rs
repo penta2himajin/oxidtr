@@ -187,8 +187,11 @@ fn extract_fn_name(line: &str) -> Option<String> {
 /// e.g. "Option<Foo>" -> Lone, "Vec<Foo>" -> Set, "Foo" -> One
 pub fn type_to_mult(rust_type: &str) -> (Multiplicity, String) {
     let t = rust_type.trim();
-    if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
+    if let Some(inner) = strip_wrapper(t, "BTreeSet<", ">") {
         return (Multiplicity::Set, inner.to_string());
+    }
+    if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
+        return (Multiplicity::Seq, inner.to_string());
     }
     if let Some(inner) = strip_wrapper(t, "Option<Box<", ">>") {
         return (Multiplicity::Lone, inner.to_string());

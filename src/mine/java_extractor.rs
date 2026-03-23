@@ -151,9 +151,13 @@ fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
     let t = strip_block_comments(t);
     let t = t.trim();
 
-    // List<T> → set
-    if let Some(inner) = strip_wrapper(t, "List<", ">") {
+    // Set<T> → set
+    if let Some(inner) = strip_wrapper(t, "Set<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());
+    }
+    // List<T> → seq
+    if let Some(inner) = strip_wrapper(t, "List<", ">") {
+        return (MinedMultiplicity::Seq, inner.to_string());
     }
     // Optional<T> → lone
     if let Some(inner) = strip_wrapper(t, "Optional<", ">") {

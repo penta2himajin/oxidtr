@@ -82,6 +82,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 
     writeln!(out, "import java.util.List;").unwrap();
     writeln!(out, "import java.util.Optional;").unwrap();
+    writeln!(out, "import java.util.Set;").unwrap();
     writeln!(out).unwrap();
 
     for s in &ir.structures {
@@ -204,7 +205,8 @@ fn mult_to_java_type(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target} /* @Nullable */"),
-        Multiplicity::Set | Multiplicity::Seq => format!("List<{target}>"),
+        Multiplicity::Set => format!("Set<{target}>"),
+        Multiplicity::Seq => format!("List<{target}>"),
     }
 }
 
@@ -320,7 +322,8 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let type_str = match p.mult {
                     Multiplicity::One => p.type_name.clone(),
                     Multiplicity::Lone => format!("{} /* @Nullable */", p.type_name),
-                    Multiplicity::Set | Multiplicity::Seq => format!("List<{}>", p.type_name),
+                    Multiplicity::Set => format!("Set<{}>", p.type_name),
+                    Multiplicity::Seq => format!("List<{}>", p.type_name),
                 };
                 format!("{type_str} {}", p.name)
             })
@@ -447,7 +450,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 fn java_default_value(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => "List.of()".to_string(),
+        Multiplicity::Set => "Set.of()".to_string(),
+        Multiplicity::Seq => "List.of()".to_string(),
         Multiplicity::One => format!("default{target}()"),
     }
 }

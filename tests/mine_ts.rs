@@ -44,10 +44,23 @@ export interface Node {
 }
 
 #[test]
-fn mine_ts_array_to_set() {
+fn mine_ts_array_to_seq() {
     let src = r#"
 export interface Group {
   members: User[];
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let f = &mined.sigs[0].fields[0];
+    assert_eq!(f.mult, MinedMultiplicity::Seq);
+    assert_eq!(f.target, "User");
+}
+
+#[test]
+fn mine_ts_set_to_set() {
+    let src = r#"
+export interface Group {
+  members: Set<User>;
 }
 "#;
     let mined = ts_extractor::extract(src);

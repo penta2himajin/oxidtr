@@ -21,7 +21,7 @@ fn generate_empty_struct() {
     let files = generate_from("sig Foo {}");
     let content = find_file(&files, "models.rs");
     assert!(content.contains("pub struct Foo"));
-    assert!(content.contains("#[derive(Debug, Clone, PartialEq, Eq, Hash)]"));
+    assert!(content.contains("#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]"));
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn generate_vec_for_set() {
         sig Role {}
     "#);
     let content = find_file(&files, "models.rs");
-    assert!(content.contains("Vec<Role>"));
+    assert!(content.contains("BTreeSet<Role>"));
 }
 
 #[test]

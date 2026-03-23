@@ -166,17 +166,25 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {
     let t = ts_type.trim();
 
-    // T[] → set
+    // Set<T> → set
+    if let Some(inner) = strip_wrapper_ts(t, "Set<", ">") {
+        return (MinedMultiplicity::Set, inner.to_string());
+    }
+    // ReadonlySet<T> → set
+    if let Some(inner) = strip_wrapper_ts(t, "ReadonlySet<", ">") {
+        return (MinedMultiplicity::Set, inner.to_string());
+    }
+    // T[] → seq
     if let Some(inner) = t.strip_suffix("[]") {
-        return (MinedMultiplicity::Set, inner.to_string());
+        return (MinedMultiplicity::Seq, inner.to_string());
     }
-    // Array<T> → set
+    // Array<T> → seq
     if let Some(inner) = strip_wrapper_ts(t, "Array<", ">") {
-        return (MinedMultiplicity::Set, inner.to_string());
+        return (MinedMultiplicity::Seq, inner.to_string());
     }
-    // ReadonlyArray<T> → set
+    // ReadonlyArray<T> → seq
     if let Some(inner) = strip_wrapper_ts(t, "ReadonlyArray<", ">") {
-        return (MinedMultiplicity::Set, inner.to_string());
+        return (MinedMultiplicity::Seq, inner.to_string());
     }
     // T | null or null | T → lone
     if t.contains(" | null") || t.contains("null | ") {

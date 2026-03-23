@@ -123,6 +123,7 @@ where F: Fn(&str) -> mine::MinedModel {
                     mine::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
                     mine::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
                     mine::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    mine::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
                 };
                 ExtractedField {
                     name: f.name.clone(),

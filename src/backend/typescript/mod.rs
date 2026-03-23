@@ -169,7 +169,8 @@ fn mult_to_ts_type(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target} | null"),
-        Multiplicity::Set | Multiplicity::Seq => format!("{target}[]"),
+        Multiplicity::Set => format!("Set<{target}>"),
+        Multiplicity::Seq => format!("{target}[]"),
     }
 }
 
@@ -288,7 +289,8 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let type_str = match p.mult {
                     Multiplicity::One => format!("M.{}", p.type_name),
                     Multiplicity::Lone => format!("M.{} | null", p.type_name),
-                    Multiplicity::Set | Multiplicity::Seq => format!("M.{}[]", p.type_name),
+                    Multiplicity::Set => format!("Set<M.{}>", p.type_name),
+                    Multiplicity::Seq => format!("M.{}[]", p.type_name),
                 };
                 format!("{}: {type_str}", to_camel_case(&p.name))
             })
@@ -483,7 +485,8 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
 fn ts_default_value(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => "[]".to_string(),
+        Multiplicity::Set => "new Set()".to_string(),
+        Multiplicity::Seq => "[]".to_string(),
         Multiplicity::One => format!("default{}()", target),
     }
 }

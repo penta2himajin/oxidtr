@@ -137,6 +137,7 @@ pub enum MinedMultiplicity {
     One,
     Lone,
     Set,
+    Seq,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

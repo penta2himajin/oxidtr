@@ -79,6 +79,15 @@ fn generate_models_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Str
 fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     let mut out = String::new();
 
+    // Check if any field uses Set multiplicity → need BTreeSet import
+    let needs_btreeset = ir.structures.iter().any(|s| {
+        s.fields.iter().any(|f| f.mult == Multiplicity::Set)
+    });
+    if needs_btreeset {
+        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+        writeln!(out).unwrap();
+    }
+
     // Collect parent→children mapping for enum generation
     let children: HashMap<String, Vec<String>> = {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
@@ -147,7 +156,7 @@ fn generate_enum(
         .collect();
 
     if use_serde {
-        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]").unwrap();
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
         // Check if any variant has fields — if so, use tagged representation
         let has_data_variants = children.map_or(false, |vs| {
             vs.iter().any(|v| struct_map.get(v.as_str()).map_or(false, |st| !st.fields.is_empty()))
@@ -156,7 +165,7 @@ fn generate_enum(
             writeln!(out, "#[serde(tag = \"type\")]").unwrap();
         }
     } else {
-        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]").unwrap();
     }
     writeln!(out, "pub enum {} {{", s.name).unwrap();
     if let Some(variants) = children {
@@ -189,9 +198,9 @@ fn generate_struct(
     use_serde: bool,
 ) {
     if use_serde {
-        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]").unwrap();
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
     } else {
-        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]").unwrap();
     }
     if s.fields.is_empty() {
         writeln!(out, "pub struct {};", s.name).unwrap();
@@ -222,7 +231,7 @@ fn multiplicity_to_type(target: &str, mult: &Multiplicity, is_self_ref: bool) ->
                 format!("Option<{target}>")
             }
         }
-        Multiplicity::Set => format!("Vec<{target}>"),
+        Multiplicity::Set => format!("BTreeSet<{target}>"),
         Multiplicity::Seq => format!("Vec<{target}>"),
     }
 }
@@ -231,6 +240,14 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
     writeln!(out, "use crate::models::*;").unwrap();
+
+    // Check if any operation parameter uses Set multiplicity
+    let needs_btreeset = ir.operations.iter().any(|op| {
+        op.params.iter().any(|p| p.mult == Multiplicity::Set)
+    });
+    if needs_btreeset {
+        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+    }
     writeln!(out).unwrap();
 
     for op in &ir.operations {
@@ -242,7 +259,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let type_str = match p.mult {
                     Multiplicity::One => format!("&{}", p.type_name),
                     Multiplicity::Lone => format!("Option<&{}>", p.type_name),
-                    Multiplicity::Set => format!("&[{}]", p.type_name),
+                    Multiplicity::Set => format!("&BTreeSet<{}>", p.type_name),
                     Multiplicity::Seq => format!("&[{}]", p.type_name),
                 };
                 format!("{}: {type_str}", to_snake_case(&p.name))
@@ -656,6 +673,16 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
 
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use crate::models::*;").unwrap();
+
+    // Check if any fixture needs BTreeSet
+    let needs_btreeset = ir.structures.iter().any(|s| {
+        !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
+            && s.fields.iter().any(|f| f.mult == Multiplicity::Set)
+    });
+    if needs_btreeset {
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+    }
     writeln!(out).unwrap();
 
     for s in &ir.structures {
@@ -684,7 +711,8 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
 fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool) -> String {
     match mult {
         Multiplicity::Lone => "None".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => "Vec::new()".to_string(),
+        Multiplicity::Set => "BTreeSet::new()".to_string(),
+        Multiplicity::Seq => "Vec::new()".to_string(),
         Multiplicity::One => {
             if is_boxed {
                 format!("Box::new(default_{}())", to_snake_case(target))

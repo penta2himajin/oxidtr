@@ -45,10 +45,23 @@ pub struct Node {
 }
 
 #[test]
-fn mine_rust_vec_to_set() {
+fn mine_rust_vec_to_seq() {
     let src = r#"
 pub struct Group {
     pub members: Vec<User>,
+}
+"#;
+    let mined = rust_extractor::extract(src);
+    let f = &mined.sigs[0].fields[0];
+    assert_eq!(f.mult, MinedMultiplicity::Seq);
+    assert_eq!(f.target, "User");
+}
+
+#[test]
+fn mine_rust_btreeset_to_set() {
+    let src = r#"
+pub struct Group {
+    pub members: BTreeSet<User>,
 }
 "#;
     let mined = rust_extractor::extract(src);

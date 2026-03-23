@@ -179,7 +179,8 @@ fn mult_to_kt_type(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target}?"),
-        Multiplicity::Set | Multiplicity::Seq => format!("List<{target}>"),
+        Multiplicity::Set => format!("Set<{target}>"),
+        Multiplicity::Seq => format!("List<{target}>"),
     }
 }
 
@@ -289,7 +290,8 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let type_str = match p.mult {
                     Multiplicity::One => p.type_name.clone(),
                     Multiplicity::Lone => format!("{}?", p.type_name),
-                    Multiplicity::Set | Multiplicity::Seq => format!("List<{}>", p.type_name),
+                    Multiplicity::Set => format!("Set<{}>", p.type_name),
+                    Multiplicity::Seq => format!("List<{}>", p.type_name),
                 };
                 format!("{}: {type_str}", p.name)
             })
@@ -434,7 +436,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 fn kt_default_value(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => "emptyList()".to_string(),
+        Multiplicity::Set => "emptySet()".to_string(),
+        Multiplicity::Seq => "emptyList()".to_string(),
         Multiplicity::One => format!("default{target}()"),
     }
 }

@@ -103,7 +103,12 @@ fn write_field_schema(out: &mut String, f: &IRField) {
             writeln!(out, "            {{ \"type\": \"null\" }}").unwrap();
             writeln!(out, "          ]").unwrap();
         }
-        Multiplicity::Set | Multiplicity::Seq => {
+        Multiplicity::Set => {
+            writeln!(out, "          \"type\": \"array\",").unwrap();
+            writeln!(out, "          \"uniqueItems\": true,").unwrap();
+            writeln!(out, "          \"items\": {{ \"$ref\": \"#/definitions/{}\" }}", f.target).unwrap();
+        }
+        Multiplicity::Seq => {
             writeln!(out, "          \"type\": \"array\",").unwrap();
             writeln!(out, "          \"items\": {{ \"$ref\": \"#/definitions/{}\" }}", f.target).unwrap();
         }

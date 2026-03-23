@@ -44,6 +44,7 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
             MinedMultiplicity::One => "one",
             MinedMultiplicity::Lone => "lone",
             MinedMultiplicity::Set => "set",
+            MinedMultiplicity::Seq => "seq",
         };
         let comma = if i < sig.fields.len() - 1 { "," } else { "" };
         writeln!(out, "  {}: {mult} {}{comma}", f.name, f.target).unwrap();

@@ -37,7 +37,7 @@ fn ts_generates_lone_as_nullable() {
 fn ts_generates_set_as_array() {
     let files = generate_from("sig Group { members: set User }\nsig User {}");
     let models = find_file(&files, "models.ts");
-    assert!(models.contains("members: User[];"));
+    assert!(models.contains("members: Set<User>;"));
 }
 
 #[test]
@@ -100,7 +100,7 @@ fn ts_expr_uses_every_some_includes() {
     let inv = find_file(&files, "invariants.ts");
     assert!(inv.contains(".every("), "expected .every()");
     assert!(inv.contains(".some("), "expected .some()");
-    assert!(inv.contains(".includes("), "expected .includes()");
+    assert!(inv.contains(".has("), "expected .has() for Set membership");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn ts_expr_uses_length_for_cardinality() {
         "sig Box { items: set Item }\nsig Item {}\nfact Bounded { all b: Box | #b.items = #b.items }",
     );
     let inv = find_file(&files, "invariants.ts");
-    assert!(inv.contains(".length"), "expected .length for cardinality");
+    assert!(inv.contains(".size"), "expected .size for Set cardinality");
 }
 
 #[test]
