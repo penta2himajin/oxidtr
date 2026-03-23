@@ -642,7 +642,7 @@ fn extract_ts_facts(
         }
 
         // .length === 0 or .length > 0 → fact candidate (Medium)
-        if line.contains(".length") {
+        if line.contains(".length") && !line.contains("?.") {
             facts.push(MinedFactCandidate {
                 alloy_text: extract_length_fact(line),
                 confidence: Confidence::Medium,
@@ -651,8 +651,16 @@ fn extract_ts_facts(
             });
         }
 
-        // === null or !== null → lone field fact (Medium)
-        if line.contains("=== null") || line.contains("!== null") {
+        // Category 1: if (x === null) throw → null guard with presence info
+        if (line.contains("=== null") || line.contains("!== null")) && line.contains("throw") {
+            let field = extract_null_guard_field(line);
+            facts.push(MinedFactCandidate {
+                alloy_text: format!("some {field} -- presence constraint"),
+                confidence: Confidence::Medium,
+                source_location: loc.clone(),
+                source_pattern: "null guard throw".to_string(),
+            });
+        } else if line.contains("=== null") || line.contains("!== null") {
             facts.push(MinedFactCandidate {
                 alloy_text: "-- null check (lone field constraint)".to_string(),
                 confidence: Confidence::Medium,
@@ -661,8 +669,36 @@ fn extract_ts_facts(
             });
         }
 
-        // throw new Error → precondition guard (Low)
-        if line.contains("throw new Error") || line.contains("throw ") {
+        // Category 1: if (x === undefined) throw → presence guard
+        if line.contains("=== undefined") && line.contains("throw") {
+            let field = extract_null_guard_field(line);
+            facts.push(MinedFactCandidate {
+                alloy_text: format!("some {field} -- presence constraint"),
+                confidence: Confidence::Medium,
+                source_location: loc.clone(),
+                source_pattern: "null guard throw".to_string(),
+            });
+        }
+
+        // Category 1: Array.isArray type guard
+        if line.contains("Array.isArray(") && line.contains("throw") {
+            if let Some(pos) = line.find("Array.isArray(") {
+                let rest = &line[pos + "Array.isArray(".len()..];
+                let end = rest.find(')').unwrap_or(rest.len());
+                let arg = rest[..end].trim();
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{arg} is seq -- type guard"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "type guard Array.isArray".to_string(),
+                });
+            }
+        }
+
+        // throw new Error → precondition guard (Low) — only if not already handled above
+        if (line.contains("throw new Error") || line.contains("throw "))
+            && !line.contains("=== null") && !line.contains("=== undefined")
+            && !line.contains("Array.isArray") {
             facts.push(MinedFactCandidate {
                 alloy_text: "-- precondition guard (review)".to_string(),
                 confidence: Confidence::Low,
@@ -670,7 +706,148 @@ fn extract_ts_facts(
                 source_pattern: "throw pattern".to_string(),
             });
         }
+
+        // Category 3: switch on discriminant → variant evidence
+        if line.contains("switch (") || line.contains("switch(") {
+            let variants = collect_switch_variants(body, *ln);
+            if !variants.is_empty() {
+                let variants_str = variants.join(", ");
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- enum variants: {variants_str}"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "switch exhaustiveness".to_string(),
+                });
+            }
+        }
+
+        // Category 4: optional chaining ?.
+        if line.contains("?.") && !line.contains("??") {
+            if let Some(field) = extract_optional_chain_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is lone (optional)"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "optional chaining".to_string(),
+                });
+            }
+        }
+
+        // Category 4: nullish coalescing ??
+        if line.contains("??") {
+            if let Some(field) = extract_nullish_coalescing_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is lone (with default)"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "nullish coalescing".to_string(),
+                });
+            }
+        }
+
+        // Category 4: non-null assertion x!
+        if line.contains("!.") {
+            if let Some(field) = extract_non_null_assertion_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is one (non-null assertion)"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "non-null assertion".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .filter() — subset
+        if line.contains(".filter(") {
+            if let Some(collection) = extract_ts_collection_before(line, ".filter(") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- subset of {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "filter subset".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .map() — field projection
+        if line.contains(".map(") && !line.contains(".filter(") {
+            if let Some(collection) = extract_ts_collection_before(line, ".map(") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- field projection from {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "map projection".to_string(),
+                });
+            }
+        }
     }
+}
+
+/// Extract the field name from a null guard like "if (x === null)" or "if (x === null || x === undefined)"
+fn extract_null_guard_field(line: &str) -> String {
+    // Try to find identifier before === null
+    if let Some(pos) = line.find("=== null") {
+        let before = line[..pos].trim();
+        let field = before.rsplit(|c: char| c == '(' || c == ' ' || c == '!').next().unwrap_or(before).trim();
+        if !field.is_empty() {
+            return field.to_string();
+        }
+    }
+    "unknown".to_string()
+}
+
+/// Collect switch case variant names from body lines.
+fn collect_switch_variants(body: &[(usize, String)], switch_ln: usize) -> Vec<String> {
+    let mut variants = Vec::new();
+    let mut in_switch = false;
+    for (ln, line) in body {
+        if *ln == switch_ln { in_switch = true; continue; }
+        if !in_switch { continue; }
+        let trimmed = line.trim();
+        if trimmed == "}" { break; }
+        // case "Variant": or case Variant:
+        if trimmed.starts_with("case ") {
+            let rest = &trimmed[5..];
+            let end = rest.find(':').unwrap_or(rest.len());
+            let variant = rest[..end].trim().trim_matches('"');
+            if !variant.is_empty() {
+                variants.push(variant.to_string());
+            }
+        }
+    }
+    variants
+}
+
+/// Extract field before ?. operator
+fn extract_optional_chain_field(line: &str) -> Option<String> {
+    let pos = line.find("?.")?;
+    let before = line[..pos].trim();
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{' || c == ',').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract field before ?? operator
+fn extract_nullish_coalescing_field(line: &str) -> Option<String> {
+    let pos = line.find("??")?;
+    let before = line[..pos].trim();
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract field before !. non-null assertion
+fn extract_non_null_assertion_field(line: &str) -> Option<String> {
+    let pos = line.find("!.")?;
+    let before = line[..pos].trim();
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{' || c == ',').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract collection name before a method call
+fn extract_ts_collection_before(line: &str, method: &str) -> Option<String> {
+    let pos = line.find(method)?;
+    let before = line[..pos].trim();
+    let collection = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if collection.is_empty() { None } else { Some(collection.to_string()) }
 }
 
 fn extract_includes_fact(line: &str) -> String {

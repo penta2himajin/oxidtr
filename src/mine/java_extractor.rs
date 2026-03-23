@@ -686,7 +686,7 @@ fn extract_java_facts(
     for (ln, line) in body {
         let loc = format!("line {}", ln + 1);
 
-        if line.contains(".contains(") {
+        if line.contains(".contains(") && !line.contains(".filter(") {
             facts.push(MinedFactCandidate {
                 alloy_text: extract_contains_fact(line),
                 confidence: Confidence::Medium,
@@ -704,7 +704,28 @@ fn extract_java_facts(
             });
         }
 
-        if line.contains("assert ") || line.contains("assertEquals") || line.contains("assertTrue") {
+        // Category 1: Objects.requireNonNull(field)
+        if line.contains("Objects.requireNonNull(") {
+            if let Some(field) = extract_require_non_null_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("some {field} -- field is one (not null)"),
+                    confidence: Confidence::High,
+                    source_location: loc.clone(),
+                    source_pattern: "requireNonNull".to_string(),
+                });
+            }
+        }
+
+        // Category 1: assert with size constraint
+        if line.contains("assert ") && line.contains(".size()") {
+            let alloy_text = translate_java_assert(line);
+            facts.push(MinedFactCandidate {
+                alloy_text,
+                confidence: Confidence::Medium,
+                source_location: loc.clone(),
+                source_pattern: "assert size".to_string(),
+            });
+        } else if line.contains("assert ") || line.contains("assertEquals") || line.contains("assertTrue") {
             facts.push(MinedFactCandidate {
                 alloy_text: "-- assertion".to_string(),
                 confidence: Confidence::High,
@@ -713,7 +734,74 @@ fn extract_java_facts(
             });
         }
 
-        if line.contains("throw ") {
+        // Category 1: if (x < 0) throw IllegalArgumentException → fact candidate with negated condition
+        if line.contains("throw new IllegalArgumentException")
+            || line.contains("throw new IllegalStateException") {
+            if let Some(fact) = extract_throw_guard_fact(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: fact,
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "throw IllegalArgument guard".to_string(),
+                });
+            }
+        }
+
+        // Category 2: if (field == null) throw → null guard
+        if line.contains("== null") && line.contains("throw") {
+            let field = extract_java_null_guard_field(line);
+            facts.push(MinedFactCandidate {
+                alloy_text: format!("some {field} -- @NotNull evidence"),
+                confidence: Confidence::Medium,
+                source_location: loc.clone(),
+                source_pattern: "null guard throw".to_string(),
+            });
+        }
+
+        // Category 2: .orElseThrow() → presence constraint
+        if line.contains(".orElseThrow(") || line.contains(".orElseThrow()") {
+            if let Some(field) = extract_or_else_throw_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("some {field} -- presence constraint"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "orElseThrow presence".to_string(),
+                });
+            }
+        }
+
+        // Category 3: switch exhaustiveness
+        if line.contains("switch (") || line.contains("switch(") {
+            let variants = collect_java_switch_variants(body, *ln);
+            if !variants.is_empty() {
+                let variants_str = variants.join(", ");
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- enum variants: {variants_str}"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "switch exhaustiveness".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .stream().filter() — subset
+        if line.contains(".filter(") && line.contains(".stream()") {
+            if let Some(collection) = extract_java_collection_before(line, ".stream()") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- subset of {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "filter subset".to_string(),
+                });
+            }
+        }
+
+        // throw pattern (generic fallback) — only if not already handled
+        if line.contains("throw ")
+            && !line.contains("== null")
+            && !line.contains("IllegalArgumentException")
+            && !line.contains("IllegalStateException")
+            && !line.contains("orElseThrow") {
             facts.push(MinedFactCandidate {
                 alloy_text: "-- precondition guard (review)".to_string(),
                 confidence: Confidence::Low,
@@ -722,6 +810,132 @@ fn extract_java_facts(
             });
         }
     }
+}
+
+/// Extract field from Objects.requireNonNull(field)
+fn extract_require_non_null_field(line: &str) -> Option<String> {
+    let start = line.find("Objects.requireNonNull(")?;
+    let rest = &line[start + "Objects.requireNonNull(".len()..];
+    let end = rest.find(')').or_else(|| rest.find(','))?;
+    let field = rest[..end].trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Translate Java assert with .size() to Alloy-like syntax.
+fn translate_java_assert(line: &str) -> String {
+    let trimmed = line.trim().strip_prefix("assert ").unwrap_or(line.trim()).trim_end_matches(';').trim();
+    let mut result = trimmed.to_string();
+    // .size() → #
+    if result.contains(".size()") {
+        if let Some(pos) = result.find(".size()") {
+            let before = &result[..pos];
+            let after = &result[pos + 7..];
+            result = format!("#{before}{after}");
+        }
+    }
+    result
+}
+
+/// Extract negated condition from `if (x < 0) throw new IllegalArgumentException()`
+fn extract_throw_guard_fact(line: &str) -> Option<String> {
+    // Look for "if (COND)" pattern before throw
+    let if_pos = line.find("if (")?;
+    let cond_start = if_pos + 4;
+    let rest = &line[cond_start..];
+    let cond_end = rest.find(')')?;
+    let cond = rest[..cond_end].trim();
+    // Negate the condition
+    let negated = negate_java_condition(cond);
+    Some(negated)
+}
+
+/// Negate a simple Java condition: "x < 0" → "x >= 0"
+fn negate_java_condition(cond: &str) -> String {
+    if let Some(pos) = cond.find(" < ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 3..];
+        return format!("{left} >= {right}");
+    }
+    if let Some(pos) = cond.find(" > ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 3..];
+        return format!("{left} <= {right}");
+    }
+    if let Some(pos) = cond.find(" <= ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 4..];
+        return format!("{left} > {right}");
+    }
+    if let Some(pos) = cond.find(" >= ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 4..];
+        return format!("{left} < {right}");
+    }
+    if let Some(pos) = cond.find(" == ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 4..];
+        return format!("{left} != {right}");
+    }
+    if let Some(pos) = cond.find(" != ") {
+        let left = &cond[..pos];
+        let right = &cond[pos + 4..];
+        return format!("{left} = {right}");
+    }
+    format!("not ({cond})")
+}
+
+/// Extract field from `if (field == null) throw`
+fn extract_java_null_guard_field(line: &str) -> String {
+    if let Some(pos) = line.find("== null") {
+        let before = line[..pos].trim();
+        let field = before.rsplit(|c: char| c == '(' || c == ' ' || c == '!').next().unwrap_or(before).trim();
+        if !field.is_empty() { return field.to_string(); }
+    }
+    "unknown".to_string()
+}
+
+/// Extract field from `opt.orElseThrow()`
+fn extract_or_else_throw_field(line: &str) -> Option<String> {
+    let pos = line.find(".orElseThrow(")?;
+    let before = line[..pos].trim();
+    // Handle `return opt.orElseThrow()`
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Collect switch case variant names.
+fn collect_java_switch_variants(body: &[(usize, String)], switch_ln: usize) -> Vec<String> {
+    let mut variants = Vec::new();
+    let mut in_switch = false;
+    for (ln, line) in body {
+        if *ln == switch_ln { in_switch = true; continue; }
+        if !in_switch { continue; }
+        let trimmed = line.trim();
+        if trimmed == "}" { break; }
+        // "case Variant:" or "case Variant v ->"
+        if trimmed.starts_with("case ") {
+            let rest = &trimmed[5..];
+            // Find end: either ':' or first space (for pattern matching)
+            let end = rest.find(':')
+                .or_else(|| rest.find(' '))
+                .unwrap_or(rest.len());
+            let variant = rest[..end].trim();
+            if !variant.is_empty()
+                && variant.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                && variant.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                variants.push(variant.to_string());
+            }
+        }
+    }
+    variants
+}
+
+/// Extract collection name before a method chain
+fn extract_java_collection_before(line: &str, method: &str) -> Option<String> {
+    let pos = line.find(method)?;
+    let before = line[..pos].trim();
+    let collection = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if collection.is_empty() { None } else { Some(collection.to_string()) }
 }
 
 fn extract_contains_fact(line: &str) -> String {

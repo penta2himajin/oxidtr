@@ -681,8 +681,10 @@ fn extract_facts_from_lines(
         // assert! / debug_assert! → assert candidate (High)
         if line.contains("assert!(") || line.contains("debug_assert!(") {
             if let Some(cond) = extract_assert_condition(line) {
+                // Try to translate the condition to Alloy-like syntax
+                let alloy_text = translate_rust_condition(&cond);
                 facts.push(MinedFactCandidate {
-                    alloy_text: cond.clone(),
+                    alloy_text,
                     confidence: Confidence::High,
                     source_location: loc.clone(),
                     source_pattern: format!("assert!({cond})"),
@@ -701,7 +703,7 @@ fn extract_facts_from_lines(
         }
 
         // .contains() → fact candidate: in (Medium)
-        if line.contains(".contains(") {
+        if line.contains(".contains(") && !line.contains(".filter(") {
             facts.push(MinedFactCandidate {
                 alloy_text: extract_contains_fact(line),
                 confidence: Confidence::Medium,
@@ -719,7 +721,205 @@ fn extract_facts_from_lines(
                 source_pattern: "return Err pattern".to_string(),
             });
         }
+
+        // Category 2: Guard clause — is_none() guard
+        if line.contains(".is_none()") && (line.contains("return Err") || line.contains("return ")) {
+            if let Some(pos) = line.find(".is_none()") {
+                let before = line[..pos].trim().trim_start_matches("if ").trim();
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("some {before} -- field should be one not lone"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "is_none guard".to_string(),
+                });
+            }
+        }
+
+        // Category 2: let Some(x) = field else { return Err(...) }
+        if line.contains("let Some(") && line.contains("else") {
+            if let Some(field) = extract_let_else_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("some {field} -- presence constraint"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "let-else presence guard".to_string(),
+                });
+            }
+        }
+
+        // Category 3: match exhaustiveness — detect match arms
+        if line.contains("match ") {
+            // Collect subsequent lines for match arms
+            let match_arms = collect_match_variants(body, *ln);
+            if !match_arms.is_empty() {
+                let variants_str = match_arms.join(", ");
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- enum variants: {variants_str}"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "match exhaustiveness".to_string(),
+                });
+            }
+        }
+
+        // Category 4: if let Some(x) = field
+        if line.contains("if let Some(") {
+            if let Some(field) = extract_if_let_some_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is lone (optional)"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "if let Some".to_string(),
+                });
+            }
+        }
+
+        // Category 4: .unwrap() — unsafe presence hint
+        if line.contains(".unwrap()") && !line.contains("unwrap_or") {
+            if let Some(pos) = line.find(".unwrap()") {
+                let before = line[..pos].trim();
+                // Extract the last identifier/chain before .unwrap()
+                let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(').next().unwrap_or(before).trim();
+                if !field.is_empty() {
+                    facts.push(MinedFactCandidate {
+                        alloy_text: format!("{field} is one (unsafe unwrap)"),
+                        confidence: Confidence::Low,
+                        source_location: loc.clone(),
+                        source_pattern: "unwrap hint".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Category 4: .unwrap_or(default) — lone with default
+        if line.contains(".unwrap_or(") || line.contains(".unwrap_or_default()") {
+            if let Some(pos) = line.find(".unwrap_or") {
+                let before = line[..pos].trim();
+                let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(').next().unwrap_or(before).trim();
+                if !field.is_empty() {
+                    facts.push(MinedFactCandidate {
+                        alloy_text: format!("{field} is lone (with default)"),
+                        confidence: Confidence::Medium,
+                        source_location: loc.clone(),
+                        source_pattern: "unwrap_or default".to_string(),
+                    });
+                }
+            }
+        }
+
+        // Category 5: .filter() — subset relation
+        if line.contains(".filter(") || line.contains(".iter().filter(") {
+            if let Some(collection) = extract_collection_before_method(line, ".filter(") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- subset of {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "filter subset".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .map() — field mapping
+        if line.contains(".map(") && (line.contains(".iter().map(") || line.contains(".into_iter().map(")) {
+            if let Some(collection) = extract_collection_before_method(line, ".map(")
+                .or_else(|| extract_collection_before_method(line, ".iter().map(")) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- field projection from {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "map projection".to_string(),
+                });
+            }
+        }
     }
+}
+
+/// Translate a Rust condition string to Alloy-like syntax.
+/// Handles .len() → # and .is_empty() → some/no conversions.
+fn translate_rust_condition(cond: &str) -> String {
+    let mut result = cond.to_string();
+    // .len() → # prefix
+    if result.contains(".len()") {
+        if let Some(pos) = result.find(".len()") {
+            let before = &result[..pos];
+            let after = &result[pos + 6..];
+            result = format!("#{before}{after}");
+        }
+    }
+    // !xxx.is_empty() → some xxx
+    if result.starts_with('!') && result.contains(".is_empty()") {
+        let inner = result[1..].trim();
+        if let Some(pos) = inner.find(".is_empty()") {
+            let field = &inner[..pos];
+            return format!("some {field}");
+        }
+    }
+    result
+}
+
+/// Extract field name from `let Some(x) = FIELD else { ... }`
+fn extract_let_else_field(line: &str) -> Option<String> {
+    let eq_pos = line.find(" = ")?;
+    let after_eq = &line[eq_pos + 3..];
+    let field_end = after_eq.find(" else").or_else(|| after_eq.find(';')).unwrap_or(after_eq.len());
+    let field = after_eq[..field_end].trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract field name from `if let Some(x) = FIELD { ... }`
+fn extract_if_let_some_field(line: &str) -> Option<String> {
+    let eq_pos = line.find(" = ")?;
+    let after_eq = &line[eq_pos + 3..];
+    let field_end = after_eq.find(" {").or_else(|| after_eq.find('{')).unwrap_or(after_eq.len());
+    let field = after_eq[..field_end].trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Collect match arm variant names (Type::Variant) from body lines after a match statement.
+fn collect_match_variants(body: &[(usize, String)], match_ln: usize) -> Vec<String> {
+    let mut variants = Vec::new();
+    let mut in_match = false;
+    for (ln, line) in body {
+        if *ln == match_ln { in_match = true; continue; }
+        if !in_match { continue; }
+        let trimmed = line.trim();
+        if trimmed == "}" { break; }
+        // Match arms: "Type::Variant => ..." or "Type::Variant { ... } => ..."
+        if trimmed.contains("=>") {
+            let arm = trimmed.split("=>").next().unwrap_or("").trim();
+            // Extract variant: "Type::Variant" or "Type::Variant { ... }"
+            if let Some(variant) = extract_match_variant(arm) {
+                variants.push(variant);
+            }
+        }
+    }
+    variants
+}
+
+/// Extract variant name from a match arm pattern like "Status::Active" or "Status::Active { .. }"
+fn extract_match_variant(arm: &str) -> Option<String> {
+    let arm = arm.trim();
+    if arm == "_" || arm.is_empty() { return None; }
+    // "Type::Variant ..." → extract Variant
+    if let Some(pos) = arm.find("::") {
+        let after = &arm[pos + 2..];
+        let name: String = after.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_ascii_uppercase()) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Extract collection name before a method like .filter( or .map(
+fn extract_collection_before_method(line: &str, method: &str) -> Option<String> {
+    let pos = line.find(method)?;
+    let before = line[..pos].trim();
+    // Strip .iter() if present
+    let before = before.strip_suffix(".iter()").or_else(|| before.strip_suffix(".into_iter()")).unwrap_or(before);
+    // Get the last token (variable name)
+    let collection = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if collection.is_empty() { None } else { Some(collection.to_string()) }
 }
 
 fn extract_assert_condition(line: &str) -> Option<String> {

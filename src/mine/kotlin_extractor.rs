@@ -735,16 +735,105 @@ fn extract_kt_facts(
             });
         }
 
+        // Category 1: require(condition) / check(condition) → extract condition
         if line.contains("require(") || line.contains("check(") {
+            let cond = extract_kt_validation_condition(line);
             facts.push(MinedFactCandidate {
-                alloy_text: "-- precondition (require/check)".to_string(),
+                alloy_text: cond,
                 confidence: Confidence::High,
                 source_location: loc.clone(),
                 source_pattern: "require/check".to_string(),
             });
         }
 
-        if line.contains("throw ") || line.contains("TODO(") {
+        // Category 2: elvis throw — ?: throw
+        if line.contains("?: throw") {
+            if let Some(field) = extract_elvis_throw_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("some {field} -- presence constraint"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "elvis throw".to_string(),
+                });
+            }
+        }
+
+        // Category 2: elvis return — ?: return
+        if line.contains("?: return") {
+            if let Some(field) = extract_elvis_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is lone (optional)"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "elvis return".to_string(),
+                });
+            }
+        }
+
+        // Category 3: when exhaustiveness
+        if line.contains("when (") || line.contains("when(") {
+            let variants = collect_when_variants(body, *ln);
+            if !variants.is_empty() {
+                let variants_str = variants.join(", ");
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- enum variants: {variants_str}"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "when exhaustiveness".to_string(),
+                });
+            }
+        }
+
+        // Category 4: safe call ?.
+        if line.contains("?.") && !line.contains("?:") {
+            if let Some(field) = extract_kt_safe_call_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is lone (nullable)"),
+                    confidence: Confidence::Medium,
+                    source_location: loc.clone(),
+                    source_pattern: "safe call".to_string(),
+                });
+            }
+        }
+
+        // Category 4: non-null assertion !!
+        if line.contains("!!") {
+            if let Some(field) = extract_kt_double_bang_field(line) {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("{field} is one (non-null assertion)"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "non-null assertion".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .filter { } — subset
+        if line.contains(".filter {") || line.contains(".filter(") {
+            if let Some(collection) = extract_kt_collection_before(line, ".filter") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- subset of {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "filter subset".to_string(),
+                });
+            }
+        }
+
+        // Category 5: .map { } — field projection
+        if (line.contains(".map {") || line.contains(".map(")) && !line.contains(".filter") {
+            if let Some(collection) = extract_kt_collection_before(line, ".map") {
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("-- field projection from {collection}"),
+                    confidence: Confidence::Low,
+                    source_location: loc.clone(),
+                    source_pattern: "map projection".to_string(),
+                });
+            }
+        }
+
+        if (line.contains("throw ") || line.contains("TODO("))
+            && !line.contains("?: throw") {
             facts.push(MinedFactCandidate {
                 alloy_text: "-- precondition guard (review)".to_string(),
                 confidence: Confidence::Low,
@@ -753,6 +842,137 @@ fn extract_kt_facts(
             });
         }
     }
+}
+
+/// Extract condition from require(cond) or check(cond), translating to Alloy-like syntax.
+fn extract_kt_validation_condition(line: &str) -> String {
+    let keyword = if line.contains("require(") { "require(" } else { "check(" };
+    if let Some(start) = line.find(keyword) {
+        let rest = &line[start + keyword.len()..];
+        // Find matching close paren
+        let mut depth = 0;
+        let mut end = rest.len();
+        for (i, ch) in rest.chars().enumerate() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    if depth == 0 { end = i; break; }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        let cond = rest[..end].trim();
+        if !cond.is_empty() {
+            return translate_kt_condition(cond);
+        }
+    }
+    "-- precondition (require/check)".to_string()
+}
+
+/// Translate Kotlin condition to Alloy-like syntax.
+fn translate_kt_condition(cond: &str) -> String {
+    let mut result = cond.to_string();
+    // .size → #
+    if result.contains(".size ") {
+        if let Some(pos) = result.find(".size ") {
+            let before = &result[..pos];
+            let after = &result[pos + 5..];
+            result = format!("#{before}{after}");
+        }
+    }
+    // .isNotEmpty() → some XXX
+    if result.contains(".isNotEmpty()") {
+        if let Some(pos) = result.find(".isNotEmpty()") {
+            let field = &result[..pos];
+            return format!("some {field}");
+        }
+    }
+    // .isEmpty() → no XXX
+    if result.contains(".isEmpty()") {
+        if let Some(pos) = result.find(".isEmpty()") {
+            let field = &result[..pos];
+            return format!("no {field}");
+        }
+    }
+    result
+}
+
+/// Extract field from `val x = FIELD ?: throw ...`
+fn extract_elvis_throw_field(line: &str) -> Option<String> {
+    let pos = line.find("?: throw")?;
+    let before = line[..pos].trim();
+    // Look for the value after = sign
+    if let Some(eq) = before.rfind('=') {
+        let field = before[eq + 1..].trim();
+        if !field.is_empty() { return Some(field.to_string()); }
+    }
+    let field = before.rsplit(|c: char| c == ' ' || c == '(').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract field from elvis expression like `field?.xxx ?: return`
+fn extract_elvis_field(line: &str) -> Option<String> {
+    let pos = line.find("?: return")?;
+    let before = line[..pos].trim();
+    // Look for ?.
+    if let Some(safe_pos) = before.find("?.") {
+        // Get the field before ?.
+        let field_part = &before[..safe_pos];
+        if let Some(eq) = field_part.rfind('=') {
+            let field = field_part[eq + 1..].trim();
+            if !field.is_empty() { return Some(field.to_string()); }
+        }
+        let field = field_part.rsplit(|c: char| c == ' ' || c == '(').next().unwrap_or(field_part).trim();
+        if !field.is_empty() { return Some(field.to_string()); }
+    }
+    None
+}
+
+/// Collect variant names from when arms.
+fn collect_when_variants(body: &[(usize, String)], when_ln: usize) -> Vec<String> {
+    let mut variants = Vec::new();
+    let mut in_when = false;
+    for (ln, line) in body {
+        if *ln == when_ln { in_when = true; continue; }
+        if !in_when { continue; }
+        let trimmed = line.trim();
+        if trimmed == "}" { break; }
+        // "is VariantName ->" or "VariantName ->"
+        if trimmed.contains("->") {
+            let arm = trimmed.split("->").next().unwrap_or("").trim();
+            let arm = arm.strip_prefix("is ").unwrap_or(arm).trim();
+            if !arm.is_empty() && arm.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+                && arm.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                variants.push(arm.to_string());
+            }
+        }
+    }
+    variants
+}
+
+/// Extract field from safe call like `field?.method`
+fn extract_kt_safe_call_field(line: &str) -> Option<String> {
+    let pos = line.find("?.")?;
+    let before = line[..pos].trim();
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{' || c == ',').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract field from `field!!.method`
+fn extract_kt_double_bang_field(line: &str) -> Option<String> {
+    let pos = line.find("!!")?;
+    let before = line[..pos].trim();
+    let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{' || c == ',').next().unwrap_or(before).trim();
+    if field.is_empty() { None } else { Some(field.to_string()) }
+}
+
+/// Extract collection before a method call
+fn extract_kt_collection_before(line: &str, method: &str) -> Option<String> {
+    let pos = line.find(method)?;
+    let before = line[..pos].trim();
+    let collection = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(' || c == '{').next().unwrap_or(before).trim();
+    if collection.is_empty() { None } else { Some(collection.to_string()) }
 }
 
 fn extract_contains_fact(line: &str) -> String {
