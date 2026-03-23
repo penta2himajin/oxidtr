@@ -22,7 +22,7 @@ oxidtr takes an [Alloy](https://alloytools.org/) model (`.als`) as the single so
 - **Serde opt-in** — `#[derive(Serialize, Deserialize)]` with `--features serde`
 
 It also provides:
-- **Structural consistency checking** between Alloy models and implementations (Rust / TypeScript / Kotlin / Java), auto-detecting language
+- **Structural consistency checking** between Alloy models and implementations (Rust / TypeScript / Kotlin / Java / Swift), auto-detecting language
 - **Model mining** — extract Alloy model drafts from existing source code, JSON Schema, or mixed multi-language directories with conflict detection
 - **Lossless round-trip** — `@alloy:` comments preserve original expressions; reverse translation recovers Alloy from generated code
 
@@ -60,6 +60,7 @@ The parser handles the full Alloy structural grammar:
 | TypeScript | `--target ts` | interface, Set, Map, union | vitest + boundary | factory + boundary + violation | JSDoc + @alloy | — |
 | Kotlin | `--target kt` | data class, object, Set, Map, sealed/enum | JUnit 5 + boundary | factory + boundary + violation | KDoc + @alloy | @Size, @NotEmpty |
 | Java | `--target java` | record, Set, Map, sealed interface, enum | JUnit 5 + boundary | static factory + boundary + violation | Javadoc + @alloy | @NotNull, @Size, compact constructor |
+| Swift | `--target swift` | struct, Set, Array, enum w/ associated values | XCTest + boundary | factory + boundary + violation | Swift doc comments | CaseIterable, Equatable |
 
 ## Commands
 
@@ -72,6 +73,7 @@ oxidtr generate model.als --target rust --output generated/
 oxidtr generate model.als --target ts --output generated-ts/
 oxidtr generate model.als --target kt --output generated-kt/
 oxidtr generate model.als --target java --output generated-java/
+oxidtr generate model.als --target swift --output generated-swift/
 oxidtr generate model.als --target rust --output generated/ --features serde
 ```
 
@@ -89,7 +91,7 @@ Detects 7 structural warnings during generation:
 
 ### `oxidtr check`
 
-Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence (`models.rs` / `models.ts` / `Models.kt` / `Models.java`).
+Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence (`models.rs` / `models.ts` / `Models.kt` / `Models.java` / `Models.swift`).
 
 ```
 oxidtr check --model model.als --impl src/
@@ -108,7 +110,7 @@ oxidtr mine src/ --lang rust              # explicit language override
 oxidtr mine src/ --conflict error         # fail on cross-language conflicts
 ```
 
-Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.json` (JSON Schema).
+Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.swift` (Swift), `.json` (JSON Schema).
 
 Multi-language directories are merged: same-name sigs are unified, missing fields are supplemented, and conflicts (multiplicity/target type mismatches) are reported.
 
@@ -123,7 +125,7 @@ Produces Alloy `.als` text with:
 oxidtr's own domain is modeled in `models/oxidtr.als`. The full round-trip is verified for all targets:
 
 ```
-oxidtr.als → generate (Rust/TS/Kotlin/Java) → check → 0 diffs
+oxidtr.als → generate (Rust/TS/Kotlin/Java/Swift) → check → 0 diffs
 oxidtr.als → generate → mine → structural + expression match with original
 oxidtr.als → generate (all languages) → mine (multi-lang merge) → unified Alloy model
 ```
@@ -152,12 +154,12 @@ cargo run -- mine generated/
 | 6+ | Full Alloy parser (integers, set ops, product, fun, multi-var quantifiers, disj) |
 | 6+ | Complete conversion: Set/Seq distinction, singletons, concrete values, maps, boundaries, @alloy lossless round-trip |
 | 6+ | Multi-language mine merge with conflict detection |
+| 7 | Swift backend (struct/enum, XCTest, allSatisfy/contains, mine extractor) |
 
 ### Planned
 
 | Phase | Description | Target platforms |
 |---|---|---|
-| 7 | **Swift backend** | iOS / macOS / visionOS |
 | 8 | **Go backend** | Cloud-native / CLI / microservices |
 | 9 | **C# backend** | .NET / Unity / Blazor / Azure |
 | 10 | **Lean backend** (polarstar) | High-assurance domains |
