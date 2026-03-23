@@ -8,20 +8,23 @@ Alloy formal specification models to deterministic code generation, test scaffol
 
 oxidtr takes an [Alloy](https://alloytools.org/) model (`.als`) as the single source of truth and deterministically generates:
 
-- **Type definitions** — structs, enums, interfaces, records, sealed classes with multiplicity-aware types
-- **Operation stubs** — function signatures from predicates, with empty bodies for human/AI implementation
-- **Invariant functions** — fact constraints translated to executable boolean functions
-- **Property tests** — assert declarations translated to test cases
-- **Cross-tests** — fact × predicate preservation test scaffolding
+- **Type definitions** — structs, enums, interfaces, records, sealed classes with multiplicity-aware types (`Set`/`Seq` distinction, `Map` for relation products, singleton for `one sig`)
+- **Operation stubs** — function signatures from predicates and funs, with typed returns and `@pre`/`@post` doc comments
+- **Invariant functions** — fact constraints translated to executable boolean functions with `@alloy:` comment preserving original Alloy syntax
+- **Property tests** — assert declarations translated to non-vacuous test cases using fixture data
+- **Cross-tests** — fact × predicate preservation test scaffolding with boundary values
 - **Transitive closure traversal** — generated BFS/chain-walk functions for `^field` expressions
-- **Fixtures** — factory functions generating valid default instances
-- **Doc comments** — constraint names as rustdoc / JSDoc / KDoc / Javadoc annotations
-- **JSON Schema** — structural schema from model types and constraints
-- **Bean Validation** — `@NotNull` annotations on Java record fields
+- **Fixtures** — factory functions with default, boundary, and violation instances from constraint analysis
+- **Newtypes** — Rust `TryFrom` validated wrappers with concrete range checks from cardinality bounds
+- **Doc comments** — constraint names, `@pre`/`@post` conditions, `@NotEmpty`/`@unique` annotations
+- **JSON Schema** — structural schema with `minItems`/`maxItems`, `uniqueItems`, nullable, `additionalProperties` for maps, set operation descriptions
+- **Bean Validation** — `@NotNull`, `@Size(min=N, max=M)`, `@NotEmpty` on Java/Kotlin fields
+- **Serde opt-in** — `#[derive(Serialize, Deserialize)]` with `--features serde`
 
 It also provides:
-- **Structural consistency checking** between Alloy models and implementations (Rust / TypeScript / Kotlin / Java)
-- **Model mining** — extract Alloy model drafts from existing source code or JSON Schema
+- **Structural consistency checking** between Alloy models and implementations (Rust / TypeScript / Kotlin / Java), auto-detecting language
+- **Model mining** — extract Alloy model drafts from existing source code, JSON Schema, or mixed multi-language directories with conflict detection
+- **Lossless round-trip** — `@alloy:` comments preserve original expressions; reverse translation recovers Alloy from generated code
 
 ## Design principles
 
@@ -30,24 +33,33 @@ It also provides:
 - **Guarantee budget is constant.** Stronger type systems reduce test generation; weaker ones increase it.
 - **Minimal dependencies.** No serde, no tree-sitter. Parsers are hand-written for oxidtr's own formats.
 
-## Architecture
+## Alloy coverage
 
-```
-Alloy source (.als)
-  → Parser → Alloy AST
-  → Lowering → oxidtr IR (StructureNode, ConstraintNode, OperationNode, PropertyNode)
-  → Target Backend → Generated code (Rust / TypeScript / Kotlin / Java)
-  → Constraint Analyzer → JSON Schema, doc comments, fixtures, annotations
-```
+The parser handles the full Alloy structural grammar:
+
+| Alloy construct | Support |
+|---|---|
+| `sig` / `abstract sig` / `one`/`some`/`lone sig` | Full |
+| `extends` (inheritance) | Full |
+| `one` / `lone` / `set` / `seq` field multiplicity | Full, with Set/Seq distinction |
+| `->` relation product | Maps (BTreeMap, Map) |
+| `fact` / `assert` / `pred` / `fun` | Full, with return types |
+| `all` / `some` / `no` quantifiers | Full, multi-variable, `disj` |
+| `and` / `or` / `implies` / `iff` / `not` | Full |
+| `in` / `=` / `!=` / `<` / `>` / `<=` / `>=` | Full, with integer literals |
+| `#` (cardinality) | Full, with numeric bound extraction |
+| `^` (transitive closure) | Full |
+| `+` / `&` / `-` (set operations) | Full |
+| `check` / `run` commands | Skipped (design-time only) |
 
 ## Supported targets
 
 | Target | Flag | Types | Tests | Fixtures | Docs | Extra |
 |---|---|---|---|---|---|---|
-| Rust | `--target rust` | struct, enum | proptest-style | `impl Default` builder | rustdoc | newtype-ready |
-| TypeScript | `--target ts` | interface, union | vitest | factory functions | JSDoc | — |
-| Kotlin | `--target kt` | data class, sealed/enum class | JUnit 5 | companion factory | KDoc | — |
-| Java | `--target java` | record, sealed interface, enum | JUnit 5 | static factory | Javadoc | `@NotNull` |
+| Rust | `--target rust` | struct, BTreeSet, BTreeMap, enum | proptest-style + boundary | default + boundary + violation | rustdoc + @alloy | newtype TryFrom, serde opt-in |
+| TypeScript | `--target ts` | interface, Set, Map, union | vitest + boundary | factory + boundary + violation | JSDoc + @alloy | — |
+| Kotlin | `--target kt` | data class, object, Set, Map, sealed/enum | JUnit 5 + boundary | factory + boundary + violation | KDoc + @alloy | @Size, @NotEmpty |
+| Java | `--target java` | record, Set, Map, sealed interface, enum | JUnit 5 + boundary | static factory + boundary + violation | Javadoc + @alloy | @NotNull, @Size, compact constructor |
 
 ## Commands
 
@@ -60,6 +72,7 @@ oxidtr generate model.als --target rust --output generated/
 oxidtr generate model.als --target ts --output generated-ts/
 oxidtr generate model.als --target kt --output generated-kt/
 oxidtr generate model.als --target java --output generated-java/
+oxidtr generate model.als --target rust --output generated/ --features serde
 ```
 
 Detects 7 structural warnings during generation:
@@ -76,7 +89,7 @@ Detects 7 structural warnings during generation:
 
 ### `oxidtr check`
 
-Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence.
+Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence (`models.rs` / `models.ts` / `Models.kt` / `Models.java`).
 
 ```
 oxidtr check --model model.als --impl src/
@@ -86,17 +99,24 @@ Detects: `MISSING_STRUCT`, `EXTRA_STRUCT`, `MISSING_FIELD`, `EXTRA_FIELD`, `MULT
 
 ### `oxidtr mine`
 
-Extract Alloy model drafts from existing source code.
+Extract Alloy model drafts from existing source code. Auto-detects language from file extension or directory contents.
 
 ```
-oxidtr mine --source src/models.rs --lang rust
-oxidtr mine --source src/models.ts --lang ts
-oxidtr mine --source src/Models.kt --lang kt
-oxidtr mine --source src/Models.java --lang java
-oxidtr mine --source schemas.json --lang schema
+oxidtr mine generated/                    # directory → auto-detect, multi-lang merge
+oxidtr mine src/models.rs                 # single file → auto-detect from extension
+oxidtr mine src/ --lang rust              # explicit language override
+oxidtr mine src/ --conflict error         # fail on cross-language conflicts
 ```
 
-Produces Alloy `.als` text with sig/field/multiplicity extraction and fact candidates with confidence levels (High / Medium / Low).
+Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.json` (JSON Schema).
+
+Multi-language directories are merged: same-name sigs are unified, missing fields are supplemented, and conflicts (multiplicity/target type mismatches) are reported.
+
+Produces Alloy `.als` text with:
+- Sig/field/multiplicity extraction from type definitions
+- `@alloy:` comment recovery for lossless fact/assert/pred round-trip
+- Reverse expression translation (language code → Alloy expressions)
+- Fact candidates with confidence levels (High / Medium / Low)
 
 ## Self-hosting
 
@@ -104,17 +124,17 @@ oxidtr's own domain is modeled in `models/oxidtr.als`. The full round-trip is ve
 
 ```
 oxidtr.als → generate (Rust/TS/Kotlin/Java) → check → 0 diffs
-oxidtr.als → generate → mine → structural match with original
-oxidtr.als → generate → schemas.json → mine --lang schema → structural match
+oxidtr.als → generate → mine → structural + expression match with original
+oxidtr.als → generate (all languages) → mine (multi-lang merge) → unified Alloy model
 ```
 
 ## Development
 
 ```bash
-cargo test              # 206 tests
+cargo test              # 395 tests
 cargo run -- generate models/oxidtr.als --target rust --output generated
 cargo run -- check --model models/oxidtr.als --impl generated
-cargo run -- mine --source generated/models.rs --lang rust
+cargo run -- mine generated/
 ```
 
 ## Roadmap
@@ -129,6 +149,9 @@ cargo run -- mine --source generated/models.rs --lang rust
 | 4 | TypeScript backend + mine (Rust/TS) + round-trip verification |
 | 5 | Kotlin/Java backends (shared JVM layer) + mine extractors |
 | 6 | Enrichment: fixtures, doc comments, JSON Schema, Bean Validation, schema mine |
+| 6+ | Full Alloy parser (integers, set ops, product, fun, multi-var quantifiers, disj) |
+| 6+ | Complete conversion: Set/Seq distinction, singletons, concrete values, maps, boundaries, @alloy lossless round-trip |
+| 6+ | Multi-language mine merge with conflict detection |
 
 ### Planned
 
