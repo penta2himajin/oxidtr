@@ -115,8 +115,12 @@ sig GeneratedFile {
   fileContent: one String
 }
 
--- String is a placeholder sig for primitive string values
+-- Placeholder sigs for host-language primitive types.
+-- These have no Alloy-level structure but are referenced in field declarations.
 sig String {}
+sig bool {}
+sig i64 {}
+sig usize {}
 
 -------------------------------------------------------------------------------
 -- Backend

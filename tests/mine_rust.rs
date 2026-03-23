@@ -1,6 +1,6 @@
 use oxidtr::mine::rust_extractor;
 use oxidtr::mine::renderer;
-use oxidtr::mine::{MinedMultiplicity, Confidence};
+use oxidtr::mine::{MinedMultiplicity, Confidence, resolve_external_types};
 
 #[test]
 fn mine_rust_struct_to_sig() {
@@ -182,4 +182,67 @@ sig Role {}
     let roles_field = user.fields.iter().find(|f| f.name == "roles").unwrap();
     assert_eq!(roles_field.mult, MinedMultiplicity::Set);
     assert_eq!(roles_field.target, "Role");
+}
+
+#[test]
+fn resolve_external_types_adds_placeholder_sigs() {
+    let src = r#"
+pub struct User {
+    pub name: String,
+    pub age: usize,
+    pub group: Group,
+}
+
+pub struct Group {
+    pub title: String,
+}
+"#;
+    let mut mined = rust_extractor::extract(src);
+    resolve_external_types(&mut mined);
+
+    let sig_names: Vec<&str> = mined.sigs.iter().map(|s| s.name.as_str()).collect();
+
+    // String and usize are referenced but not defined — should be added as placeholders
+    assert!(sig_names.contains(&"String"), "String should be added as placeholder sig");
+    assert!(sig_names.contains(&"usize"), "usize should be added as placeholder sig");
+
+    // Group IS defined — should NOT be duplicated
+    assert_eq!(sig_names.iter().filter(|&&n| n == "Group").count(), 1);
+
+    // Placeholder sigs should have no fields and not be abstract
+    let string_sig = mined.sigs.iter().find(|s| s.name == "String").unwrap();
+    assert!(string_sig.fields.is_empty());
+    assert!(!string_sig.is_abstract);
+}
+
+#[test]
+fn resolve_external_types_skips_self_referencing() {
+    let src = r#"
+pub struct Node {
+    pub parent: Option<Box<Node>>,
+}
+"#;
+    let mut mined = rust_extractor::extract(src);
+    resolve_external_types(&mut mined);
+
+    // Node references itself — should NOT create a duplicate
+    assert_eq!(mined.sigs.len(), 1);
+    assert_eq!(mined.sigs[0].name, "Node");
+}
+
+#[test]
+fn rendered_als_is_self_contained_after_resolve() {
+    let src = r#"
+pub struct Config {
+    pub name: String,
+    pub count: usize,
+}
+"#;
+    let mut mined = rust_extractor::extract(src);
+    resolve_external_types(&mut mined);
+    let rendered = renderer::render(&mined);
+
+    // The rendered .als should contain sig definitions for String and usize
+    assert!(rendered.contains("sig String {"), "rendered should define sig String");
+    assert!(rendered.contains("sig usize {"), "rendered should define sig usize");
 }

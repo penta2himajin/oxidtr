@@ -56,6 +56,12 @@ pub fn run(path: &str, lang_override: Option<&str>) -> Result<MinedModel, String
 /// Run mine with multi-language merge support.
 /// Returns MergeResult with conflicts and source info.
 pub fn run_merge(path: &str, lang_override: Option<&str>) -> Result<MergeResult, String> {
+    let mut result = run_merge_raw(path, lang_override)?;
+    resolve_external_types(&mut result.model);
+    Ok(result)
+}
+
+fn run_merge_raw(path: &str, lang_override: Option<&str>) -> Result<MergeResult, String> {
     let p = Path::new(path);
 
     // Single file: detect and extract
@@ -352,6 +358,41 @@ pub struct MinedFactCandidate {
 pub struct MinedModel {
     pub sigs: Vec<MinedSig>,
     pub fact_candidates: Vec<MinedFactCandidate>,
+}
+
+/// Add placeholder sigs for types referenced in fields but not defined as sigs.
+/// This ensures the mined .als output is self-contained valid Alloy.
+/// Only adds sigs for valid Alloy identifiers (no qualified paths, generics, or tuples).
+pub fn resolve_external_types(model: &mut MinedModel) {
+    let defined: std::collections::HashSet<String> = model.sigs.iter()
+        .map(|s| s.name.clone())
+        .collect();
+
+    let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for sig in &model.sigs {
+        for field in &sig.fields {
+            if !defined.contains(&field.target) && is_valid_sig_name(&field.target) {
+                referenced.insert(field.target.clone());
+            }
+        }
+    }
+
+    for name in referenced {
+        model.sigs.push(MinedSig {
+            name,
+            fields: vec![],
+            is_abstract: false,
+            parent: None,
+            source_location: "external type".to_string(),
+        });
+    }
+}
+
+/// A valid Alloy sig name is a simple identifier: alphanumeric + underscore, starts with a letter.
+fn is_valid_sig_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().next().map_or(false, |c| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
 }
 
 /// A conflict detected when merging sigs from multiple languages.
