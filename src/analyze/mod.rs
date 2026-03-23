@@ -49,6 +49,17 @@ pub enum ConstraintInfo {
         op: CompareOp,
         right_field: String,
     },
+    /// Disjoint: no (A & B) — two sets must not overlap
+    Disjoint {
+        sig_name: String,
+        left: String,   // e.g. "additive.covers"
+        right: String,  // e.g. "multiplicative.covers"
+    },
+    /// Exhaustive: all x: S | x in A or x in B or ... — covers all instances
+    Exhaustive {
+        sig_name: String,
+        categories: Vec<String>, // e.g. ["additive.covers", "multiplicative.covers", "override.covers"]
+    },
     /// Implication: all s: S | condition implies consequent
     Implication {
         sig_name: String,
@@ -100,6 +111,8 @@ pub fn constraints_for_sig(ir: &OxidtrIR, sig_name: &str) -> Vec<ConstraintInfo>
         ConstraintInfo::Acyclic { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Iff { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::FieldOrdering { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::Disjoint { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::Exhaustive { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Implication { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Prohibition { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Named { .. } => false,
@@ -229,6 +242,21 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                 }
             }
         }
+        // no (A & B) → Disjoint
+        Expr::MultFormula { kind: QuantKind::No, expr } => {
+            if let Expr::SetOp { op: SetOpKind::Intersection, left, right } = expr.as_ref() {
+                let l = describe_expr(left);
+                let r = describe_expr(right);
+                // Infer sig name from field access paths
+                let sig = infer_sig_from_expr(left).or_else(|| infer_sig_from_expr(right))
+                    .unwrap_or_default();
+                results.push(ConstraintInfo::Disjoint {
+                    sig_name: sig,
+                    left: l,
+                    right: r,
+                });
+            }
+        }
         _ => {}
     }
 
@@ -310,6 +338,16 @@ fn analyze_body_for_sig(
                         }
                     }
                 }
+            }
+        }
+        // Disjunction: check for exhaustive classification (x in A or x in B or ...)
+        Expr::BinaryLogic { op: LogicOp::Or, .. } => {
+            let mut categories = Vec::new();
+            if collect_exhaustive_categories(body, var, &mut categories) && categories.len() >= 2 {
+                results.push(ConstraintInfo::Exhaustive {
+                    sig_name: sig_name.to_string(),
+                    categories,
+                });
             }
         }
         // Conjunction: analyze both sides
@@ -436,6 +474,42 @@ fn extract_int(expr: &Expr) -> Option<i64> {
         Some(*n)
     } else {
         None
+    }
+}
+
+/// Collect categories from an exhaustive disjunction: x in A or x in B or ...
+/// Returns true if the entire expression is a chain of `var in expr` comparisons.
+fn collect_exhaustive_categories(expr: &Expr, var: &str, categories: &mut Vec<String>) -> bool {
+    match expr {
+        Expr::BinaryLogic { op: LogicOp::Or, left, right } => {
+            collect_exhaustive_categories(left, var, categories)
+                && collect_exhaustive_categories(right, var, categories)
+        }
+        Expr::Comparison { op: CompareOp::In, left, right } => {
+            if let Expr::VarRef(v) = left.as_ref() {
+                if v == var {
+                    categories.push(describe_expr(right));
+                    return true;
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Infer a sig name from a field access expression (e.g., "additive.covers" → "additive").
+fn infer_sig_from_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::FieldAccess { base, .. } => {
+            if let Expr::VarRef(name) = base.as_ref() {
+                Some(name.clone())
+            } else {
+                infer_sig_from_expr(base)
+            }
+        }
+        Expr::VarRef(name) => Some(name.clone()),
+        _ => None,
     }
 }
 

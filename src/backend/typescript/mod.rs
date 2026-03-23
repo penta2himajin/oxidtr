@@ -955,6 +955,13 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                     let desc = analyze::describe_expr(condition);
                     writeln!(out, "  if ({cond}) errors.push(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
                 }
+                analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                    writeln!(out, "  // Disjoint: {left} and {right} must not overlap").unwrap();
+                }
+                analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                    let cats = categories.join(", ");
+                    writeln!(out, "  // Exhaustive: must belong to one of [{cats}]").unwrap();
+                }
                 _ => {} // Named, Membership — not directly translatable to simple validators
             }
         }
