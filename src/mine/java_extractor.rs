@@ -9,12 +9,6 @@ pub fn extract(source: &str) -> MinedModel {
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
 
-    // Extract top-level @alloy comments
-    extract_alloy_comments(
-        source.lines().enumerate().map(|(ln, line)| (ln, line.to_string())),
-        &mut fact_candidates,
-    );
-
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
@@ -68,25 +62,8 @@ pub fn extract(source: &str) -> MinedModel {
             }
         }
 
-        // Invariant functions: public static boolean assertXxx(...) { return BODY; }
-        if trimmed.contains("static boolean ") && trimmed.contains('(') && trimmed.contains('{') {
-            let fn_name = extract_java_fn_name(trimmed);
-            let body = collect_block(&mut lines);
-            if let Some(ref name) = fn_name {
-                if name.starts_with("assert") && name.len() > 6 && name.as_bytes()[6].is_ascii_uppercase() {
-                    let body_text = body.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>().join(" ");
-                    if let Some(alloy_text) = reverse_translate_invariant_body(&body_text) {
-                        fact_candidates.push(MinedFactCandidate {
-                            alloy_text,
-                            confidence: Confidence::Medium,
-                            source_location: format!("line {}", line_num + 1),
-                            source_pattern: format!("reverse-translated fn {name}"),
-                        });
-                    }
-                }
-            }
-            extract_java_facts(&body, line_num, &mut fact_candidates);
-        } else if trimmed.contains("static ") && trimmed.contains('(') && trimmed.contains('{') {
+        // Function/method bodies: extract general patterns + compact constructor asserts
+        if trimmed.contains("static ") && trimmed.contains('(') && trimmed.contains('{') {
             let body = collect_block(&mut lines);
             extract_java_facts(&body, line_num, &mut fact_candidates);
         }
@@ -344,78 +321,6 @@ fn collect_block(
     body
 }
 
-/// Extract @alloy: comments from lines.
-fn extract_alloy_comments(
-    lines: impl Iterator<Item = (usize, String)>,
-    facts: &mut Vec<MinedFactCandidate>,
-) {
-    for (ln, line) in lines {
-        let trimmed = line.trim();
-        let alloy_text = trimmed.strip_prefix("// @alloy: ")
-            .or_else(|| trimmed.strip_prefix("/// @alloy: "));
-        if let Some(text) = alloy_text {
-            facts.push(MinedFactCandidate {
-                alloy_text: text.trim().to_string(),
-                confidence: Confidence::High,
-                source_location: format!("line {}", ln + 1),
-                source_pattern: "@alloy comment".to_string(),
-            });
-        }
-    }
-}
-
-/// Extract function name from a Java method declaration line.
-fn extract_java_fn_name(line: &str) -> Option<String> {
-    // "public static boolean assertXxx(..." → "assertXxx"
-    let s = line.trim();
-    let bool_pos = s.find("boolean ")?;
-    let rest = &s[bool_pos + "boolean ".len()..];
-    let paren = rest.find('(')?;
-    let name = rest[..paren].trim().to_string();
-    if name.is_empty() { None } else { Some(name) }
-}
-
-/// Reverse-translate the body of a Java invariant function.
-/// Converts camelCase plural param names back to PascalCase sig names.
-fn reverse_translate_invariant_body(body_text: &str) -> Option<String> {
-    let s = body_text.trim();
-    let expr = if let Some(pos) = s.find("return ") {
-        s[pos + "return ".len()..].trim().trim_end_matches(';').trim()
-    } else {
-        s.trim_end_matches(';').trim()
-    };
-    if expr.is_empty() { return None; }
-    let alloy = reverse_translate_expr(expr)?;
-    Some(fix_quantifier_domains(&alloy))
-}
-
-/// Fix quantifier domains: "all s: sigDecls | ..." → "all s: SigDecl | ..."
-fn fix_quantifier_domains(alloy: &str) -> String {
-    let mut result = alloy.to_string();
-    for quant in &["all ", "some ", "no "] {
-        if let Some(qpos) = result.find(quant) {
-            let after_quant = &result[qpos + quant.len()..];
-            if let Some(colon) = after_quant.find(": ") {
-                let domain_start = qpos + quant.len() + colon + 2;
-                let after_domain = &result[domain_start..];
-                if let Some(pipe) = after_domain.find(" | ") {
-                    let domain = &result[domain_start..domain_start + pipe];
-                    let converted = camel_to_pascal(domain);
-                    if converted != domain {
-                        result = format!(
-                            "{}{}{}",
-                            &result[..domain_start],
-                            converted,
-                            &result[domain_start + pipe..]
-                        );
-                    }
-                }
-            }
-        }
-    }
-    result
-}
-
 /// Reverse-translate a Java expression back to Alloy syntax.
 /// Robust: handles balanced parens, TC calls, stream API patterns.
 pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
@@ -660,29 +565,11 @@ fn find_matching_close_java(s: &str) -> Option<usize> {
     None
 }
 
-/// Convert camelCase plural to PascalCase singular.
-fn camel_to_pascal(s: &str) -> String {
-    let s = s.strip_suffix('s').unwrap_or(s);
-    let mut result = String::new();
-    let mut chars = s.chars();
-    if let Some(first) = chars.next() {
-        result.push(first.to_ascii_uppercase());
-    }
-    result.extend(chars);
-    result
-}
-
 fn extract_java_facts(
     body: &[(usize, String)],
     _context_line: usize,
     facts: &mut Vec<MinedFactCandidate>,
 ) {
-    // Extract @alloy comments from function body
-    extract_alloy_comments(
-        body.iter().map(|(ln, line)| (*ln, line.clone())),
-        facts,
-    );
-
     for (ln, line) in body {
         let loc = format!("line {}", ln + 1);
 

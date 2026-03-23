@@ -46,10 +46,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    if !ir.constraints.is_empty() || has_tc {
+    // Generate Helpers.java for TC functions (replaces Invariants.java)
+    if has_tc {
         files.push(GeneratedFile {
-            path: "Invariants.java".to_string(),
-            content: generate_invariants(ir),
+            path: "Helpers.java".to_string(),
+            content: generate_helpers(ir),
         });
     }
 
@@ -188,11 +189,19 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
         if constraint_names.is_empty() {
             writeln!(out, "public record {}({}) {{}}", s.name, params.join(", ")).unwrap();
         } else {
+            let lang = JavaLang;
             writeln!(out, "public record {}({}) {{", s.name, params.join(", ")).unwrap();
             writeln!(out, "    public {} {{", s.name).unwrap();
             for cn in &constraint_names {
-                writeln!(out, "        // Validated by: {cn}").unwrap();
-                writeln!(out, "        assert Invariants.assert{cn}();").unwrap();
+                // Inline constraint expression in compact constructor
+                let constraint_expr = ir.constraints.iter()
+                    .find(|c| c.name.as_deref() == Some(cn))
+                    .map(|c| expr_translator::translate_with_ir(&c.expr, ir, &lang));
+                if let Some(expr) = constraint_expr {
+                    writeln!(out, "        assert {expr} : \"{cn} violated\";").unwrap();
+                } else {
+                    writeln!(out, "        // Validated by: {cn}").unwrap();
+                }
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out, "}}").unwrap();
@@ -259,16 +268,15 @@ fn mult_to_java_type(target: &str, mult: &Multiplicity) -> String {
     }
 }
 
-// ── Invariants.java ────────────────────────────────────────────────────────
+// ── Helpers.java ───────────────────────────────────────────────────────────
 
-fn generate_invariants(ir: &OxidtrIR) -> String {
+/// Generate Helpers.java containing TC (transitive closure) functions.
+fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
-    let sig_names = expr_translator::collect_sig_names(ir);
-    let lang = JavaLang;
 
     writeln!(out, "import java.util.List;").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "public class Invariants {{").unwrap();
+    writeln!(out, "public class Helpers {{").unwrap();
 
     // TC functions
     let mut tc_fields = Vec::new();
@@ -283,36 +291,6 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
 
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
-    }
-
-    for constraint in &ir.constraints {
-        let fn_name = match &constraint.name {
-            Some(name) => format!("assert{name}"),
-            None => continue,
-        };
-
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-        let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
-
-        let param_str = params.iter()
-            .map(|(pname, tname)| format!("List<{tname}> {pname}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Feature 6: add @unique annotation when disj is used
-        if expr_uses_disj(&constraint.expr) {
-            writeln!(out, "    /**").unwrap();
-            writeln!(out, "     * Invariant derived from Alloy fact.").unwrap();
-            writeln!(out, "     * @unique Elements must be distinct (disj).").unwrap();
-            writeln!(out, "     */").unwrap();
-        } else {
-            writeln!(out, "    /** Invariant derived from Alloy fact. */").unwrap();
-        }
-        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&constraint.expr)).unwrap();
-        writeln!(out, "    public static boolean {fn_name}({param_str}) {{").unwrap();
-        writeln!(out, "        return {body};").unwrap();
-        writeln!(out, "    }}").unwrap();
-        writeln!(out).unwrap();
     }
 
     writeln!(out, "}}").unwrap();
@@ -398,9 +376,6 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 writeln!(out, "     * @{tag} {desc}").unwrap();
             }
             writeln!(out, "     */").unwrap();
-            for expr in &op.body {
-                writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(expr)).unwrap();
-            }
         }
 
         let return_type = match &op.return_type {
@@ -435,7 +410,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
-        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -446,31 +420,30 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // Invariant tests — inline constraint expressions
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
-        let fn_name = format!("assert{fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
-        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void invariant_{}() {{", fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
         }
-        let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
-        writeln!(out, "        assertTrue(Invariants.{fn_name}({args}));").unwrap();
+        writeln!(out, "        assertTrue({body});").unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
     }
 
-    // Boundary value tests (Feature 5)
+    // Boundary value tests (Feature 5) — inline expressions
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
             None => continue,
         };
-        let fn_name = format!("assert{fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
         let has_boundary = params.iter().any(|(_, tname)| {
             ir.structures.iter().any(|s| {
@@ -497,8 +470,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
-            writeln!(out, "        assertTrue(Invariants.{fn_name}({args}));").unwrap();
+            writeln!(out, "        assertTrue({body});").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
 
@@ -517,8 +489,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
-            writeln!(out, "        assertFalse(Invariants.{fn_name}({args}));").unwrap();
+            writeln!(out, "        assertFalse(!({body}));").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         }
@@ -529,24 +500,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
-
-fn expr_uses_disj(expr: &crate::parser::ast::Expr) -> bool {
-    use crate::parser::ast::Expr;
-    match expr {
-        Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().any(|b| b.disj) || expr_uses_disj(body)
-        }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
-            expr_uses_disj(left) || expr_uses_disj(right)
-        }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
-            expr_uses_disj(inner)
-        }
-        Expr::FieldAccess { base, .. } => expr_uses_disj(base),
-        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
-    }
-}
 
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;

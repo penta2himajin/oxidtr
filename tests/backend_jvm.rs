@@ -76,14 +76,16 @@ fn kt_operations_use_todo() {
 }
 
 #[test]
-fn kt_invariants_use_all_any() {
+fn kt_tests_inline_constraint_expressions() {
     let files = generate_kt(
         "sig Item { tags: set Tag }\nsig Tag {}\nfact Tagged { all i: Item | some t: Tag | t in i.tags }",
     );
-    let inv = find_file(&files, "Invariants.kt");
-    assert!(inv.contains(".all {"), "expected .all {{}}");
-    assert!(inv.contains(".any {"), "expected .any {{}}");
-    assert!(inv.contains(".contains("), "expected .contains()");
+    let t = find_file(&files, "Tests.kt");
+    assert!(t.contains(".all {"), "expected .all {{}} in inlined test");
+    assert!(t.contains(".any {"), "expected .any {{}} in inlined test");
+    assert!(t.contains(".contains("), "expected .contains() in inlined test");
+    // Should NOT have Invariants.kt
+    assert!(!files.iter().any(|f| f.path == "Invariants.kt"), "should not generate Invariants.kt");
 }
 
 #[test]
@@ -107,8 +109,13 @@ fn kt_self_hosting() {
     assert!(m.contains("data class OxidtrIR("));
     assert!(m.contains("enum class Multiplicity"));
 
-    let inv = find_file(&files, "Invariants.kt");
-    assert!(inv.contains("assertSigToStructureBijection"));
+    // Helpers.kt should exist for TC functions
+    assert!(files.iter().any(|f| f.path == "Helpers.kt"), "should generate Helpers.kt");
+    // Invariants.kt should NOT exist
+    assert!(!files.iter().any(|f| f.path == "Invariants.kt"), "should not generate Invariants.kt");
+    // Tests should inline constraint expressions
+    let t = find_file(&files, "Tests.kt");
+    assert!(t.contains("assertTrue("), "tests should have assertTrue with inlined expressions");
 }
 
 // ── Kotlin: Bean Validation ─────────────────────────────────────────────────
@@ -208,13 +215,15 @@ fn java_operations_throw() {
 }
 
 #[test]
-fn java_invariants_use_stream() {
+fn java_tests_inline_constraint_expressions() {
     let files = generate_java(
         "sig Item { tags: set Tag }\nsig Tag {}\nfact Tagged { all i: Item | some t: Tag | t in i.tags }",
     );
-    let inv = find_file(&files, "Invariants.java");
-    assert!(inv.contains(".stream().allMatch("), "expected .stream().allMatch()");
-    assert!(inv.contains(".stream().anyMatch("), "expected .stream().anyMatch()");
+    let t = find_file(&files, "Tests.java");
+    assert!(t.contains(".stream().allMatch("), "expected .stream().allMatch() in inlined test");
+    assert!(t.contains(".stream().anyMatch("), "expected .stream().anyMatch() in inlined test");
+    // Should NOT have Invariants.java
+    assert!(!files.iter().any(|f| f.path == "Invariants.java"), "should not generate Invariants.java");
 }
 
 #[test]
@@ -229,8 +238,13 @@ fn java_self_hosting() {
     assert!(m.contains("public record OxidtrIR("));
     assert!(m.contains("public enum Multiplicity"));
 
-    let inv = find_file(&files, "Invariants.java");
-    assert!(inv.contains("assertSigToStructureBijection"));
+    // Helpers.java should exist for TC functions
+    assert!(files.iter().any(|f| f.path == "Helpers.java"), "should generate Helpers.java");
+    // Invariants.java should NOT exist
+    assert!(!files.iter().any(|f| f.path == "Invariants.java"), "should not generate Invariants.java");
+    // Tests should inline constraint expressions
+    let t = find_file(&files, "Tests.java");
+    assert!(t.contains("assertTrue("), "tests should have assertTrue with inlined expressions");
 }
 
 // ── Java: Bean Validation ──────────────────────────────────────────────────
@@ -269,8 +283,10 @@ fn java_compact_constructor_for_constrained_record() {
     );
     let m = find_file(&files, "Models.java");
     assert!(m.contains("public User {"), "expected compact constructor:\n{m}");
-    assert!(m.contains("Validated by: HasRole"), "expected validation comment:\n{m}");
-    assert!(m.contains("Invariants.assertHasRole"), "expected invariant assertion:\n{m}");
+    assert!(m.contains("HasRole violated"), "expected inlined constraint assertion:\n{m}");
+    assert!(m.contains("assert "), "expected assert keyword in compact constructor:\n{m}");
+    // Should NOT reference Invariants class
+    assert!(!m.contains("Invariants."), "should not reference Invariants class:\n{m}");
 }
 
 #[test]

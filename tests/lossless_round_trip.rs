@@ -1,18 +1,17 @@
-/// Lossless round-trip tests: verify that @alloy comments survive
-/// generate → mine cycles, and that reverse translation produces
-/// matching Alloy expressions.
+/// Lossless round-trip tests: verify that no @alloy comments exist in
+/// generated code, and that reverse translation produces matching Alloy expressions.
 
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::{rust, typescript};
 use oxidtr::backend::jvm::{kotlin, java};
-use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, Confidence};
+use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor};
 use oxidtr::mine::renderer;
 use oxidtr::analyze;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
-// ── Feature A: no @alloy comments in Rust/TS generated code ────────────────
+// ── Feature A: no @alloy comments in any generated code ─────────────────────
 
 #[test]
 fn rust_no_alloy_comments_anywhere() {
@@ -45,40 +44,42 @@ fn ts_no_alloy_comments_anywhere() {
 }
 
 #[test]
-fn kotlin_invariants_contain_alloy_comments() {
+fn kotlin_no_alloy_comments_anywhere() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = kotlin::generate(&ir_obj);
-    let invariants = files.iter().find(|f| f.path == "Invariants.kt").unwrap();
 
-    let alloy_count = invariants.content.lines()
-        .filter(|l| l.trim().starts_with("// @alloy: "))
-        .count();
-    let named_constraints = ir_obj.constraints.iter()
-        .filter(|c| c.name.is_some())
-        .count();
-    assert!(alloy_count >= named_constraints,
-        "expected at least {named_constraints} @alloy comments in Invariants.kt, found {alloy_count}");
+    for file in &files {
+        let alloy_count = file.content.lines()
+            .filter(|l| l.trim().contains("@alloy:"))
+            .count();
+        assert_eq!(alloy_count, 0,
+            "file {} should have no @alloy comments, found {alloy_count}", file.path);
+    }
+    // Should NOT generate Invariants.kt
+    assert!(!files.iter().any(|f| f.path == "Invariants.kt"),
+        "Kotlin should not generate Invariants.kt");
 }
 
 #[test]
-fn java_invariants_contain_alloy_comments() {
+fn java_no_alloy_comments_anywhere() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = java::generate(&ir_obj);
-    let invariants = files.iter().find(|f| f.path == "Invariants.java").unwrap();
 
-    let alloy_count = invariants.content.lines()
-        .filter(|l| l.trim().starts_with("// @alloy: "))
-        .count();
-    let named_constraints = ir_obj.constraints.iter()
-        .filter(|c| c.name.is_some())
-        .count();
-    assert!(alloy_count >= named_constraints,
-        "expected at least {named_constraints} @alloy comments in Invariants.java, found {alloy_count}");
+    for file in &files {
+        let alloy_count = file.content.lines()
+            .filter(|l| l.trim().contains("@alloy:"))
+            .count();
+        assert_eq!(alloy_count, 0,
+            "file {} should have no @alloy comments, found {alloy_count}", file.path);
+    }
+    // Should NOT generate Invariants.java
+    assert!(!files.iter().any(|f| f.path == "Invariants.java"),
+        "Java should not generate Invariants.java");
 }
 
-// ── Mine extractors: Rust/TS no longer have @alloy comments ─────────────────
+// ── Mine extractors: no @alloy comments in any language ─────────────────────
 
 #[test]
 fn rust_mine_no_alloy_comments() {
@@ -121,7 +122,7 @@ fn ts_mine_no_alloy_comments() {
 }
 
 #[test]
-fn kotlin_mine_extracts_alloy_comments() {
+fn kotlin_mine_no_alloy_comments() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = kotlin::generate(&ir_obj);
@@ -136,12 +137,12 @@ fn kotlin_mine_extracts_alloy_comments() {
         }
     }
 
-    assert!(!all_alloy_facts.is_empty(), "no @alloy facts extracted from Kotlin code");
-    assert!(all_alloy_facts.iter().all(|f| f.confidence == Confidence::High));
+    assert!(all_alloy_facts.is_empty(),
+        "Kotlin generated code should have no @alloy comments, found {}", all_alloy_facts.len());
 }
 
 #[test]
-fn java_mine_extracts_alloy_comments() {
+fn java_mine_no_alloy_comments() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = java::generate(&ir_obj);
@@ -156,8 +157,8 @@ fn java_mine_extracts_alloy_comments() {
         }
     }
 
-    assert!(!all_alloy_facts.is_empty(), "no @alloy facts extracted from Java code");
-    assert!(all_alloy_facts.iter().all(|f| f.confidence == Confidence::High));
+    assert!(all_alloy_facts.is_empty(),
+        "Java generated code should have no @alloy comments, found {}", all_alloy_facts.len());
 }
 
 // ── Feature B: reverse translation ─────────────────────────────────────────
@@ -298,37 +299,15 @@ fn self_hosting_lossless_round_trip() {
     let kt_files = kotlin::generate(&original_ir);
     let java_files = java::generate(&original_ir);
 
-    // Rust and TS no longer have @alloy comments — verify they are clean
-    let rust_alloy = extract_alloy_from_rust(&rust_files);
-    assert!(rust_alloy.is_empty(), "Rust should have no @alloy facts");
-    let ts_alloy = extract_alloy_from_ts(&ts_files);
-    assert!(ts_alloy.is_empty(), "TS should have no @alloy facts");
-
-    // Kotlin and Java still have @alloy comments
+    // All languages should have no @alloy comments
     for (lang_name, files, extractor) in [
-        ("Kotlin", &kt_files, extract_alloy_from_kt as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
+        ("Rust", &rust_files, extract_alloy_from_rust as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
+        ("TS", &ts_files, extract_alloy_from_ts),
+        ("Kotlin", &kt_files, extract_alloy_from_kt),
         ("Java", &java_files, extract_alloy_from_java),
     ] {
         let facts = extractor(files);
-        assert!(!facts.is_empty(), "{lang_name}: no @alloy facts extracted");
-    }
-
-    let named_constraint_count = original_ir.constraints.iter()
-        .filter(|c| c.name.is_some())
-        .count();
-
-    // Kotlin/Java should still have at least the named constraint count
-    for (lang_name, files, extractor) in [
-        ("Kotlin", &kt_files, extract_alloy_from_kt as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
-        ("Java", &java_files, extract_alloy_from_java),
-    ] {
-        let facts = extractor(files);
-        let mut unique: Vec<String> = facts;
-        unique.sort();
-        unique.dedup();
-        assert!(unique.len() >= named_constraint_count,
-            "{lang_name}: expected at least {named_constraint_count} unique @alloy facts, got {}",
-            unique.len());
+        assert!(facts.is_empty(), "{lang_name} should have no @alloy facts, found {}", facts.len());
     }
 
     // Mine Rust code and render back to .als, then re-parse
