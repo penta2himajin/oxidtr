@@ -167,13 +167,12 @@ sig PropertyNode {
 }
 
 sig OxidtrIR {
+  source:      one AlloyModel,
   structures:  set StructureNode,
   constraints: set ConstraintNode,
   operations:  set OperationNode,
   properties:  set PropertyNode
 }
-
--- AlloyModel と OxidtrIR はルート sig（意図的に非参照）
 
 -------------------------------------------------------------------------------
 -- IR structural facts

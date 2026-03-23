@@ -1,15 +1,10 @@
 pub mod expr_translator;
 
+use super::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::Multiplicity;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedFile {
-    pub path: String,
-    pub content: String,
-}
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let mut files = Vec::new();
@@ -76,17 +71,8 @@ fn generate_models(ir: &OxidtrIR) -> String {
         .map(|s| s.name.clone())
         .collect();
 
-    // Collect self-referential fields
-    let self_ref_fields: HashSet<(String, String)> = ir
-        .structures
-        .iter()
-        .flat_map(|s| {
-            s.fields
-                .iter()
-                .filter(|f| f.target == s.name)
-                .map(|f| (s.name.clone(), f.name.clone()))
-        })
-        .collect();
+    // Collect fields that need Box<> wrapping: self-referential or part of a reference cycle.
+    let self_ref_fields = find_cyclic_fields(ir);
 
     for s in &ir.structures {
         // Skip variant sigs — they become enum variants
@@ -446,6 +432,56 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
         }
     }
     writeln!(out).unwrap();
+}
+
+/// Find all (sig, field) pairs that participate in reference cycles and need Box<>.
+/// This includes direct self-references (A.field → A) and mutual cycles (A → B → A).
+fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
+    // Build adjacency: sig name → set of sig names it references via fields
+    let mut adj: HashMap<&str, Vec<(&str, &str)>> = HashMap::new(); // sig → [(target, field_name)]
+    for s in &ir.structures {
+        for f in &s.fields {
+            adj.entry(s.name.as_str())
+                .or_default()
+                .push((f.target.as_str(), f.name.as_str()));
+        }
+    }
+
+    // Find all sigs that participate in any cycle using DFS
+    let sig_names: Vec<&str> = ir.structures.iter().map(|s| s.name.as_str()).collect();
+    let mut in_cycle: HashSet<&str> = HashSet::new();
+
+    for &start in &sig_names {
+        // DFS from start, looking for paths back to start
+        let mut visited = HashSet::new();
+        let mut stack = vec![start];
+        while let Some(current) = stack.pop() {
+            if !visited.insert(current) { continue; }
+            if let Some(edges) = adj.get(current) {
+                for &(target, _) in edges {
+                    if target == start && visited.contains(start) {
+                        in_cycle.insert(start);
+                    }
+                    stack.push(target);
+                }
+            }
+        }
+    }
+
+    // Collect all fields on cyclic sigs that point to another sig in the cycle
+    let mut result = HashSet::new();
+    for s in &ir.structures {
+        for f in &s.fields {
+            if f.target == s.name {
+                // Direct self-reference — always needs Box
+                result.insert((s.name.clone(), f.name.clone()));
+            } else if in_cycle.contains(s.name.as_str()) && in_cycle.contains(f.target.as_str()) {
+                // Mutual cycle — needs Box to break the recursion
+                result.insert((s.name.clone(), f.name.clone()));
+            }
+        }
+    }
+    result
 }
 
 fn to_snake_case(s: &str) -> String {

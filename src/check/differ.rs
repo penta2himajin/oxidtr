@@ -57,7 +57,18 @@ impl std::fmt::Display for DiffItem {
     }
 }
 
+/// Diff with default Rust fn name normalization (camelCase → snake_case).
 pub fn diff(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
+    diff_with_fn_normalizer(ir, extracted, to_snake_case)
+}
+
+/// Diff with identity fn name normalization (for TS where names match directly).
+pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
+    diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string())
+}
+
+fn diff_with_fn_normalizer<F>(ir: &OxidtrIR, extracted: &ExtractedImpl, normalize_fn: F) -> Vec<DiffItem>
+where F: Fn(&str) -> String {
     let mut diffs = Vec::new();
 
     // ── structs ────────────────────────────────────────────────────────────────
@@ -118,10 +129,9 @@ pub fn diff(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
     }
 
     // ── operations ─────────────────────────────────────────────────────────────
-    // Pred names are camelCase in Alloy, but generate emits snake_case fn names.
-    // Compare by normalizing both sides to snake_case.
+    // Normalize pred names for comparison (snake_case for Rust, identity for TS).
     let ir_fn_pairs: Vec<(String, &str)> = ir.operations.iter()
-        .map(|o| (to_snake_case(&o.name), o.name.as_str()))
+        .map(|o| (normalize_fn(&o.name), o.name.as_str()))
         .collect();
     let impl_fn_snakes: std::collections::HashSet<&str> =
         extracted.fns.iter().map(|f| f.name.as_str()).collect();

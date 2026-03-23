@@ -2,13 +2,13 @@ use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::rust;
 
-fn generate_from(input: &str) -> Vec<rust::GeneratedFile> {
+fn generate_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
     let model = parser::parse(input).expect("should parse");
     let ir = ir::lower(&model).expect("should lower");
     rust::generate(&ir)
 }
 
-fn find_file<'a>(files: &'a [rust::GeneratedFile], path: &str) -> &'a str {
+fn find_file<'a>(files: &'a [oxidtr::backend::GeneratedFile], path: &str) -> &'a str {
     files
         .iter()
         .find(|f| f.path == path)

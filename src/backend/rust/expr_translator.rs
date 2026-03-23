@@ -1,5 +1,5 @@
 use crate::parser::ast::*;
-use crate::ir::nodes::{StructureNode, OxidtrIR};
+use crate::ir::nodes::OxidtrIR;
 use std::collections::{HashSet, BTreeSet};
 
 /// Info about a transitive closure field needed for function generation.
@@ -229,13 +229,15 @@ fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
 }
 
-/// Look up the multiplicity of a named field across all IR structures.
+/// Look up the multiplicity and boxing info of a named field.
+/// Returns (multiplicity, needs_box) where needs_box is true for self-ref or cyclic-ref fields.
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
+    let cyclic = super::find_cyclic_fields(ir);
     for s in &ir.structures {
         for f in &s.fields {
             if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
+                let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                return Some((f.mult.clone(), is_boxed));
             }
         }
     }
@@ -254,7 +256,13 @@ fn translate_inner_ir(
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
-            format!("{}.{field}", ti(base, false))
+            let base_str = ti(base, false);
+            // Box<T> one-fields need deref for comparisons to work
+            if let Some((Multiplicity::One, true)) = field_mult(field, ir) {
+                format!("(*{base_str}.{field})")
+            } else {
+                format!("{base_str}.{field}")
+            }
         }
 
         Expr::Cardinality(inner) => format!("{}.len()", ti(inner, false)),

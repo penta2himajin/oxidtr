@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::check::{self, CheckConfig};
+use oxidtr::mine;
 
 #[derive(Parser)]
 #[command(name = "oxidtr")]
@@ -23,14 +24,25 @@ enum Commands {
         #[arg(long, default_value = "warn")]
         warnings: WarningArg,
     },
-    /// Check structural consistency between Alloy model and Rust implementation
+    /// Check structural consistency between Alloy model and implementation
     Check {
         /// Path to the Alloy model file (.als)
         #[arg(long)]
         model: String,
-        /// Path to the implementation directory (must contain models.rs)
+        /// Path to the implementation directory
         #[arg(long)]
         r#impl: String,
+    },
+    /// Extract Alloy model draft from existing source code
+    Mine {
+        /// Path to source file or directory
+        source: String,
+        /// Source language (rust, ts)
+        #[arg(long, default_value = "rust")]
+        lang: String,
+        /// Output file (default: stdout)
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -69,6 +81,40 @@ fn main() {
                     eprintln!("error: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+
+        Commands::Mine { source, lang, output } => {
+            let source_content = match std::fs::read_to_string(&source) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("error: cannot read {source}: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            let mined = match lang.as_str() {
+                "rust" | "rs" => mine::rust_extractor::extract(&source_content),
+                "typescript" | "ts" => mine::ts_extractor::extract(&source_content),
+                other => {
+                    eprintln!("error: unsupported language: {other}");
+                    std::process::exit(1);
+                }
+            };
+
+            let rendered = mine::renderer::render(&mined);
+
+            if let Some(path) = output {
+                if let Err(e) = std::fs::write(&path, &rendered) {
+                    eprintln!("error: cannot write {path}: {e}");
+                    std::process::exit(1);
+                }
+                println!("Mined {} sig(s), {} fact candidate(s) → {path}",
+                    mined.sigs.len(), mined.fact_candidates.len());
+            } else {
+                print!("{rendered}");
+                eprintln!("\nMined {} sig(s), {} fact candidate(s)",
+                    mined.sigs.len(), mined.fact_candidates.len());
             }
         }
 

@@ -1,6 +1,7 @@
 use crate::parser;
 use crate::ir;
 use crate::backend::rust;
+use crate::backend::typescript;
 
 use std::path::Path;
 
@@ -106,6 +107,7 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     // Generate target code
     let files = match config.target.as_str() {
         "rust" => rust::generate(&ir),
+        "typescript" | "ts" => typescript::generate(&ir),
         other => {
             return Err(GenerateError::ParseError(parser::ParseError::InvalidSyntax {
                 message: format!("unsupported target: {other}"),
@@ -189,7 +191,7 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
             }
         }
 
-        // UNREFERENCED_SIG: no other sig references this one
+        // UNREFERENCED_SIG: no other sig references this one (via fields, parent, or constraints)
         if s.parent.is_none() && !s.is_enum {
             let is_referenced = ir.structures.iter().any(|other| {
                 other.name != s.name && other.fields.iter().any(|f| f.target == s.name)
@@ -197,7 +199,15 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
             let is_parent = ir.structures.iter().any(|other| {
                 other.parent.as_deref() == Some(&s.name)
             });
-            if !is_referenced && !is_parent {
+            // Also check if sig is referenced in constraint/property quantifier domains
+            let is_in_constraint = ir.constraints.iter().any(|c| {
+                expr_references_sig_name(&c.expr, &s.name)
+            }) || ir.properties.iter().any(|p| {
+                expr_references_sig_name(&p.expr, &s.name)
+            }) || ir.operations.iter().any(|o| {
+                o.params.iter().any(|p| p.type_name == s.name)
+            });
+            if !is_referenced && !is_parent && !is_in_constraint {
                 warnings.push(Warning {
                     kind: WarningKind::UnreferencedSig,
                     message: format!("{} はどこからも参照されていない", s.name),
@@ -332,6 +342,26 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
     warnings
 }
 
+/// Check if an expression references a sig name (e.g. as a quantifier domain).
+fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> bool {
+    use crate::parser::ast::Expr;
+    match expr {
+        Expr::VarRef(name) => name == sig_name,
+        Expr::Quantifier { domain, body, .. } => {
+            expr_references_sig_name(domain, sig_name)
+                || expr_references_sig_name(body, sig_name)
+        }
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. } => {
+            expr_references_sig_name(left, sig_name)
+                || expr_references_sig_name(right, sig_name)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            expr_references_sig_name(inner, sig_name)
+        }
+        Expr::FieldAccess { base, .. } => expr_references_sig_name(base, sig_name),
+    }
+}
+
 /// Check if an expression references a specific field of a sig.
 fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, field: &str) -> bool {
     use crate::parser::ast::Expr;
@@ -371,25 +401,6 @@ fn constraint_has_cardinality(expr: &crate::parser::ast::Expr, field: &str) -> b
         Expr::Not(inner) => constraint_has_cardinality(inner, field),
         Expr::Quantifier { body, .. } => constraint_has_cardinality(body, field),
         _ => false,
-    }
-}
-
-/// Check if an expression uses TransitiveClosure on a specific field.
-fn expr_uses_tc_on_field(expr: &crate::parser::ast::Expr, field: &str) -> bool {
-    use crate::parser::ast::Expr;
-    match expr {
-        Expr::TransitiveClosure(inner) => constraint_references_field(inner, "", field),
-        Expr::Comparison { left, right, .. } => {
-            expr_uses_tc_on_field(left, field) || expr_uses_tc_on_field(right, field)
-        }
-        Expr::BinaryLogic { left, right, .. } => {
-            expr_uses_tc_on_field(left, field) || expr_uses_tc_on_field(right, field)
-        }
-        Expr::Not(inner) => expr_uses_tc_on_field(inner, field),
-        Expr::Quantifier { body, .. } => expr_uses_tc_on_field(body, field),
-        Expr::Cardinality(inner) => expr_uses_tc_on_field(inner, field),
-        Expr::FieldAccess { base, .. } => expr_uses_tc_on_field(base, field),
-        Expr::VarRef(_) => false,
     }
 }
 

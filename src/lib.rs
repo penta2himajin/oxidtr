@@ -3,3 +3,4 @@ pub mod ir;
 pub mod backend;
 pub mod generate;
 pub mod check;
+pub mod mine;
