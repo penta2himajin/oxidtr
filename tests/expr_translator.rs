@@ -1,0 +1,376 @@
+use oxidtr::backend::rust::expr_translator::{translate, translate_with_ir};
+use oxidtr::parser::ast::*;
+use oxidtr::ir::nodes::*;
+
+// Helper constructors
+fn var(name: &str) -> Expr {
+    Expr::VarRef(name.to_string())
+}
+
+fn field(base: Expr, f: &str) -> Expr {
+    Expr::FieldAccess {
+        base: Box::new(base),
+        field: f.to_string(),
+    }
+}
+
+fn eq(left: Expr, right: Expr) -> Expr {
+    Expr::Comparison {
+        op: CompareOp::Eq,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+fn in_op(left: Expr, right: Expr) -> Expr {
+    Expr::Comparison {
+        op: CompareOp::In,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+fn and(left: Expr, right: Expr) -> Expr {
+    Expr::BinaryLogic {
+        op: LogicOp::And,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+fn implies(left: Expr, right: Expr) -> Expr {
+    Expr::BinaryLogic {
+        op: LogicOp::Implies,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+fn not(inner: Expr) -> Expr {
+    Expr::Not(Box::new(inner))
+}
+
+fn card(inner: Expr) -> Expr {
+    Expr::Cardinality(Box::new(inner))
+}
+
+fn all(v: &str, domain: Expr, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::All,
+        var: v.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    }
+}
+
+fn some(v: &str, domain: Expr, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::Some,
+        var: v.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    }
+}
+
+fn no(v: &str, domain: Expr, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::No,
+        var: v.to_string(),
+        domain: Box::new(domain),
+        body: Box::new(body),
+    }
+}
+
+
+// ── IR builder helpers for lone/set field tests ──────────────────────────────
+
+fn make_ir_two_sigs(
+    sig_a: &str,
+    field_name: &str,
+    mult: Multiplicity,
+    sig_b: &str,
+) -> OxidtrIR {
+    let node_b = StructureNode {
+        name: sig_b.to_string(),
+        is_enum: false,
+        is_singleton: false,
+        parent: None,
+        fields: vec![],
+    };
+    let node_a = StructureNode {
+        name: sig_a.to_string(),
+        is_enum: false,
+        is_singleton: false,
+        parent: None,
+        fields: vec![IRField {
+            name: field_name.to_string(),
+            mult,
+            target: sig_b.to_string(),
+        }],
+    };
+    OxidtrIR {
+        structures: vec![node_a, node_b],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![],
+    }
+}
+
+fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> OxidtrIR {
+    let node = StructureNode {
+        name: sig_name.to_string(),
+        is_enum: false,
+        is_singleton: false,
+        parent: None,
+        fields: vec![IRField {
+            name: field_name.to_string(),
+            mult,
+            target: sig_name.to_string(),
+        }],
+    };
+    OxidtrIR {
+        structures: vec![node],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![],
+    }
+}
+
+// --- Tests ---
+
+#[test]
+fn translate_var_ref() {
+    assert_eq!(translate(&var("x")), "x");
+}
+
+#[test]
+fn translate_field_access() {
+    assert_eq!(translate(&field(var("u"), "role")), "u.role");
+}
+
+#[test]
+fn translate_chained_field_access() {
+    assert_eq!(
+        translate(&field(field(var("u"), "role"), "perms")),
+        "u.role.perms"
+    );
+}
+
+#[test]
+fn translate_eq() {
+    assert_eq!(translate(&eq(var("a"), var("b"))), "a == b");
+}
+
+#[test]
+fn translate_not_eq() {
+    let expr = Expr::Comparison {
+        op: CompareOp::NotEq,
+        left: Box::new(var("a")),
+        right: Box::new(var("b")),
+    };
+    assert_eq!(translate(&expr), "a != b");
+}
+
+#[test]
+fn translate_in_as_contains() {
+    // `a in b` → `b.contains(&a)` for set membership
+    assert_eq!(translate(&in_op(var("a"), var("b"))), "b.contains(&a)");
+}
+
+#[test]
+fn translate_and() {
+    assert_eq!(translate(&and(var("a"), var("b"))), "a && b");
+}
+
+#[test]
+fn translate_or() {
+    let expr = Expr::BinaryLogic {
+        op: LogicOp::Or,
+        left: Box::new(var("a")),
+        right: Box::new(var("b")),
+    };
+    assert_eq!(translate(&expr), "a || b");
+}
+
+#[test]
+fn translate_implies() {
+    assert_eq!(translate(&implies(var("a"), var("b"))), "!a || b");
+}
+
+#[test]
+fn translate_not() {
+    assert_eq!(translate(&not(var("a"))), "!a");
+}
+
+#[test]
+fn translate_cardinality() {
+    assert_eq!(translate(&card(field(var("a"), "items"))), "a.items.len()");
+}
+
+#[test]
+fn translate_all_quantifier() {
+    let expr = all("x", var("xs"), eq(var("x"), var("x")));
+    assert_eq!(translate(&expr), "xs.iter().all(|x| x == x)");
+}
+
+#[test]
+fn translate_some_quantifier() {
+    let expr = some("x", var("xs"), eq(var("x"), var("x")));
+    assert_eq!(translate(&expr), "xs.iter().any(|x| x == x)");
+}
+
+#[test]
+fn translate_no_quantifier() {
+    let expr = no("x", var("xs"), eq(var("x"), var("x")));
+    assert_eq!(translate(&expr), "!xs.iter().any(|x| x == x)");
+}
+
+#[test]
+fn translate_nested_quantifiers() {
+    // all u: users | all r: u.roles | r == r
+    let inner = all("r", field(var("u"), "roles"), eq(var("r"), var("r")));
+    let expr = all("u", var("users"), inner);
+    assert_eq!(
+        translate(&expr),
+        "users.iter().all(|u| u.roles.iter().all(|r| r == r))"
+    );
+}
+
+#[test]
+fn translate_implies_with_comparison() {
+    // a == b implies c == d  →  !(a == b) || c == d
+    let expr = implies(eq(var("a"), var("b")), eq(var("c"), var("d")));
+    assert_eq!(translate(&expr), "!(a == b) || c == d");
+}
+
+#[test]
+fn translate_complex_fact() {
+    // all u: users | u.role == admin implies #u.owns == 0
+    let body = implies(
+        eq(field(var("u"), "role"), var("admin")),
+        eq(card(field(var("u"), "owns")), var("0")),
+    );
+    let expr = all("u", var("users"), body);
+    assert_eq!(
+        translate(&expr),
+        "users.iter().all(|u| !(u.role == admin) || u.owns.len() == 0)"
+    );
+}
+
+// ── lone field membership (In operator) ──────────────────────────────────────
+
+#[test]
+fn translate_in_with_lone_field_non_selfref() {
+    // u.group is lone Group (Option<Group>) → u.group.as_ref() == Some(&u)
+    let ir = make_ir_two_sigs("User", "group", Multiplicity::Lone, "Group");
+    let expr = Expr::Comparison {
+        op: CompareOp::In,
+        left:  Box::new(Expr::VarRef("u".into())),
+        right: Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("u".into())),
+            field: "group".into(),
+        }),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("as_ref()") && result.contains("Some"),
+        "lone non-selfref should use as_ref() == Some, got: {result}"
+    );
+}
+
+#[test]
+fn translate_in_with_lone_selfref_field() {
+    // s.parent is lone SigDecl (Option<Box<SigDecl>>) → s.parent.as_deref() == Some(&s)
+    let ir = make_ir_self_ref("SigDecl", "parent", Multiplicity::Lone);
+    let expr = Expr::Comparison {
+        op: CompareOp::In,
+        left:  Box::new(Expr::VarRef("s".into())),
+        right: Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("s".into())),
+            field: "parent".into(),
+        }),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("as_deref()") && result.contains("Some"),
+        "lone self-ref should use as_deref() == Some, got: {result}"
+    );
+}
+
+#[test]
+fn translate_in_with_set_field_unchanged() {
+    // s.fields is set FieldDecl (Vec<FieldDecl>) → s.fields.contains(&f)
+    let ir = make_ir_two_sigs("SigDecl", "fields", Multiplicity::Set, "FieldDecl");
+    let expr = Expr::Comparison {
+        op: CompareOp::In,
+        left:  Box::new(Expr::VarRef("f".into())),
+        right: Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("s".into())),
+            field: "fields".into(),
+        }),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("contains"),
+        "set field should still use contains, got: {result}"
+    );
+}
+
+// ── lone field Eq operator ────────────────────────────────────────────────────
+
+#[test]
+fn translate_eq_with_lone_selfref_field() {
+    // s.parent = p where parent is lone SigDecl (self-ref) → as_deref() == Some
+    let ir = make_ir_self_ref("SigDecl", "parent", Multiplicity::Lone);
+    let expr = Expr::Comparison {
+        op: CompareOp::Eq,
+        left:  Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("s".into())),
+            field: "parent".into(),
+        }),
+        right: Box::new(Expr::VarRef("p".into())),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("as_deref()") && result.contains("Some"),
+        "lone self-ref Eq should use as_deref() == Some, got: {result}"
+    );
+}
+
+#[test]
+fn translate_eq_with_lone_non_selfref_field() {
+    // u.group = g where group is lone Group (non self-ref) → as_ref() == Some
+    let ir = make_ir_two_sigs("User", "group", Multiplicity::Lone, "Group");
+    let expr = Expr::Comparison {
+        op: CompareOp::Eq,
+        left:  Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("u".into())),
+            field: "group".into(),
+        }),
+        right: Box::new(Expr::VarRef("g".into())),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("as_ref()") && result.contains("Some"),
+        "lone non-selfref Eq should use as_ref() == Some, got: {result}"
+    );
+}
+
+#[test]
+fn translate_eq_one_field_unchanged() {
+    // s.role = r where role is one Role → normal ==
+    let ir = make_ir_two_sigs("User", "role", Multiplicity::One, "Role");
+    let expr = Expr::Comparison {
+        op: CompareOp::Eq,
+        left:  Box::new(Expr::FieldAccess {
+            base:  Box::new(Expr::VarRef("u".into())),
+            field: "role".into(),
+        }),
+        right: Box::new(Expr::VarRef("r".into())),
+    };
+    let result = translate_with_ir(&expr, &ir);
+    assert!(
+        result.contains("==") && !result.contains("Some"),
+        "one field Eq should use plain ==, got: {result}"
+    );
+}
