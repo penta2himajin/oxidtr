@@ -4,6 +4,7 @@ use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::{Multiplicity, SigMultiplicity};
 use crate::analyze;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 struct KotlinLang;
@@ -543,6 +544,54 @@ fn capitalize(s: &str) -> String {
 fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
 
+    let fixture_types = super::super::collect_fixture_types(ir);
+
+    // Generate enum default fixtures
+    {
+        let children: HashMap<String, Vec<String>> = {
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for s in &ir.structures {
+                if let Some(parent) = &s.parent {
+                    map.entry(parent.clone()).or_default().push(s.name.clone());
+                }
+            }
+            map
+        };
+        let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        for s in &ir.structures {
+            if !s.is_enum { continue; }
+            let variants = match children.get(&s.name) {
+                Some(v) if !v.is_empty() => v,
+                _ => continue,
+            };
+            let first_unit = variants.iter().find(|v| {
+                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+            });
+            if let Some(variant) = first_unit {
+                let all_unit = variants.iter().all(|v| {
+                    struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+                });
+                if all_unit {
+                    // Enum class → qualified access: EnumName.Variant
+                    writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
+                    writeln!(out, "fun default{}(): {} = {}.{}", s.name, s.name, s.name, variant).unwrap();
+                    writeln!(out).unwrap();
+                } else {
+                    // Sealed class → data object variant (top-level)
+                    let has_fields = struct_map.get(variant.as_str())
+                        .map_or(false, |st| !st.fields.is_empty());
+                    if !has_fields {
+                        writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
+                        writeln!(out, "fun default{}(): {} = {}", s.name, s.name, variant).unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
         if s.fields.is_empty() { continue; }
@@ -552,6 +601,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         for (i, f) in s.fields.iter().enumerate() {
             let val = if f.value_type.is_some() {
                 "emptyMap()".to_string()
+            } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                && super::super::is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                let safe = HashSet::from([f.target.clone()]);
+                kt_default_value_inner(&f.target, &f.mult, &safe)
             } else {
                 kt_default_value(&f.target, &f.mult)
             };
@@ -654,10 +707,26 @@ fn kt_return_type(type_name: &str, mult: &Multiplicity) -> String {
 }
 
 fn kt_default_value(target: &str, mult: &Multiplicity) -> String {
+    kt_default_value_inner(target, mult, &HashSet::new())
+}
+
+fn kt_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set => "emptySet()".to_string(),
-        Multiplicity::Seq => "emptyList()".to_string(),
+        Multiplicity::Set => {
+            if safe_targets.contains(target) {
+                format!("setOf(default{target}())")
+            } else {
+                "emptySet()".to_string()
+            }
+        }
+        Multiplicity::Seq => {
+            if safe_targets.contains(target) {
+                format!("listOf(default{target}())")
+            } else {
+                "emptyList()".to_string()
+            }
+        }
         Multiplicity::One => format!("default{target}()"),
     }
 }

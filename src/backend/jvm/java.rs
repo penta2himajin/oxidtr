@@ -4,6 +4,7 @@ use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::{Multiplicity, SigMultiplicity};
 use crate::analyze;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 struct JavaLang;
@@ -555,6 +556,50 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 
     writeln!(out, "public class Fixtures {{").unwrap();
 
+    let fixture_types = super::super::collect_fixture_types(ir);
+
+    // Generate enum default fixtures
+    {
+        let children: HashMap<String, Vec<String>> = {
+            let mut map: HashMap<String, Vec<String>> = HashMap::new();
+            for s in &ir.structures {
+                if let Some(parent) = &s.parent {
+                    map.entry(parent.clone()).or_default().push(s.name.clone());
+                }
+            }
+            map
+        };
+        let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+            .map(|s| (s.name.as_str(), s))
+            .collect();
+        for s in &ir.structures {
+            if !s.is_enum { continue; }
+            let variants = match children.get(&s.name) {
+                Some(v) if !v.is_empty() => v,
+                _ => continue,
+            };
+            // Find first unit variant (no fields) — use as singleton enum INSTANCE
+            let first_unit = variants.iter().find(|v| {
+                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+            });
+            if let Some(variant) = first_unit {
+                // For sealed interface + singleton, variant is an enum with INSTANCE
+                let is_singleton = struct_map.get(variant.as_str())
+                    .map_or(false, |st| {
+                        st.sig_multiplicity != crate::parser::ast::SigMultiplicity::Default
+                            && st.fields.is_empty()
+                    });
+                if is_singleton {
+                    writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
+                    writeln!(out, "    public static {} default{}() {{", s.name, s.name).unwrap();
+                    writeln!(out, "        return {}.INSTANCE;", variant).unwrap();
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out).unwrap();
+                }
+            }
+        }
+    }
+
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
         if s.fields.is_empty() { continue; }
@@ -563,6 +608,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             .map(|f| {
                 if f.value_type.is_some() {
                     "Map.of()".to_string()
+                } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                    && super::super::is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                    let safe = HashSet::from([f.target.clone()]);
+                    java_default_value_inner(&f.target, &f.mult, &safe)
                 } else {
                     java_default_value(&f.target, &f.mult)
                 }
@@ -667,10 +716,26 @@ fn java_return_type(type_name: &str, mult: &Multiplicity) -> String {
 }
 
 fn java_default_value(target: &str, mult: &Multiplicity) -> String {
+    java_default_value_inner(target, mult, &HashSet::new())
+}
+
+fn java_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     match mult {
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set => "Set.of()".to_string(),
-        Multiplicity::Seq => "List.of()".to_string(),
+        Multiplicity::Set => {
+            if safe_targets.contains(target) {
+                format!("new java.util.HashSet<>(Set.of(default{target}()))")
+            } else {
+                "Set.of()".to_string()
+            }
+        }
+        Multiplicity::Seq => {
+            if safe_targets.contains(target) {
+                format!("new java.util.ArrayList<>(List.of(default{target}()))")
+            } else {
+                "List.of()".to_string()
+            }
+        }
         Multiplicity::One => format!("default{target}()"),
     }
 }
