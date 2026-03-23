@@ -917,7 +917,10 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                 analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
                     writeln!(out, "  if ({param_name}.{field_name} === {param_name}) errors.push(\"{field_name} must not reference self\");").unwrap();
                 }
-                _ => {} // Named, Membership, Acyclic — too complex for simple validators
+                analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                    writeln!(out, "  {{ const seen = new Set<unknown>(); let cur: unknown = {param_name}; while (cur != null) {{ if (seen.has(cur)) {{ errors.push(\"{field_name} must not form a cycle\"); break; }} seen.add(cur); cur = (cur as Record<string, unknown>).{field_name}; }} }}").unwrap();
+                }
+                _ => {} // Named, Membership — not directly translatable to simple validators
             }
         }
 

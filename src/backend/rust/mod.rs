@@ -843,6 +843,37 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
+        // Acyclic field checks (walk the chain, detect if value is reachable from itself)
+        {
+            let acyclic_fields: Vec<String> = all_constraints.iter()
+                .filter_map(|c| {
+                    if let analyze::ConstraintInfo::Acyclic { sig_name: s, field_name } = c {
+                        if s == sig_name {
+                            return Some(field_name.clone());
+                        }
+                    }
+                    None
+                })
+                .collect();
+            if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+                for field_name in &acyclic_fields {
+                    if let Some(f) = structure.fields.iter().find(|f| f.name == *field_name) {
+                        if f.mult == Multiplicity::Lone && f.target == *sig_name {
+                            writeln!(out, "        {{").unwrap();
+                            writeln!(out, "            let mut cur = value.{field_name}.as_deref();").unwrap();
+                            writeln!(out, "            while let Some(node) = cur {{").unwrap();
+                            writeln!(out, "                if node == &value {{").unwrap();
+                            writeln!(out, "                    return Err(\"{field_name} must not form a cycle\");").unwrap();
+                            writeln!(out, "                }}").unwrap();
+                            writeln!(out, "                cur = node.{field_name}.as_deref();").unwrap();
+                            writeln!(out, "            }}").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
         // Inline the constraint expression directly instead of calling invariant function
         // Bind param names with type annotations for closure inference
         // Only the param matching sig_name gets value.clone(); others get empty Vec

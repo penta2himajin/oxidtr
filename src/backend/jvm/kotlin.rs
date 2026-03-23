@@ -174,11 +174,19 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                 annotations.push("/* @Nullable — lone sig may not exist */".to_string());
             }
             // NoSelfRef: field must not reference self
-            let no_self_ref = analyze::constraints_for_sig(ir, &s.name).iter().any(|c| {
+            let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+            let no_self_ref = sig_constraints.iter().any(|c| {
                 matches!(c, analyze::ConstraintInfo::NoSelfRef { field_name: fname, .. } if fname == &f.name)
             });
             if no_self_ref {
                 annotations.push(format!("/* require({} != this) — no self-reference */", f.name));
+            }
+            // Acyclic: field chain must not form a cycle
+            let acyclic = sig_constraints.iter().any(|c| {
+                matches!(c, analyze::ConstraintInfo::Acyclic { field_name: fname, .. } if fname == &f.name)
+            });
+            if acyclic {
+                annotations.push(format!("/* acyclic: {}.^{} must not contain this */", f.name, f.name));
             }
             // Gap 3: disj → suggest Set
             if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
