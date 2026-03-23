@@ -10,9 +10,10 @@ fn parse_simple_fact() {
     assert_eq!(model.facts.len(), 1);
     assert_eq!(model.facts[0].name.as_deref(), Some("SomeFact"));
     match &model.facts[0].body {
-        Expr::Quantifier { kind, var, .. } => {
+        Expr::Quantifier { kind, bindings, .. } => {
             assert_eq!(*kind, QuantKind::All);
-            assert_eq!(var, "a");
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].vars, vec!["a".to_string()]);
         }
         other => panic!("expected Quantifier, got {other:?}"),
     }
@@ -287,6 +288,259 @@ fn parse_negative_int_literal() {
                 }
                 other => panic!("expected Comparison(Gte), got {other:?}"),
             }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+// ── Set operation tests ───────────────────────────────────────────────────────
+
+#[test]
+fn parse_set_union() {
+    let input = r#"
+        sig A {}
+        sig B {}
+        fact { all a: A | a + a = a }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::SetOp { op: SetOpKind::Union, .. }));
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_set_intersection() {
+    let input = r#"
+        sig A { f: set B }
+        sig B { g: set A }
+        fact { all a: A | a.f & a.f = a.f }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::SetOp { op: SetOpKind::Intersection, .. }));
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_set_difference() {
+    let input = r#"
+        sig A {}
+        sig B {}
+        fact { all a: A | a - a = a }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::SetOp { op: SetOpKind::Difference, .. }));
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+// ── Product (arrow) tests ─────────────────────────────────────────────────────
+
+#[test]
+fn parse_product() {
+    let input = r#"
+        sig A {}
+        sig B {}
+        sig R { rel: set A }
+        fact { all a: A | a -> a in a }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::In, left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::Product { .. }));
+                }
+                other => panic!("expected Comparison(In), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+// ── Fun declaration tests ─────────────────────────────────────────────────────
+
+#[test]
+fn parse_fun_decl() {
+    let input = r#"
+        sig User { role: one Role }
+        sig Role {}
+        fun getRole[u: one User]: one Role { u.role }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.funs.len(), 1);
+    assert_eq!(model.funs[0].name, "getRole");
+    assert_eq!(model.funs[0].params.len(), 1);
+    assert_eq!(model.funs[0].params[0].name, "u");
+    assert_eq!(model.funs[0].params[0].mult, Multiplicity::One);
+    assert_eq!(model.funs[0].params[0].type_name, "User");
+    assert_eq!(model.funs[0].return_mult, Multiplicity::One);
+    assert_eq!(model.funs[0].return_type, "Role");
+    assert!(matches!(&model.funs[0].body, Expr::FieldAccess { .. }));
+}
+
+#[test]
+fn parse_fun_no_params() {
+    let input = r#"
+        sig A {}
+        fun allAs: set A { A }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.funs.len(), 1);
+    assert_eq!(model.funs[0].name, "allAs");
+    assert!(model.funs[0].params.is_empty());
+    assert_eq!(model.funs[0].return_mult, Multiplicity::Set);
+    assert_eq!(model.funs[0].return_type, "A");
+}
+
+#[test]
+fn parse_fun_lowers_to_operation() {
+    let input = r#"
+        sig User { role: one Role }
+        sig Role {}
+        fun getRole[u: one User]: one Role { u.role }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    let ir = oxidtr::ir::lower(&model).expect("should lower");
+    // fun should be lowered as an operation with return type
+    assert!(ir.operations.iter().any(|op| op.name == "getRole" && op.return_type.is_some()));
+}
+
+// ── Multi-variable quantifier and disj tests ──────────────────────────────────
+
+#[test]
+fn parse_multi_var_same_domain() {
+    let input = r#"
+        sig S {}
+        fact { all x, y: S | x = y }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { kind, bindings, .. } => {
+            assert_eq!(*kind, QuantKind::All);
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].vars, vec!["x".to_string(), "y".to_string()]);
+            assert!(!bindings[0].disj);
+            assert!(matches!(&bindings[0].domain, Expr::VarRef(name) if name == "S"));
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_multi_binding_different_domains() {
+    let input = r#"
+        sig S {}
+        sig T {}
+        fact { all x: S, y: T | x = y }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { kind, bindings, .. } => {
+            assert_eq!(*kind, QuantKind::All);
+            assert_eq!(bindings.len(), 2);
+            assert_eq!(bindings[0].vars, vec!["x".to_string()]);
+            assert!(matches!(&bindings[0].domain, Expr::VarRef(name) if name == "S"));
+            assert_eq!(bindings[1].vars, vec!["y".to_string()]);
+            assert!(matches!(&bindings[1].domain, Expr::VarRef(name) if name == "T"));
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_disj_quantifier() {
+    let input = r#"
+        sig S {}
+        fact { all disj x, y: S | x != y }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { kind, bindings, .. } => {
+            assert_eq!(*kind, QuantKind::All);
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].vars, vec!["x".to_string(), "y".to_string()]);
+            assert!(bindings[0].disj);
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_some_disj_quantifier() {
+    let input = r#"
+        sig S {}
+        fact { some disj x, y: S | x != y }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { kind, bindings, .. } => {
+            assert_eq!(*kind, QuantKind::Some);
+            assert_eq!(bindings.len(), 1);
+            assert!(bindings[0].disj);
+            assert_eq!(bindings[0].vars.len(), 2);
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_single_var_backwards_compatible() {
+    let input = r#"
+        sig A {}
+        fact { all a: A | a = a }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { bindings, .. } => {
+            assert_eq!(bindings.len(), 1);
+            assert_eq!(bindings[0].vars.len(), 1);
+            assert_eq!(bindings[0].vars[0], "a");
+            assert!(!bindings[0].disj);
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_multi_binding_with_disj() {
+    let input = r#"
+        sig S {}
+        sig T {}
+        fact { all disj x, y: S, z: T | x = z }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { bindings, .. } => {
+            assert_eq!(bindings.len(), 2);
+            assert!(bindings[0].disj);
+            assert_eq!(bindings[0].vars, vec!["x".to_string(), "y".to_string()]);
+            assert!(!bindings[1].disj);
+            assert_eq!(bindings[1].vars, vec!["z".to_string()]);
         }
         other => panic!("expected Quantifier, got {other:?}"),
     }

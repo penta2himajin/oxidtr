@@ -33,9 +33,16 @@ pub struct IRParam {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IRReturnType {
+    pub mult: Multiplicity,
+    pub type_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationNode {
     pub name: String,
     pub params: Vec<IRParam>,
+    pub return_type: Option<IRReturnType>,
     pub body: Vec<Expr>,
 }
 

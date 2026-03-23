@@ -70,9 +70,13 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(right, ir, out);
         }
         Expr::Not(inner) | Expr::Cardinality(inner) => collect_tc_fields(inner, ir, out),
-        Expr::Quantifier { domain, body, .. } => {
-            collect_tc_fields(domain, ir, out);
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings { collect_tc_fields(&b.domain, ir, out); }
             collect_tc_fields(body, ir, out);
+        }
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_tc_fields(left, ir, out);
+            collect_tc_fields(right, ir, out);
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -80,16 +84,19 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
 
 fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSet<(String, String)>) {
     match expr {
-        Expr::Quantifier { domain, body, .. } => {
-            if let Expr::VarRef(name) = domain.as_ref() {
-                if sig_names.contains(name) {
-                    params.insert((to_camel_plural(name), name.clone()));
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                if let Expr::VarRef(name) = &b.domain {
+                    if sig_names.contains(name) {
+                        params.insert((to_camel_plural(name), name.clone()));
+                    }
                 }
+                collect_params(&b.domain, sig_names, params);
             }
-            collect_params(domain, sig_names, params);
             collect_params(body, sig_names, params);
         }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. } => {
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             collect_params(left, sig_names, params);
             collect_params(right, sig_names, params);
         }
@@ -172,17 +179,25 @@ fn translate_inner(
 
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
-        Expr::Quantifier { kind, var, domain, body } => {
+        Expr::Quantifier { kind, bindings, body } => {
             let b = ti(body, false);
-            let d = if let Expr::VarRef(name) = domain.as_ref() {
-                if sig_names.contains(name) { to_camel_plural(name) }
-                else { name.clone() }
-            } else { ti(domain, false) };
-            match kind {
-                QuantKind::All  => lang.all_quantifier(&d, var, &b),
-                QuantKind::Some => lang.some_quantifier(&d, var, &b),
-                QuantKind::No   => lang.no_quantifier(&d, var, &b),
+            build_nested_quantifier_jvm(kind, bindings, &b, sig_names, ir, lang)
+        }
+
+        Expr::SetOp { op, left, right } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            match op {
+                SetOpKind::Union => format!("/* union */ {l} + {r}"),
+                SetOpKind::Intersection => format!("/* intersect */ {l} & {r}"),
+                SetOpKind::Difference => format!("/* diff */ {l} - {r}"),
             }
+        }
+
+        Expr::Product { left, right } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            format!("Pair({l}, {r})")
         }
     };
 
@@ -191,6 +206,71 @@ fn translate_inner(
     } else {
         result
     }
+}
+
+fn build_nested_quantifier_jvm(
+    kind: &QuantKind,
+    bindings: &[QuantBinding],
+    body_str: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    lang: &dyn JvmLang,
+) -> String {
+    let mut vars: Vec<(String, String, bool)> = Vec::new();
+    for b in bindings {
+        let d = if let Expr::VarRef(name) = &b.domain {
+            if sig_names.contains(name) { to_camel_plural(name) }
+            else { name.clone() }
+        } else {
+            translate_inner(&b.domain, false, sig_names, ir, lang)
+        };
+        for v in &b.vars {
+            vars.push((v.clone(), d.clone(), b.disj));
+        }
+    }
+
+    // Build disj checks
+    let mut disj_checks = Vec::new();
+    let mut i = 0;
+    while i < vars.len() {
+        if vars[i].2 {
+            let domain = &vars[i].1;
+            let start = i;
+            while i < vars.len() && vars[i].2 && vars[i].1 == *domain { i += 1; }
+            for a in start..i {
+                for b_idx in (a+1)..i {
+                    disj_checks.push(format!("{} {} {}", vars[a].0, lang.neq_op(), vars[b_idx].0));
+                }
+            }
+        } else { i += 1; }
+    }
+
+    let guarded_body = if disj_checks.is_empty() {
+        body_str.to_string()
+    } else {
+        let guard = disj_checks.join(" && ");
+        match kind {
+            QuantKind::All | QuantKind::No => format!("if ({guard}) {body_str} else true"),
+            QuantKind::Some => format!("{guard} && {body_str}"),
+        }
+    };
+
+    let mut result = guarded_body;
+    for idx in (0..vars.len()).rev() {
+        let (ref var, ref domain, _) = vars[idx];
+        result = match kind {
+            QuantKind::All => lang.all_quantifier(domain, var, &result),
+            QuantKind::Some => lang.some_quantifier(domain, var, &result),
+            QuantKind::No => {
+                if idx == 0 {
+                    lang.no_quantifier(domain, var, &result)
+                } else {
+                    lang.some_quantifier(domain, var, &result)
+                }
+            }
+        };
+    }
+    result
 }
 
 fn needs_parens(expr: &Expr) -> bool {

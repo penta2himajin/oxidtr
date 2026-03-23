@@ -336,10 +336,13 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. } => {
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
-        Expr::Quantifier { domain, body, .. } => expr_uses_tc(domain) || expr_uses_tc(body),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_uses_tc(&b.domain)) || expr_uses_tc(body)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -545,11 +548,13 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;
     match expr {
         Expr::Comparison { .. } => true,
-        Expr::BinaryLogic { left, right, .. } => {
+        Expr::BinaryLogic { left, right, .. } | Expr::SetOp { left, right, .. }
+        | Expr::Product { left, right } => {
             expr_has_comparison(left) || expr_has_comparison(right)
         }
-        Expr::Quantifier { body, domain, .. } => {
-            expr_has_comparison(body) || expr_has_comparison(domain)
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_has_comparison(&b.domain))
+                || expr_has_comparison(body)
         }
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
             expr_has_comparison(inner)

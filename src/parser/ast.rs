@@ -58,6 +58,21 @@ pub enum QuantKind {
     No,
 }
 
+/// A single quantifier binding: `[disj] x, y, ...: Domain`
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuantBinding {
+    pub vars: Vec<String>,
+    pub domain: Expr,
+    pub disj: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SetOpKind {
+    Union,
+    Intersection,
+    Difference,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     IntLiteral(i64),
@@ -81,9 +96,17 @@ pub enum Expr {
     Not(Box<Expr>),
     Quantifier {
         kind: QuantKind,
-        var: String,
-        domain: Box<Expr>,
+        bindings: Vec<QuantBinding>,
         body: Box<Expr>,
+    },
+    SetOp {
+        op: SetOpKind,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
+    Product {
+        left: Box<Expr>,
+        right: Box<Expr>,
     },
 }
 
@@ -114,9 +137,19 @@ pub struct AssertDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunDecl {
+    pub name: String,
+    pub params: Vec<ParamDecl>,
+    pub return_mult: Multiplicity,
+    pub return_type: String,
+    pub body: Expr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlloyModel {
     pub sigs: Vec<SigDecl>,
     pub facts: Vec<FactDecl>,
     pub preds: Vec<PredDecl>,
+    pub funs: Vec<FunDecl>,
     pub asserts: Vec<AssertDecl>,
 }

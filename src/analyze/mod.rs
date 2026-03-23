@@ -87,15 +87,20 @@ pub fn constraint_names_for_sig(ir: &OxidtrIR, sig_name: &str) -> Vec<String> {
 /// Render a constraint expression to a human-readable description.
 pub fn describe_expr(expr: &Expr) -> String {
     match expr {
-        Expr::Quantifier { kind, var, domain, body } => {
+        Expr::Quantifier { kind, bindings, body } => {
             let q = match kind {
                 QuantKind::All => "for all",
                 QuantKind::Some => "there exists",
                 QuantKind::No => "no",
             };
-            let d = describe_expr(domain);
+            let bindings_str: Vec<String> = bindings.iter().map(|b| {
+                let disj_prefix = if b.disj { "disj " } else { "" };
+                let vars = b.vars.join(", ");
+                let d = describe_expr(&b.domain);
+                format!("{disj_prefix}{vars}: {d}")
+            }).collect();
             let b = describe_expr(body);
-            format!("{q} {var}: {d} | {b}")
+            format!("{q} {} | {b}", bindings_str.join(", "))
         }
         Expr::Comparison { op, left, right } => {
             let o = match op {
@@ -124,6 +129,17 @@ pub fn describe_expr(expr: &Expr) -> String {
         Expr::FieldAccess { base, field } => format!("{}.{field}", describe_expr(base)),
         Expr::VarRef(name) => name.clone(),
         Expr::IntLiteral(n) => n.to_string(),
+        Expr::SetOp { op, left, right } => {
+            let o = match op {
+                SetOpKind::Union => "+",
+                SetOpKind::Intersection => "&",
+                SetOpKind::Difference => "-",
+            };
+            format!("{} {o} {}", describe_expr(left), describe_expr(right))
+        }
+        Expr::Product { left, right } => {
+            format!("{} -> {}", describe_expr(left), describe_expr(right))
+        }
     }
 }
 
@@ -132,23 +148,32 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
 
     match expr {
         // all s: Sig | ... → recurse into body with sig context
-        Expr::Quantifier { kind: QuantKind::All, var, domain, body } => {
-            if let Expr::VarRef(sig_name) = domain.as_ref() {
-                analyze_body_for_sig(body, sig_name, var, &mut results);
+        Expr::Quantifier { kind: QuantKind::All, bindings, body } => {
+            // For backwards compatibility, handle single binding with single var
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                let var = &bindings[0].vars[0];
+                let domain = &bindings[0].domain;
+                if let Expr::VarRef(sig_name) = domain {
+                    analyze_body_for_sig(body, sig_name, var, &mut results);
+                }
             }
         }
         // no s: Sig | s in s.^field → Acyclic
-        Expr::Quantifier { kind: QuantKind::No, var, domain, body } => {
-            if let Expr::VarRef(sig_name) = domain.as_ref() {
-                if let Expr::Comparison { op: CompareOp::In, left, right } = body.as_ref() {
-                    if let Expr::VarRef(v) = left.as_ref() {
-                        if v == var {
-                            if let Expr::TransitiveClosure(inner) = right.as_ref() {
-                                if let Expr::FieldAccess { field, .. } = inner.as_ref() {
-                                    results.push(ConstraintInfo::Acyclic {
-                                        sig_name: sig_name.clone(),
-                                        field_name: field.clone(),
-                                    });
+        Expr::Quantifier { kind: QuantKind::No, bindings, body } => {
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                let var = &bindings[0].vars[0];
+                let domain = &bindings[0].domain;
+                if let Expr::VarRef(sig_name) = domain {
+                    if let Expr::Comparison { op: CompareOp::In, left, right } = body.as_ref() {
+                        if let Expr::VarRef(v) = left.as_ref() {
+                            if v == var {
+                                if let Expr::TransitiveClosure(inner) = right.as_ref() {
+                                    if let Expr::FieldAccess { field, .. } = inner.as_ref() {
+                                        results.push(ConstraintInfo::Acyclic {
+                                            sig_name: sig_name.clone(),
+                                            field_name: field.clone(),
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -281,10 +306,12 @@ pub fn bean_validations_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &st
 /// Check if an expression contains a direct comparison (not cardinality) on a field.
 fn expr_has_comparison_on_field(expr: &Expr, sig_name: &str, field_name: &str) -> bool {
     match expr {
-        Expr::Quantifier { kind: QuantKind::All, domain, body, .. } => {
-            if let Expr::VarRef(name) = domain.as_ref() {
-                if name == sig_name {
-                    return body_has_comparison_on_field(body, field_name);
+        Expr::Quantifier { kind: QuantKind::All, bindings, body } => {
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                if let Expr::VarRef(name) = &bindings[0].domain {
+                    if name == sig_name {
+                        return body_has_comparison_on_field(body, field_name);
+                    }
                 }
             }
             false
@@ -334,10 +361,12 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,
         Expr::IntLiteral(_) => false,
-        Expr::Quantifier { domain, body, .. } => {
-            expr_references_sig(domain, sig_name) || expr_references_sig(body, sig_name)
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_references_sig(&b.domain, sig_name))
+                || expr_references_sig(body, sig_name)
         }
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. } => {
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_references_sig(left, sig_name) || expr_references_sig(right, sig_name)
         }
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {

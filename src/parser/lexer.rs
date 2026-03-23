@@ -12,6 +12,7 @@ pub enum Token {
     Seq,
     Fact,
     Pred,
+    Fun,
     Assert,
     All,
     Some_,
@@ -24,6 +25,7 @@ pub enum Token {
     In,
     Check,
     Run,
+    Disj,
     // Symbols
     LBrace,
     RBrace,
@@ -44,6 +46,9 @@ pub enum Token {
     Gte,
     Arrow,
     Pipe,
+    Plus,
+    Ampersand,
+    Minus,
     // Literals
     Ident(String),
     Int(i64),
@@ -66,6 +71,10 @@ impl<'a> Lexer<'a> {
 
     pub fn pos(&self) -> usize {
         self.pos
+    }
+
+    pub fn set_pos(&mut self, pos: usize) {
+        self.pos = pos;
     }
 
     fn peek_byte(&self) -> Option<u8> {
@@ -184,6 +193,8 @@ impl<'a> Lexer<'a> {
                 }
                 return Token::Not;
             }
+            b'+' => { self.advance(); return Token::Plus; }
+            b'&' => { self.advance(); return Token::Ampersand; }
             b'-' => {
                 self.advance();
                 if self.peek_byte() == Some(b'>') {
@@ -195,8 +206,7 @@ impl<'a> Lexer<'a> {
                     let n = self.read_int();
                     return Token::Int(-n);
                 }
-                // should not happen after comment handling
-                return Token::Ident("-".to_string());
+                return Token::Minus;
             }
             _ => {}
         }
@@ -219,6 +229,7 @@ impl<'a> Lexer<'a> {
                 "seq" => Token::Seq,
                 "fact" => Token::Fact,
                 "pred" => Token::Pred,
+                "fun" => Token::Fun,
                 "assert" => Token::Assert,
                 "all" => Token::All,
                 "some" => Token::Some_,
@@ -231,6 +242,7 @@ impl<'a> Lexer<'a> {
                 "in" => Token::In,
                 "check" => Token::Check,
                 "run" => Token::Run,
+                "disj" => Token::Disj,
                 _ => Token::Ident(ident),
             };
         }

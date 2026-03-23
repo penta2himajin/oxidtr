@@ -405,10 +405,13 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. } => {
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
-        Expr::Quantifier { domain, body, .. } => expr_uses_tc(domain) || expr_uses_tc(body),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_uses_tc(&b.domain)) || expr_uses_tc(body)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

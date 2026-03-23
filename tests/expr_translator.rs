@@ -57,8 +57,7 @@ fn card(inner: Expr) -> Expr {
 fn all(v: &str, domain: Expr, body: Expr) -> Expr {
     Expr::Quantifier {
         kind: QuantKind::All,
-        var: v.to_string(),
-        domain: Box::new(domain),
+        bindings: vec![QuantBinding { vars: vec![v.to_string()], domain, disj: false }],
         body: Box::new(body),
     }
 }
@@ -66,8 +65,7 @@ fn all(v: &str, domain: Expr, body: Expr) -> Expr {
 fn some(v: &str, domain: Expr, body: Expr) -> Expr {
     Expr::Quantifier {
         kind: QuantKind::Some,
-        var: v.to_string(),
-        domain: Box::new(domain),
+        bindings: vec![QuantBinding { vars: vec![v.to_string()], domain, disj: false }],
         body: Box::new(body),
     }
 }
@@ -75,8 +73,7 @@ fn some(v: &str, domain: Expr, body: Expr) -> Expr {
 fn no(v: &str, domain: Expr, body: Expr) -> Expr {
     Expr::Quantifier {
         kind: QuantKind::No,
-        var: v.to_string(),
-        domain: Box::new(domain),
+        bindings: vec![QuantBinding { vars: vec![v.to_string()], domain, disj: false }],
         body: Box::new(body),
     }
 }
@@ -432,4 +429,73 @@ fn translate_int_comparison_with_ir() {
     let expr = cmp(CompareOp::Lte, card(field(var("t"), "members")), int_lit(5));
     let result = translate_with_ir(&expr, &ir);
     assert_eq!(result, "t.members.len() <= 5");
+}
+
+// ── Multi-variable quantifier translation tests ───────────────────────────────
+
+fn all_multi(vars: &[&str], domain: Expr, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::All,
+        bindings: vec![QuantBinding {
+            vars: vars.iter().map(|v| v.to_string()).collect(),
+            domain,
+            disj: false,
+        }],
+        body: Box::new(body),
+    }
+}
+
+fn all_disj(vars: &[&str], domain: Expr, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::All,
+        bindings: vec![QuantBinding {
+            vars: vars.iter().map(|v| v.to_string()).collect(),
+            domain,
+            disj: true,
+        }],
+        body: Box::new(body),
+    }
+}
+
+fn all_multi_binding(bindings: Vec<QuantBinding>, body: Expr) -> Expr {
+    Expr::Quantifier {
+        kind: QuantKind::All,
+        bindings,
+        body: Box::new(body),
+    }
+}
+
+#[test]
+fn translate_multi_var_same_domain() {
+    // all x, y: S | x = y → nested iteration
+    let expr = all_multi(&["x", "y"], var("S"), eq(var("x"), var("y")));
+    let result = translate(&expr);
+    assert!(result.contains("S.iter().all(|x|"));
+    assert!(result.contains("S.iter().all(|y|"));
+    assert!(result.contains("x == y"));
+}
+
+#[test]
+fn translate_multi_binding_different_domains() {
+    // all x: S, y: T | x = y → nested iteration over S then T
+    let expr = all_multi_binding(
+        vec![
+            QuantBinding { vars: vec!["x".to_string()], domain: var("S"), disj: false },
+            QuantBinding { vars: vec!["y".to_string()], domain: var("T"), disj: false },
+        ],
+        eq(var("x"), var("y")),
+    );
+    let result = translate(&expr);
+    assert!(result.contains("S.iter().all(|x|"));
+    assert!(result.contains("T.iter().all(|y|"));
+}
+
+#[test]
+fn translate_disj_adds_inequality_guard() {
+    // all disj x, y: S | body → nested with x != y guard
+    let expr = all_disj(&["x", "y"], var("S"), eq(var("x"), var("y")));
+    let result = translate(&expr);
+    assert!(result.contains("x != y"));
+    assert!(result.contains("if x != y"));
+    assert!(result.contains("else { true }"));
 }

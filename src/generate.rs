@@ -358,11 +358,12 @@ fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> 
     use crate::parser::ast::Expr;
     match expr {
         Expr::VarRef(name) => name == sig_name,
-        Expr::Quantifier { domain, body, .. } => {
-            expr_references_sig_name(domain, sig_name)
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_references_sig_name(&b.domain, sig_name))
                 || expr_references_sig_name(body, sig_name)
         }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. } => {
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_references_sig_name(left, sig_name)
                 || expr_references_sig_name(right, sig_name)
         }
@@ -390,9 +391,16 @@ fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, fiel
                 || constraint_references_field(right, _sig, field)
         }
         Expr::Not(inner) => constraint_references_field(inner, _sig, field),
-        Expr::Quantifier { body, .. } => constraint_references_field(body, _sig, field),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| constraint_references_field(&b.domain, _sig, field))
+                || constraint_references_field(body, _sig, field)
+        }
         Expr::Cardinality(inner) => constraint_references_field(inner, _sig, field),
         Expr::TransitiveClosure(inner) => constraint_references_field(inner, _sig, field),
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            constraint_references_field(left, _sig, field)
+                || constraint_references_field(right, _sig, field)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -411,7 +419,10 @@ fn constraint_has_cardinality(expr: &crate::parser::ast::Expr, field: &str) -> b
                 || constraint_has_cardinality(right, field)
         }
         Expr::Not(inner) => constraint_has_cardinality(inner, field),
-        Expr::Quantifier { body, .. } => constraint_has_cardinality(body, field),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| constraint_has_cardinality(&b.domain, field))
+                || constraint_has_cardinality(body, field)
+        }
         _ => false,
     }
 }
@@ -431,8 +442,12 @@ fn collect_tc_fields(expr: &crate::parser::ast::Expr, out: &mut std::collections
             collect_tc_fields(left, out); collect_tc_fields(right, out);
         }
         Expr::Not(inner) | Expr::Cardinality(inner) => collect_tc_fields(inner, out),
-        Expr::Quantifier { body, domain, .. } => {
-            collect_tc_fields(body, out); collect_tc_fields(domain, out);
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings { collect_tc_fields(&b.domain, out); }
+            collect_tc_fields(body, out);
+        }
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_tc_fields(left, out); collect_tc_fields(right, out);
         }
         Expr::FieldAccess { base, .. } => collect_tc_fields(base, out),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
@@ -470,9 +485,13 @@ fn constraint_references_field_non_tc(expr: &crate::parser::ast::Expr, field: &s
         Expr::Not(inner) | Expr::Cardinality(inner) => {
             constraint_references_field_non_tc(inner, field)
         }
-        Expr::Quantifier { body, domain, .. } => {
-            constraint_references_field_non_tc(body, field)
-                || constraint_references_field_non_tc(domain, field)
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| constraint_references_field_non_tc(&b.domain, field))
+                || constraint_references_field_non_tc(body, field)
+        }
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            constraint_references_field_non_tc(left, field)
+                || constraint_references_field_non_tc(right, field)
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }

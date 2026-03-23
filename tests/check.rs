@@ -280,7 +280,7 @@ fn differ_missing_fn() {
     use oxidtr::check::impl_parser::ExtractedImpl;
     let ir = make_ir(
         vec![],
-        vec![OperationNode { name: "add_user".into(), params: vec![], body: vec![] }],
+        vec![OperationNode { name: "add_user".into(), params: vec![], return_type: None, body: vec![] }],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
     let diffs = differ::diff(&ir, &extracted);

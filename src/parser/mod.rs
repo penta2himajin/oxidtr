@@ -77,6 +77,7 @@ impl<'a> Parser<'a> {
             sigs: Vec::new(),
             facts: Vec::new(),
             preds: Vec::new(),
+            funs: Vec::new(),
             asserts: Vec::new(),
         };
 
@@ -143,6 +144,9 @@ impl<'a> Parser<'a> {
                 }
                 Token::Pred => {
                     model.preds.push(self.parse_pred()?);
+                }
+                Token::Fun => {
+                    model.funs.push(self.parse_fun()?);
                 }
                 Token::Assert => {
                     model.asserts.push(self.parse_assert()?);
@@ -259,6 +263,34 @@ impl<'a> Parser<'a> {
         Ok(PredDecl { name, params, body })
     }
 
+    fn parse_fun(&mut self) -> Result<FunDecl, ParseError> {
+        self.expect(&Token::Fun)?;
+        let name = self.expect_ident()?;
+
+        let mut params = Vec::new();
+        if self.peek() == Token::LBracket {
+            self.next();
+            while self.peek() != Token::RBracket {
+                params.push(self.parse_param()?);
+                if self.peek() == Token::Comma {
+                    self.next();
+                }
+            }
+            self.expect(&Token::RBracket)?;
+        }
+
+        // Return type: `: mult Type`
+        self.expect(&Token::Colon)?;
+        let return_mult = self.parse_multiplicity()?;
+        let return_type = self.expect_ident()?;
+
+        self.expect(&Token::LBrace)?;
+        let body = self.parse_expr()?;
+        self.expect(&Token::RBrace)?;
+
+        Ok(FunDecl { name, params, return_mult, return_type, body })
+    }
+
     fn parse_param(&mut self) -> Result<ParamDecl, ParseError> {
         let name = self.expect_ident()?;
         self.expect(&Token::Colon)?;
@@ -343,7 +375,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
-        let left = self.parse_unary()?;
+        let left = self.parse_set_op()?;
         let op = match self.peek() {
             Token::In    => Some(CompareOp::In),
             Token::Eq    => Some(CompareOp::Eq),
@@ -356,7 +388,7 @@ impl<'a> Parser<'a> {
         };
         if let Some(op) = op {
             self.next();
-            let right = self.parse_unary()?;
+            let right = self.parse_set_op()?;
             Ok(Expr::Comparison {
                 op,
                 left: Box::new(left),
@@ -365,6 +397,52 @@ impl<'a> Parser<'a> {
         } else {
             Ok(left)
         }
+    }
+
+    /// Set operations (+, &, -, ->) bind tighter than comparison but looser than unary/field access.
+    fn parse_set_op(&mut self) -> Result<Expr, ParseError> {
+        let mut left = self.parse_unary()?;
+        loop {
+            match self.peek() {
+                Token::Plus => {
+                    self.next();
+                    let right = self.parse_unary()?;
+                    left = Expr::SetOp {
+                        op: SetOpKind::Union,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Token::Ampersand => {
+                    self.next();
+                    let right = self.parse_unary()?;
+                    left = Expr::SetOp {
+                        op: SetOpKind::Intersection,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Token::Minus => {
+                    self.next();
+                    let right = self.parse_unary()?;
+                    left = Expr::SetOp {
+                        op: SetOpKind::Difference,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                Token::Arrow => {
+                    self.next();
+                    let right = self.parse_unary()?;
+                    left = Expr::Product {
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    };
+                }
+                _ => break,
+            }
+        }
+        Ok(left)
     }
 
     fn parse_unary(&mut self) -> Result<Expr, ParseError> {
@@ -389,18 +467,129 @@ impl<'a> Parser<'a> {
             _ => unreachable!(),
         };
 
-        let var = self.expect_ident()?;
-        self.expect(&Token::Colon)?;
-        let domain = self.parse_field_access()?;
+        let bindings = self.parse_quant_bindings()?;
         self.expect(&Token::Pipe)?;
         let body = self.parse_expr()?;
 
         Ok(Expr::Quantifier {
             kind,
-            var,
-            domain: Box::new(domain),
+            bindings,
             body: Box::new(body),
         })
+    }
+
+    /// Parse one or more quantifier bindings separated by `,` after the domain.
+    /// Each binding: [disj] var1, var2, ... : domain
+    /// Multiple bindings: `x: S, y: T` (comma after domain, before next var list)
+    fn parse_quant_bindings(&mut self) -> Result<Vec<QuantBinding>, ParseError> {
+        let mut bindings = Vec::new();
+
+        loop {
+            // Check for optional `disj` keyword
+            let disj = if self.peek() == Token::Disj {
+                self.next();
+                true
+            } else {
+                false
+            };
+
+            // Parse first variable name
+            let first_var = self.expect_ident()?;
+            let mut vars = vec![first_var];
+
+            // Parse additional comma-separated variables before the colon
+            // We need to distinguish `x, y: S` (multi-var) from `x: S, y: T` (multi-binding)
+            // Strategy: collect identifiers separated by commas until we see a colon
+            while self.peek() == Token::Comma {
+                // Save position to backtrack if this comma separates bindings, not vars
+                let saved_pos = self.lexer.pos();
+                self.next(); // consume comma
+
+                // Check if next is `disj` or an ident followed by `:` or `,`
+                // If next token is Pipe, it's the end — backtrack
+                let next = self.peek();
+                match &next {
+                    Token::Disj => {
+                        // This comma separates bindings: `x: S, disj y, z: T`
+                        // But we haven't parsed the colon+domain yet for current binding
+                        // So backtrack the comma, break, parse colon+domain
+                        self.lexer.set_pos(saved_pos);
+                        break;
+                    }
+                    Token::Ident(_) => {
+                        // Could be `y: T` (new binding) or `y, z` (more vars)
+                        // Peek ahead: if ident is followed by Colon, it could be either.
+                        // If ident followed by Comma or Colon, need further lookahead.
+                        // Save position after comma, read the ident, check what follows
+                        let saved_after_comma = self.lexer.pos();
+                        let ident = self.expect_ident()?;
+                        let after_ident = self.peek();
+                        match after_ident {
+                            Token::Comma => {
+                                // `ident,` — this is another var in the same binding
+                                vars.push(ident);
+                            }
+                            Token::Colon => {
+                                // `ident:` — could be: more vars then colon (if this is the last var),
+                                // OR a new binding. We need to check: did we already have a colon
+                                // for the current binding? No — we haven't parsed one yet.
+                                // So this is actually `var1, var2: Domain` pattern.
+                                vars.push(ident);
+                            }
+                            Token::Pipe => {
+                                // `ident|` — this ident is a var, no colon yet
+                                // This would be a parse error (missing colon)
+                                vars.push(ident);
+                            }
+                            _ => {
+                                // Unexpected — could be start of a new binding after domain
+                                // Backtrack: restore to saved_pos (before comma)
+                                self.lexer.set_pos(saved_after_comma);
+                                // Put ident back — actually we can't easily do that.
+                                // Let's use a different approach: backtrack fully
+                                self.lexer.set_pos(saved_pos);
+                                break;
+                            }
+                        }
+                    }
+                    _ => {
+                        // Not an ident after comma — backtrack
+                        self.lexer.set_pos(saved_pos);
+                        break;
+                    }
+                }
+            }
+
+            // Now parse `: domain`
+            self.expect(&Token::Colon)?;
+            let domain = self.parse_field_access()?;
+
+            bindings.push(QuantBinding { vars, domain, disj });
+
+            // Check if there are more bindings: `, ident` where ident is followed by `:` eventually
+            // vs `|` which ends bindings
+            if self.peek() == Token::Comma {
+                // Peek further: is this `, disj ...` or `, ident ...`?
+                let saved = self.lexer.pos();
+                self.next(); // consume comma
+                let next = self.peek();
+                match next {
+                    Token::Disj | Token::Ident(_) => {
+                        // More bindings — continue the loop
+                        // (the comma has been consumed)
+                    }
+                    _ => {
+                        // Not a binding, backtrack
+                        self.lexer.set_pos(saved);
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+
+        Ok(bindings)
     }
 
     fn parse_field_access(&mut self) -> Result<Expr, ParseError> {
@@ -460,7 +649,7 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Token::Eof | Token::Sig | Token::Abstract | Token::One
                 | Token::Some_ | Token::Lone
-                | Token::Fact | Token::Pred | Token::Assert
+                | Token::Fact | Token::Pred | Token::Fun | Token::Assert
                 | Token::Check | Token::Run => break,
                 _ => { self.next(); }
             }

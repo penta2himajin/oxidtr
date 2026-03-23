@@ -1,6 +1,6 @@
 pub mod nodes;
 
-use crate::parser::ast::{AlloyModel, SigDecl, FactDecl, PredDecl, AssertDecl};
+use crate::parser::ast::{AlloyModel, SigDecl, FactDecl, PredDecl, FunDecl, AssertDecl};
 use nodes::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,7 +23,8 @@ impl std::error::Error for LoweringError {}
 pub fn lower(model: &AlloyModel) -> Result<OxidtrIR, LoweringError> {
     let structures = model.sigs.iter().map(lower_sig).collect();
     let constraints = model.facts.iter().map(lower_fact).collect();
-    let operations = model.preds.iter().map(lower_pred).collect();
+    let mut operations: Vec<OperationNode> = model.preds.iter().map(lower_pred).collect();
+    operations.extend(model.funs.iter().map(lower_fun));
     let properties = model.asserts.iter().map(lower_assert).collect();
 
     Ok(OxidtrIR {
@@ -75,7 +76,30 @@ fn lower_pred(pred: &PredDecl) -> OperationNode {
     OperationNode {
         name: pred.name.clone(),
         params,
+        return_type: None,
         body: pred.body.clone(),
+    }
+}
+
+fn lower_fun(fun: &FunDecl) -> OperationNode {
+    let params = fun
+        .params
+        .iter()
+        .map(|p| IRParam {
+            name: p.name.clone(),
+            mult: p.mult.clone(),
+            type_name: p.type_name.clone(),
+        })
+        .collect();
+
+    OperationNode {
+        name: fun.name.clone(),
+        params,
+        return_type: Some(IRReturnType {
+            mult: fun.return_mult.clone(),
+            type_name: fun.return_type.clone(),
+        }),
+        body: vec![fun.body.clone()],
     }
 }
 
