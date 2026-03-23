@@ -87,6 +87,21 @@ pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, v
     diffs
 }
 
+/// Diff with Go PascalCase normalization (camelCase → PascalCase), including validation coverage.
+pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+    let mut diffs = diff_with_fn_normalizer(ir, extracted, to_pascal_case);
+    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs
+}
+
+fn to_pascal_case(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
 /// Check that each named fact in the model has a corresponding validation
 /// in the implementation sources.
 fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> Vec<DiffItem> {

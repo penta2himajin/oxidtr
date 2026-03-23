@@ -92,9 +92,9 @@ sig QuantBinding {
 }
 
 sig Quantifier extends Expr {
-  qkind:  one QuantKind,
-  domain: one Expr,
-  qbody:  one Expr
+  qkind:    one QuantKind,
+  bindings: set QuantBinding,
+  qbody:    one Expr
 }
 
 sig FactDecl   { factBody:   one Expr }
@@ -162,6 +162,7 @@ fact AlloyModelPredsCardinality  { all m: AlloyModel | #m.preds = #m.preds }
 fact AlloyModelAssertsCardinality { all m: AlloyModel | #m.asserts = #m.asserts }
 fact PredParamsCardinality { all p: PredDecl | #p.predParams = #p.predParams }
 fact PredBodyCardinality   { all p: PredDecl | #p.predBody = #p.predBody }
+fact QuantifierBindingsCardinality { all q: Quantifier | #q.bindings = #q.bindings }
 fact AlloyModelFunsCardinality { all m: AlloyModel | #m.funs = #m.funs }
 fact FunParamsCardinality  { all f: FunDecl | #f.funParams = #f.funParams }
 
