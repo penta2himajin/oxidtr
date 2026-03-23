@@ -98,6 +98,8 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         ConstraintInfo::Membership { .. } => Guarantee::RequiresTest,
         // Iff: no type system can encode biconditional constraints
         ConstraintInfo::Iff { .. } => Guarantee::RequiresTest,
+        // Implication: no type system can encode conditional constraints
+        ConstraintInfo::Implication { .. } => Guarantee::RequiresTest,
         // Field ordering: no type system can encode field ordering
         ConstraintInfo::FieldOrdering { .. } => Guarantee::RequiresTest,
         // Prohibition: no type system can encode negated existentials

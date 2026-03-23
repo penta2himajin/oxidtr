@@ -49,6 +49,12 @@ pub enum ConstraintInfo {
         op: CompareOp,
         right_field: String,
     },
+    /// Implication: all s: S | condition implies consequent
+    Implication {
+        sig_name: String,
+        condition: Expr,
+        consequent: Expr,
+    },
     /// Prohibition: no s: S | condition (negated existential)
     Prohibition {
         sig_name: String,
@@ -94,6 +100,7 @@ pub fn constraints_for_sig(ir: &OxidtrIR, sig_name: &str) -> Vec<ConstraintInfo>
         ConstraintInfo::Acyclic { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Iff { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::FieldOrdering { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::Implication { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Prohibition { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Named { .. } => false,
     }).collect()
@@ -318,8 +325,13 @@ fn analyze_body_for_sig(
                 right: substitute_var(right, var, sig_name),
             });
         }
-        // Implication body
-        Expr::BinaryLogic { op: LogicOp::Implies, right, .. } => {
+        // Implication: A implies B → emit Implication + recurse into consequent
+        Expr::BinaryLogic { op: LogicOp::Implies, left, right } => {
+            results.push(ConstraintInfo::Implication {
+                sig_name: sig_name.to_string(),
+                condition: substitute_var(left, var, sig_name),
+                consequent: substitute_var(right, var, sig_name),
+            });
             analyze_body_for_sig(right, sig_name, var, results);
         }
         _ => {}

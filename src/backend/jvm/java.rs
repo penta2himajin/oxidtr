@@ -205,34 +205,33 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
 
         // FieldOrdering → compact constructor with validation
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
-        let field_orderings: Vec<_> = sig_constraints.iter().filter_map(|c| {
-            if let analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } = c {
-                let op_str = match op {
-                    CompareOp::Lt => "<",
-                    CompareOp::Gt => ">",
-                    CompareOp::Lte => "<=",
-                    CompareOp::Gte => ">=",
-                    _ => return None,
-                };
-                Some((left_field.clone(), op_str, right_field.clone()))
-            } else {
-                None
+        let mut constructor_checks: Vec<String> = Vec::new();
+        for c in &sig_constraints {
+            match c {
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let (op_str, negated) = match op {
+                        CompareOp::Lt => ("<", ">="),
+                        CompareOp::Gt => (">", "<="),
+                        CompareOp::Lte => ("<=", ">"),
+                        CompareOp::Gte => (">=", "<"),
+                        _ => continue,
+                    };
+                    constructor_checks.push(format!("if ({left_field} {negated} {right_field}) throw new IllegalArgumentException(\"{left_field} must be {op_str} {right_field}\");"));
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    constructor_checks.push(format!("// {desc}"));
+                }
+                _ => {}
             }
-        }).collect();
-        if field_orderings.is_empty() {
+        }
+        if constructor_checks.is_empty() {
             writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
         } else {
             writeln!(out, "record {}({}) {{", s.name, params.join(", ")).unwrap();
             writeln!(out, "    {} {{", s.name).unwrap();
-            for (lf, op, rf) in &field_orderings {
-                let negated = match *op {
-                    "<" => ">=",
-                    ">" => "<=",
-                    "<=" => ">",
-                    ">=" => "<",
-                    _ => continue,
-                };
-                writeln!(out, "        if ({lf} {negated} {rf}) throw new IllegalArgumentException(\"{lf} must be {op} {rf}\");").unwrap();
+            for check in &constructor_checks {
+                writeln!(out, "        {check}").unwrap();
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out, "}}").unwrap();

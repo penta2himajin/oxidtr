@@ -201,27 +201,33 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
         }
         // Sig-level constraint annotations (FieldOrdering → init block)
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
-        let field_orderings: Vec<_> = sig_constraints.iter().filter_map(|c| {
-            if let analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } = c {
-                let op_str = match op {
-                    CompareOp::Lt => "<",
-                    CompareOp::Gt => ">",
-                    CompareOp::Lte => "<=",
-                    CompareOp::Gte => ">=",
-                    _ => return None,
-                };
-                Some((left_field.clone(), op_str, right_field.clone()))
-            } else {
-                None
+        let mut init_checks: Vec<String> = Vec::new();
+        for c in &sig_constraints {
+            match c {
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let op_str = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    init_checks.push(format!("require({left_field} {op_str} {right_field}) {{ \"{left_field} must be {op_str} {right_field}\" }}"));
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    init_checks.push(format!("// {desc}"));
+                }
+                _ => {}
             }
-        }).collect();
-        if field_orderings.is_empty() {
+        }
+        if init_checks.is_empty() {
             writeln!(out, ")").unwrap();
         } else {
             writeln!(out, ") {{").unwrap();
             writeln!(out, "    init {{").unwrap();
-            for (lf, op, rf) in &field_orderings {
-                writeln!(out, "        require({lf} {op} {rf}) {{ \"{lf} must be {op} {rf}\" }}").unwrap();
+            for check in &init_checks {
+                writeln!(out, "        {check}").unwrap();
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out, "}}").unwrap();

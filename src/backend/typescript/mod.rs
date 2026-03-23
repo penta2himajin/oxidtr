@@ -938,14 +938,22 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                     };
                     writeln!(out, "  if ({param_name}.{left_field} {negated_op} {param_name}.{right_field}) errors.push(\"{left_field} must be {ts_op} {right_field}\");").unwrap();
                 }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let cond = translate_validator_expr(condition, &s.name, &param_name);
+                    let cons = translate_validator_expr(consequent, &s.name, &param_name);
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    writeln!(out, "  if ({cond} && !({cons})) errors.push(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                }
                 analyze::ConstraintInfo::Iff { left, right, .. } => {
-                    let desc_l = analyze::describe_expr(left);
-                    let desc_r = analyze::describe_expr(right);
-                    writeln!(out, "  // TODO: iff constraint — {desc_l} iff {desc_r}").unwrap();
+                    let l = translate_validator_expr(left, &s.name, &param_name);
+                    let r = translate_validator_expr(right, &s.name, &param_name);
+                    let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                    writeln!(out, "  if (({l}) !== ({r})) errors.push(\"{}\");", desc.replace('"', "\\\"")).unwrap();
                 }
                 analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                    let cond = translate_validator_expr(condition, &s.name, &param_name);
                     let desc = analyze::describe_expr(condition);
-                    writeln!(out, "  // TODO: prohibition — no instance where {desc}").unwrap();
+                    writeln!(out, "  if ({cond}) errors.push(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
                 }
                 _ => {} // Named, Membership — not directly translatable to simple validators
             }
@@ -969,4 +977,56 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
     }
 
     out
+}
+
+/// Translate an Alloy expression to TypeScript for single-instance validator context.
+/// `sig_name` is the sig name used by substitute_var, `param` is the TS parameter name.
+fn translate_validator_expr(expr: &crate::parser::ast::Expr, sig_name: &str, param: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { param.to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr(base, sig_name, param), field)
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr(left, sig_name, param);
+            let r = translate_validator_expr(right, sig_name, param);
+            let o = match op {
+                CompareOp::Eq => "===",
+                CompareOp::NotEq => "!==",
+                CompareOp::In => return format!("{r}.includes({l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr(left, sig_name, param);
+            let r = translate_validator_expr(right, sig_name, param);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) === ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr(inner, sig_name, param)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr(inner, sig_name, param);
+            match kind {
+                QuantKind::Some => format!("{e} != null"),
+                QuantKind::No => format!("{e} == null"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.length", translate_validator_expr(inner, sig_name, param))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
+    }
 }
