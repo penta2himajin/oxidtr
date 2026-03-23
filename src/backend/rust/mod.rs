@@ -436,7 +436,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
 
 /// Find all (sig, field) pairs that participate in reference cycles and need Box<>.
 /// This includes direct self-references (A.field → A) and mutual cycles (A → B → A).
-fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
+pub fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
     // Build adjacency: sig name → set of sig names it references via fields
     let mut adj: HashMap<&str, Vec<(&str, &str)>> = HashMap::new(); // sig → [(target, field_name)]
     for s in &ir.structures {

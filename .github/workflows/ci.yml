@@ -34,3 +34,11 @@ jobs:
         run: cargo run -- generate models/oxidtr.als --target ts --output generated-ts
       - name: Check TypeScript structural consistency
         run: cargo run -- check --model models/oxidtr.als --impl generated-ts
+      - name: Generate Kotlin from self-hosting model
+        run: cargo run -- generate models/oxidtr.als --target kt --output generated-kt
+      - name: Check Kotlin structural consistency
+        run: cargo run -- check --model models/oxidtr.als --impl generated-kt
+      - name: Generate Java from self-hosting model
+        run: cargo run -- generate models/oxidtr.als --target java --output generated-java
+      - name: Check Java structural consistency
+        run: cargo run -- check --model models/oxidtr.als --impl generated-java

@@ -63,23 +63,25 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
 
     let impl_dir = Path::new(&config.impl_dir);
 
-    // Auto-detect language: check for models.ts first, then models.rs
-    let is_ts = impl_dir.join("models.ts").exists();
-    let extracted = if is_ts {
-        extract_ts(impl_dir)?
+    // Auto-detect language by file presence
+    let (extracted, use_snake_case) = if impl_dir.join("models.ts").exists() {
+        (extract_mined(impl_dir, "models.ts", "operations.ts", mine::ts_extractor::extract)?, false)
+    } else if impl_dir.join("Models.kt").exists() {
+        (extract_mined(impl_dir, "Models.kt", "Operations.kt", mine::kotlin_extractor::extract)?, false)
+    } else if impl_dir.join("Models.java").exists() {
+        (extract_mined(impl_dir, "Models.java", "Operations.java", mine::java_extractor::extract)?, false)
     } else if impl_dir.join("models.rs").exists() {
-        extract_rust(impl_dir)?
+        (extract_rust(impl_dir)?, true)
     } else {
         return Err(CheckError::ImplNotFound(
-            "models.rs or models.ts".to_string()
+            "models.rs, models.ts, Models.kt, or Models.java".to_string()
         ));
     };
 
-    // TS backend preserves camelCase fn names; Rust backend converts to snake_case
-    let diffs = if is_ts {
-        differ::diff_identity(&ir, &extracted)
-    } else {
+    let diffs = if use_snake_case {
         differ::diff(&ir, &extracted)
+    } else {
+        differ::diff_identity(&ir, &extracted)
     };
     Ok(CheckResult { diffs })
 }
@@ -95,19 +97,25 @@ fn extract_rust(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
     Ok(impl_parser::parse_impl(&models_src, &ops_src))
 }
 
-fn extract_ts(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
-    let models_src = std::fs::read_to_string(impl_dir.join("models.ts"))?;
-    let ops_path = impl_dir.join("operations.ts");
+/// Extract using a mine extractor function, then convert MinedModel → ExtractedImpl.
+fn extract_mined<F>(
+    impl_dir: &Path,
+    models_file: &str,
+    ops_file: &str,
+    extractor: F,
+) -> Result<ExtractedImpl, CheckError>
+where F: Fn(&str) -> mine::MinedModel {
+    let models_src = std::fs::read_to_string(impl_dir.join(models_file))?;
+    let ops_path = impl_dir.join(ops_file);
     let ops_src = if ops_path.exists() {
         std::fs::read_to_string(&ops_path)?
     } else {
         String::new()
     };
 
-    // Use mine ts_extractor for structural extraction, then convert to ExtractedImpl
-    let mined_models = mine::ts_extractor::extract(&models_src);
+    let mined = extractor(&models_src);
 
-    let structs = mined_models.sigs.iter().map(|s| {
+    let structs = mined.sigs.iter().map(|s| {
         ExtractedStruct {
             name: s.name.clone(),
             fields: s.fields.iter().map(|f| {
@@ -126,19 +134,33 @@ fn extract_ts(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
         }
     }).collect();
 
-    // Extract fn names from operations.ts using line-based parsing
-    let fns = extract_ts_fns(&ops_src);
+    let fns = extract_fns_generic(&ops_src);
 
     Ok(ExtractedImpl { structs, fns })
 }
 
-fn extract_ts_fns(src: &str) -> Vec<ExtractedFn> {
+/// Extract function names from operation files (language-agnostic patterns).
+fn extract_fns_generic(src: &str) -> Vec<ExtractedFn> {
     let mut result = Vec::new();
     for line in src.lines() {
         let trimmed = line.trim();
-        // "export function fooBar(" or "function fooBar("
+        // TS: "export function name(" / "function name("
+        // Kotlin: "fun name("
+        // Java: "public static void name(" / "public static boolean name("
         let rest = trimmed.strip_prefix("export function ")
-            .or_else(|| trimmed.strip_prefix("function "));
+            .or_else(|| trimmed.strip_prefix("function "))
+            .or_else(|| trimmed.strip_prefix("fun "))
+            .or_else(|| {
+                // Java: after "public static <return_type> "
+                if trimmed.starts_with("public static ") {
+                    let after = &trimmed["public static ".len()..];
+                    // Skip return type (first word) + space
+                    let space = after.find(' ')?;
+                    Some(&after[space + 1..])
+                } else {
+                    None
+                }
+            });
         if let Some(rest) = rest {
             let name: String = rest.chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')

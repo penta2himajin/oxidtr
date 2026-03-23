@@ -2,6 +2,7 @@ use crate::parser;
 use crate::ir;
 use crate::backend::rust;
 use crate::backend::typescript;
+use crate::backend::jvm::{kotlin, java};
 
 use std::path::Path;
 
@@ -108,6 +109,8 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     let files = match config.target.as_str() {
         "rust" => rust::generate(&ir),
         "typescript" | "ts" => typescript::generate(&ir),
+        "kotlin" | "kt" => kotlin::generate(&ir),
+        "java" => java::generate(&ir),
         other => {
             return Err(GenerateError::ParseError(parser::ParseError::InvalidSyntax {
                 message: format!("unsupported target: {other}"),

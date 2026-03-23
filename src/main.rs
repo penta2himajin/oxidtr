@@ -96,6 +96,8 @@ fn main() {
             let mined = match lang.as_str() {
                 "rust" | "rs" => mine::rust_extractor::extract(&source_content),
                 "typescript" | "ts" => mine::ts_extractor::extract(&source_content),
+                "kotlin" | "kt" => mine::kotlin_extractor::extract(&source_content),
+                "java" => mine::java_extractor::extract(&source_content),
                 other => {
                     eprintln!("error: unsupported language: {other}");
                     std::process::exit(1);
