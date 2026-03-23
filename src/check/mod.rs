@@ -80,9 +80,20 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
     } else {
-        return Err(CheckError::ImplNotFound(
-            "models.rs, models.ts, Models.kt, or Models.java".to_string()
-        ));
+        // Fallback: use mine to extract from any code in the directory
+        match mine::run(config.impl_dir.as_str(), None) {
+            Ok(mined) => {
+                let extracted = mined_to_extracted(&mined);
+                // Collect all source files as validation sources
+                let validation_sources = collect_all_sources(impl_dir)?;
+                differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+            }
+            Err(_) => {
+                return Err(CheckError::ImplNotFound(
+                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, and general mine)".to_string()
+                ));
+            }
+        }
     };
 
     Ok(CheckResult { diffs })
@@ -188,6 +199,68 @@ where F: Fn(&str) -> mine::MinedModel {
 }
 
 /// Extract function names from operation files (language-agnostic patterns).
+/// Convert a MinedModel to ExtractedImpl for comparison with IR.
+fn mined_to_extracted(mined: &mine::MinedModel) -> ExtractedImpl {
+    let structs = mined.sigs.iter().map(|s| {
+        ExtractedStruct {
+            name: s.name.clone(),
+            fields: s.fields.iter().map(|f| {
+                let mult = match f.mult {
+                    mine::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
+                    mine::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
+                    mine::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    mine::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
+                };
+                ExtractedField {
+                    name: f.name.clone(),
+                    mult,
+                    target: f.target.clone(),
+                }
+            }).collect(),
+            is_enum: s.is_abstract,
+        }
+    }).collect();
+
+    // Extract function names from fact candidates (validation functions)
+    let fns = mined.fact_candidates.iter()
+        .filter(|f| f.source_pattern.contains("fn ") || f.source_pattern.contains("function "))
+        .filter_map(|f| {
+            // Try to extract function name from source_pattern
+            let name = f.source_pattern
+                .strip_prefix("reverse-translated fn ")?;
+            Some(ExtractedFn { name: name.to_string() })
+        })
+        .collect();
+
+    ExtractedImpl { structs, fns }
+}
+
+/// Collect all source file contents from a directory (recursive) for validation checking.
+fn collect_all_sources(dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    collect_sources_recursive(dir, &mut sources)?;
+    Ok(sources)
+}
+
+fn collect_sources_recursive(dir: &Path, sources: &mut Vec<String>) -> Result<(), CheckError> {
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_sources_recursive(&path, sources)?;
+            } else if path.is_file() {
+                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                if matches!(ext, "rs" | "ts" | "kt" | "java" | "json") {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        sources.push(content);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn extract_fns_generic(src: &str) -> Vec<ExtractedFn> {
     let mut result = Vec::new();
     for line in src.lines() {
