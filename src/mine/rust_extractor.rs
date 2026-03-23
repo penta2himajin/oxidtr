@@ -76,11 +76,11 @@ pub fn extract(source: &str) -> MinedModel {
                         block_depth = block_depth + open - close.min(block_depth + open);
 
                         if block_depth >= 1 {
-                            // Strip trailing comma and comments
-                            let cleaned = inner.trim_end_matches(',');
-                            let cleaned = if let Some(cp) = cleaned.find("//") {
-                                cleaned[..cp].trim()
-                            } else { cleaned };
+                            // Strip comments first, then trailing comma
+                            let cleaned = if let Some(cp) = inner.find("//") {
+                                inner[..cp].trim()
+                            } else { inner };
+                            let cleaned = cleaned.trim_end_matches(',').trim();
 
                             if !cleaned.is_empty() {
                                 let first = cleaned.chars().next().unwrap_or(' ');

@@ -144,8 +144,8 @@ sig JvmContext {
 
 abstract sig CheckError {}
 sig IoError         extends CheckError {}
-sig CheckParseError extends CheckError {}
-sig CheckLoweringError extends CheckError {}
+sig ParseError extends CheckError {}
+sig LoweringError extends CheckError {}
 sig ImplNotFound    extends CheckError {}
 
 sig CheckConfig {
@@ -197,10 +197,10 @@ one sig Medium extends Confidence {}
 one sig Low    extends Confidence {}
 
 abstract sig MinedMultiplicity {}
-one sig MinedOne  extends MinedMultiplicity {}
-one sig MinedLone extends MinedMultiplicity {}
-one sig MinedSet  extends MinedMultiplicity {}
-one sig MinedSeq  extends MinedMultiplicity {}
+one sig One  extends MinedMultiplicity {}
+one sig Lone extends MinedMultiplicity {}
+one sig Set  extends MinedMultiplicity {}
+one sig Seq  extends MinedMultiplicity {}
 
 sig MinedField {
   minedName:   one String,
