@@ -2,6 +2,7 @@ pub mod rust_extractor;
 pub mod ts_extractor;
 pub mod kotlin_extractor;
 pub mod java_extractor;
+pub mod schema_extractor;
 pub mod renderer;
 
 /// Confidence level of a mined element, determined mechanically by pattern type.

@@ -42,3 +42,10 @@ jobs:
         run: cargo run -- generate models/oxidtr.als --target java --output generated-java
       - name: Check Java structural consistency
         run: cargo run -- check --model models/oxidtr.als --impl generated-java
+      - name: Verify enrichment in generated output
+        run: |
+          grep -q '@NotNull' generated-java/Models.java
+          grep -q 'pub fn default_' generated/fixtures.rs
+          grep -q 'export function default' generated-ts/fixtures.ts
+          grep -q 'fun default' generated-kt/Fixtures.kt
+          grep -q 'public static' generated-java/Fixtures.java

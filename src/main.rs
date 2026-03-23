@@ -98,6 +98,7 @@ fn main() {
                 "typescript" | "ts" => mine::ts_extractor::extract(&source_content),
                 "kotlin" | "kt" => mine::kotlin_extractor::extract(&source_content),
                 "java" => mine::java_extractor::extract(&source_content),
+                "schema" | "json" => mine::schema_extractor::extract(&source_content),
                 other => {
                     eprintln!("error: unsupported language: {other}");
                     std::process::exit(1);
