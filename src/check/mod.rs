@@ -83,7 +83,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
     } else if impl_dir.join("models.go").exists() {
         let extracted = extract_mined(impl_dir, "models.go", "operations.go", mine::go_extractor::extract)?;
         let validation_sources = collect_validation_sources_go(impl_dir)?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
