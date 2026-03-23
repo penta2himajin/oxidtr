@@ -40,9 +40,9 @@ enum Commands {
     Mine {
         /// Path to source file or directory
         source: String,
-        /// Source language (rust, ts)
-        #[arg(long, default_value = "rust")]
-        lang: String,
+        /// Source language (auto-detected from extension if omitted)
+        #[arg(long)]
+        lang: Option<String>,
         /// Output file (default: stdout)
         #[arg(short, long)]
         output: Option<String>,
@@ -89,22 +89,10 @@ fn main() {
         }
 
         Commands::Mine { source, lang, output } => {
-            let source_content = match std::fs::read_to_string(&source) {
-                Ok(s) => s,
+            let mined = match mine::run(&source, lang.as_deref()) {
+                Ok(m) => m,
                 Err(e) => {
-                    eprintln!("error: cannot read {source}: {e}");
-                    std::process::exit(1);
-                }
-            };
-
-            let mined = match lang.as_str() {
-                "rust" | "rs" => mine::rust_extractor::extract(&source_content),
-                "typescript" | "ts" => mine::ts_extractor::extract(&source_content),
-                "kotlin" | "kt" => mine::kotlin_extractor::extract(&source_content),
-                "java" => mine::java_extractor::extract(&source_content),
-                "schema" | "json" => mine::schema_extractor::extract(&source_content),
-                other => {
-                    eprintln!("error: unsupported language: {other}");
+                    eprintln!("error: {e}");
                     std::process::exit(1);
                 }
             };
