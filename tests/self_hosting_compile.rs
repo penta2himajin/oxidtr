@@ -33,12 +33,12 @@ edition = "2021"
     lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
     lib_rs.push_str("pub mod models;\n");
 
-    let has_invariants = files.iter().any(|f| f.path == "invariants.rs");
+    let has_helpers = files.iter().any(|f| f.path == "helpers.rs");
     let has_operations = files.iter().any(|f| f.path == "operations.rs");
     let has_tests = files.iter().any(|f| f.path == "tests.rs");
 
-    if has_invariants {
-        lib_rs.push_str("pub mod invariants;\n");
+    if has_helpers {
+        lib_rs.push_str("pub mod helpers;\n");
     }
     if has_operations {
         lib_rs.push_str("pub mod operations;\n");
@@ -87,8 +87,11 @@ fn self_hosted_crate_content_check() {
     let files = rust::generate(&ir);
 
     let models = files.iter().find(|f| f.path == "models.rs").unwrap();
-    let invariants = files.iter().find(|f| f.path == "invariants.rs").unwrap();
     let tests = files.iter().find(|f| f.path == "tests.rs").unwrap();
+
+    // No invariants.rs should be generated
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
 
     // Key types from oxidtr domain
     assert!(models.content.contains("pub enum Multiplicity"));
@@ -96,21 +99,17 @@ fn self_hosted_crate_content_check() {
     assert!(models.content.contains("pub struct OxidtrIR"));
     assert!(models.content.contains("pub struct StructureNode"));
 
-    // Invariant functions from facts
-    assert!(invariants.content.contains("fn assert_sig_to_structure_bijection"));
-    assert!(invariants.content.contains("fn assert_fact_to_constraint"));
-    assert!(invariants.content.contains("fn assert_pred_to_operation"));
-    assert!(invariants.content.contains("fn assert_assert_to_property"));
+    // Tests use inlined translated expressions, not invariant function calls
+    assert!(tests.content.contains(".iter().all("),
+        "tests should contain inlined expressions");
 
-    // Invariant functions take collection parameters, not bare type names
-    assert!(invariants.content.contains("sig_decls: &[SigDecl]"));
-    assert!(invariants.content.contains("oxidtr_i_rs: &[OxidtrIR]"));
+    // Tests should NOT import invariants
+    assert!(!tests.content.contains("use crate::invariants::"),
+        "tests should NOT import invariants");
 
-    // Tests call invariant functions
-    assert!(tests.content.contains("assert_sig_to_structure_bijection"));
-
-    // Tests use translated expressions, not todo!()
-    assert!(tests.content.contains(".iter().all("));
+    // Tests should NOT contain @alloy comments
+    assert!(!tests.content.contains("@alloy:"),
+        "tests should NOT contain @alloy comments");
 
     // Assert property tests exist
     assert!(tests.content.contains("fn no_cyclic_inheritance"));

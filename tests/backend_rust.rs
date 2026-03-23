@@ -164,8 +164,11 @@ fn rust_generates_tryfrom_for_newtype() {
     let newtypes = find_file(&files, "newtypes.rs");
     assert!(newtypes.contains("impl TryFrom<User> for ValidatedUser"),
         "should generate TryFrom impl:\n{newtypes}");
-    assert!(newtypes.contains("assert_has_role"),
-        "TryFrom should call invariant function:\n{newtypes}");
+    // TryFrom should inline the constraint expression, not call invariant function
+    assert!(!newtypes.contains("assert_has_role"),
+        "TryFrom should NOT call invariant function:\n{newtypes}");
+    assert!(newtypes.contains(".iter().all("),
+        "TryFrom should inline constraint expression:\n{newtypes}");
 }
 
 #[test]
@@ -341,4 +344,111 @@ fn rust_product_field_to_btreemap() {
     let content = find_file(&files, "models.rs");
     assert!(content.contains("BTreeMap<Key, Value>"),
         "product field should map to BTreeMap:\n{content}");
+}
+
+// ── Stage 1: No invariants file, no @alloy comments, inlined expressions ────
+
+#[test]
+fn rust_no_invariants_file() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
+}
+
+#[test]
+fn rust_no_alloy_comments_in_tests() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+        assert AlwaysTrue { all u: User | u.role = u.role }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(!tests.contains("@alloy:"),
+        "tests.rs should NOT contain @alloy comments:\n{tests}");
+}
+
+#[test]
+fn rust_no_alloy_comments_in_operations() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        pred assign[u: one User, r: one Role] { u = u }
+    "#);
+    let ops = find_file(&files, "operations.rs");
+    assert!(!ops.contains("@alloy:"),
+        "operations.rs should NOT contain @alloy comments:\n{ops}");
+}
+
+#[test]
+fn rust_tests_no_invariants_import() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(!tests.contains("use crate::invariants::"),
+        "tests.rs should NOT import invariants:\n{tests}");
+}
+
+#[test]
+fn rust_tests_inline_constraint_expression() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    // Should inline the expression, not call assert_has_role
+    assert!(!tests.contains("assert_has_role"),
+        "tests should NOT call invariant function:\n{tests}");
+    assert!(tests.contains(".iter().all("),
+        "tests should inline constraint expression:\n{tests}");
+}
+
+#[test]
+fn rust_tryfrom_inlines_constraint_expression() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(!newtypes.contains("use crate::invariants::"),
+        "newtypes.rs should NOT import invariants:\n{newtypes}");
+    assert!(newtypes.contains(".iter().all("),
+        "TryFrom should inline constraint expression:\n{newtypes}");
+}
+
+#[test]
+fn rust_helpers_file_for_tc() {
+    let files = generate_from(r#"
+        sig Node { next: lone Node }
+        fact Acyclic { no n: Node | n in n.^next }
+    "#);
+    // TC functions should be in helpers.rs, not invariants.rs
+    assert!(files.iter().any(|f| f.path == "helpers.rs"),
+        "should generate helpers.rs for TC functions");
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
+    let helpers = find_file(&files, "helpers.rs");
+    assert!(helpers.contains("tc_next"),
+        "helpers.rs should contain TC function:\n{helpers}");
+}
+
+#[test]
+fn rust_doc_comments_preserved_on_structs() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("/// Invariant: HasRole"),
+        "models.rs should still have doc comments:\n{models}");
 }

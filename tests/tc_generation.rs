@@ -24,22 +24,22 @@ fn tc_lone_self_ref_generates_traversal_function() {
         sig Node { parent: lone Node }
         assert NoCycle { no n: Node | n in n.^parent }
     "#);
-    let invariants = find_file(&files, "invariants.rs");
+    let helpers = find_file(&files, "helpers.rs");
 
     // Should generate a specific traversal function, not generic
     assert!(
-        invariants.contains("fn tc_parent("),
-        "missing tc_parent function in:\n{invariants}"
+        helpers.contains("fn tc_parent("),
+        "missing tc_parent function in:\n{helpers}"
     );
     // Should take &Node and return Vec<Node>
     assert!(
-        invariants.contains("start: &Node") && invariants.contains("-> Vec<Node>"),
-        "tc_parent should take &Node and return Vec<Node> in:\n{invariants}"
+        helpers.contains("start: &Node") && helpers.contains("-> Vec<Node>"),
+        "tc_parent should take &Node and return Vec<Node> in:\n{helpers}"
     );
     // Should use as_deref() for Option<Box<T>> traversal
     assert!(
-        invariants.contains("as_deref()"),
-        "tc_parent should use as_deref() for Option<Box<T>> in:\n{invariants}"
+        helpers.contains("as_deref()"),
+        "tc_parent should use as_deref() for Option<Box<T>> in:\n{helpers}"
     );
 }
 
@@ -71,15 +71,15 @@ fn tc_set_self_ref_generates_bfs_traversal() {
         sig Node { children: set Node }
         assert NoCycle { no n: Node | n in n.^children }
     "#);
-    let invariants = find_file(&files, "invariants.rs");
+    let helpers = find_file(&files, "helpers.rs");
 
     assert!(
-        invariants.contains("fn tc_children("),
-        "missing tc_children function in:\n{invariants}"
+        helpers.contains("fn tc_children("),
+        "missing tc_children function in:\n{helpers}"
     );
     assert!(
-        invariants.contains("start: &Node") && invariants.contains("-> Vec<Node>"),
-        "tc_children should take &Node and return Vec<Node> in:\n{invariants}"
+        helpers.contains("start: &Node") && helpers.contains("-> Vec<Node>"),
+        "tc_children should take &Node and return Vec<Node> in:\n{helpers}"
     );
 }
 
@@ -107,13 +107,13 @@ fn tc_self_hosting_model_no_generic_transitive_closure() {
     let ir_result = ir::lower(&model).expect("lower");
     let files = rust::generate(&ir_result);
 
-    let invariants = find_file(&files, "invariants.rs");
+    let helpers = find_file(&files, "helpers.rs");
     assert!(
-        !invariants.contains("fn transitive_closure<T>"),
-        "should not generate generic transitive_closure in:\n{invariants}"
+        !helpers.contains("fn transitive_closure<T>"),
+        "should not generate generic transitive_closure in:\n{helpers}"
     );
     assert!(
-        invariants.contains("fn tc_parent("),
-        "should generate tc_parent for SigDecl.parent in:\n{invariants}"
+        helpers.contains("fn tc_parent("),
+        "should generate tc_parent for SigDecl.parent in:\n{helpers}"
     );
 }

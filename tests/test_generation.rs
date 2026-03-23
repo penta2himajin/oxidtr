@@ -17,22 +17,22 @@ fn find_file<'a>(files: &'a [oxidtr::backend::GeneratedFile], path: &str) -> &'a
 }
 
 #[test]
-fn generate_invariant_function_from_fact() {
+fn generate_inlined_constraint_in_tests() {
     let files = generate_from(r#"
         sig User { role: one Role }
         sig Role {}
         fact UserHasRole { all u: User | u.role = u.role }
     "#);
-    let content = find_file(&files, "invariants.rs");
-    // Should contain an assertion function
-    assert!(content.contains("fn assert_user_has_role"), "missing invariant function");
-    // Should contain translated expression, not todo
-    assert!(content.contains(".iter().all("), "missing translated quantifier");
-    assert!(!content.contains("todo!"), "should not contain todo for simple facts");
+    // No invariants.rs should exist
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
+    let content = find_file(&files, "tests.rs");
+    // Tests should contain inlined translated expression
+    assert!(content.contains(".iter().all("), "missing translated quantifier in tests");
 }
 
 #[test]
-fn generate_invariant_with_implies() {
+fn generate_inlined_constraint_with_implies() {
     let files = generate_from(r#"
         sig User { role: one Role, owns: set Resource }
         sig Role {}
@@ -41,9 +41,11 @@ fn generate_invariant_with_implies() {
             all u: User | u.role = u.role implies #u.owns = #u.owns
         }
     "#);
-    let content = find_file(&files, "invariants.rs");
-    assert!(content.contains("fn assert_admin_owns_nothing"));
-    assert!(content.contains(".len()"), "missing cardinality translation");
+    // No invariants.rs
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains(".len()"), "missing cardinality translation in tests");
 }
 
 #[test]

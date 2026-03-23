@@ -300,10 +300,10 @@ fn ts_pipeline_generates_validators_file() {
         "validators.ts should be generated for TS, got: {:?}", result.files_written);
 }
 
-// ── Rust type-guarantee comments in invariants ──────────────────────────────
+// ── Rust no longer generates invariants ──────────────────────────────────────
 
 #[test]
-fn rust_invariant_has_type_guarantee_comment() {
+fn rust_no_invariants_file_generated() {
     let src = r#"
         sig User { name: one Name, roles: set Role }
         sig Name {}
@@ -314,12 +314,8 @@ fn rust_invariant_has_type_guarantee_comment() {
     let ir_val = ir::lower(&model).unwrap();
 
     let files = rust::generate(&ir_val);
-    if let Some(inv) = files.iter().find(|f| f.path == "invariants.rs") {
-        // The invariant should still be generated but with type-guarantee annotations
-        // (Rust: Option<T> guarantees null safety)
-        assert!(inv.content.contains("Invariant derived from Alloy fact"),
-            "invariant functions should still be generated");
-    }
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
 }
 
 // ── Kotlin value class for newtypes ─────────────────────────────────────────

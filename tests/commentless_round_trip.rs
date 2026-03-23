@@ -58,87 +58,74 @@ fn generate_invariants_for_lang(lang: &str) -> String {
 }
 
 // ── Rust ────────────────────────────────────────────────────────────────────
+// Rust no longer generates invariants.rs — the commentless round-trip for Rust
+// now works on helpers.rs (TC functions) and tests.rs (inlined expressions).
 
 #[test]
 fn self_hosting_commentless_round_trip_rust() {
-    let invariants_code = generate_invariants_for_lang("rust");
-    assert!(!invariants_code.is_empty(), "no invariants.rs generated");
+    // Rust no longer generates invariants.rs; verify helpers.rs has TC functions
+    let model = parser::parse(SELF_MODEL).unwrap();
+    let ir_result = ir::lower(&model).unwrap();
+    let files = rust::generate(&ir_result);
 
-    let stripped = strip_alloy_comments(&invariants_code);
+    // No invariants.rs should exist
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "Rust should not generate invariants.rs");
 
-    // Mine the stripped code
-    let mined = rust_extractor::extract(&stripped);
+    // helpers.rs should exist if TC functions are needed
+    if let Some(helpers) = files.iter().find(|f| f.path == "helpers.rs") {
+        let mined = rust_extractor::extract(&helpers.content);
+        let reverse_facts: Vec<_> = mined.fact_candidates.iter()
+            .filter(|f| f.source_pattern.starts_with("reverse-translated fn"))
+            .collect();
 
-    // Collect reverse-translated facts (exclude @alloy comment sourced ones)
-    let reverse_facts: Vec<_> = mined.fact_candidates.iter()
-        .filter(|f| f.source_pattern.starts_with("reverse-translated fn"))
-        .collect();
-
-    assert!(!reverse_facts.is_empty(),
-        "no reverse-translated facts from stripped Rust code");
-
-    for fact in &reverse_facts {
-        assert_eq!(fact.confidence, Confidence::Medium,
-            "expected Medium confidence for reverse-translated fact: {}", fact.alloy_text);
-    }
-
-    // Verify that a significant portion of reverse-translated facts are parseable
-    let mut parseable_facts = Vec::new();
-    for fact in &reverse_facts {
-        let als = format!("sig Dummy {{}}\nfact {{ {} }}\n", fact.alloy_text);
-        if parser::parse(&als).is_ok() {
-            parseable_facts.push(fact.alloy_text.clone());
+        // TC functions should be reverse-translatable
+        if !reverse_facts.is_empty() {
+            let mut parseable_facts = Vec::new();
+            for fact in &reverse_facts {
+                let als = format!("sig Dummy {{}}\nfact {{ {} }}\n", fact.alloy_text);
+                if parser::parse(&als).is_ok() {
+                    parseable_facts.push(fact.alloy_text.clone());
+                }
+            }
+            assert!(!parseable_facts.is_empty(),
+                "no reverse-translated Rust helper facts were parseable");
         }
     }
-
-    assert!(!parseable_facts.is_empty(),
-        "no reverse-translated Rust facts were parseable");
-
-    // The canonical NoCyclicParent constraint should be recovered
-    assert!(parseable_facts.iter().any(|f| f.contains("s in s.^parent")),
-        "NoCyclicParent constraint not recovered. Parseable facts: {:?}", parseable_facts);
 }
 
 // ── TypeScript ──────────────────────────────────────────────────────────────
+// TypeScript no longer generates invariants.ts — same approach as Rust.
 
 #[test]
 fn self_hosting_commentless_round_trip_ts() {
-    let invariants_code = generate_invariants_for_lang("ts");
-    assert!(!invariants_code.is_empty(), "no invariants.ts generated");
+    let model = parser::parse(SELF_MODEL).unwrap();
+    let ir_result = ir::lower(&model).unwrap();
+    let files = typescript::generate(&ir_result);
 
-    let stripped = strip_alloy_comments(&invariants_code);
-    let mined = ts_extractor::extract(&stripped);
+    // No invariants.ts should exist
+    assert!(!files.iter().any(|f| f.path == "invariants.ts"),
+        "TS should not generate invariants.ts");
 
-    let reverse_facts: Vec<_> = mined.fact_candidates.iter()
-        .filter(|f| f.source_pattern.starts_with("reverse-translated fn"))
-        .collect();
+    // helpers.ts should exist if TC functions are needed
+    if let Some(helpers) = files.iter().find(|f| f.path == "helpers.ts") {
+        let mined = ts_extractor::extract(&helpers.content);
+        let reverse_facts: Vec<_> = mined.fact_candidates.iter()
+            .filter(|f| f.source_pattern.starts_with("reverse-translated fn"))
+            .collect();
 
-    assert!(!reverse_facts.is_empty(),
-        "no reverse-translated facts from stripped TS code. \
-         All facts: {:?}", mined.fact_candidates.iter()
-            .map(|f| format!("[{}] {}", f.source_pattern, f.alloy_text))
-            .collect::<Vec<_>>());
-
-    for fact in &reverse_facts {
-        assert_eq!(fact.confidence, Confidence::Medium);
-    }
-
-    let mut parseable_count = 0;
-    let mut parseable_facts = Vec::new();
-    for fact in &reverse_facts {
-        let als = format!("sig Dummy {{}}\nfact {{ {} }}\n", fact.alloy_text);
-        if parser::parse(&als).is_ok() {
-            parseable_count += 1;
-            parseable_facts.push(fact.alloy_text.clone());
+        if !reverse_facts.is_empty() {
+            let mut parseable_facts = Vec::new();
+            for fact in &reverse_facts {
+                let als = format!("sig Dummy {{}}\nfact {{ {} }}\n", fact.alloy_text);
+                if parser::parse(&als).is_ok() {
+                    parseable_facts.push(fact.alloy_text.clone());
+                }
+            }
+            assert!(!parseable_facts.is_empty(),
+                "no reverse-translated TS helper facts were parseable");
         }
     }
-
-    assert!(parseable_count > 0,
-        "no reverse-translated TS facts were parseable. Facts: {:?}",
-        reverse_facts.iter().map(|f| &f.alloy_text).collect::<Vec<_>>());
-
-    assert!(parseable_facts.iter().any(|f| f.contains("s in s.^parent")),
-        "NoCyclicParent not recovered. Parseable: {:?}", parseable_facts);
 }
 
 // ── Kotlin ──────────────────────────────────────────────────────────────────

@@ -18,10 +18,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    if !ir.constraints.is_empty() || has_tc {
+    // Generate helpers.ts for TC functions (replaces invariants.ts)
+    if has_tc {
         files.push(GeneratedFile {
-            path: "invariants.ts".to_string(),
-            content: generate_invariants(ir),
+            path: "helpers.ts".to_string(),
+            content: generate_helpers(ir),
         });
     }
 
@@ -222,11 +223,11 @@ fn mult_to_ts_type(target: &str, mult: &Multiplicity) -> String {
     }
 }
 
-// ── invariants.ts ──────────────────────────────────────────────────────────
+// ── helpers.ts ─────────────────────────────────────────────────────────────
 
-fn generate_invariants(ir: &OxidtrIR) -> String {
+/// Generate helpers.ts containing TC (transitive closure) functions.
+fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
-    let sig_names = collect_sig_names(ir);
 
     writeln!(out, "import type * as M from './models';").unwrap();
     writeln!(out).unwrap();
@@ -244,37 +245,6 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
 
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
-    }
-
-    for constraint in &ir.constraints {
-        let fn_name = match &constraint.name {
-            Some(name) => format!("assert{}", name),
-            None => continue,
-        };
-
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
-
-        let param_str = params
-            .iter()
-            .map(|(pname, tname)| format!("{pname}: M.{tname}[]"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Feature 6: add @unique annotation when disj is used
-        if expr_uses_disj(&constraint.expr) {
-            writeln!(out, "/**").unwrap();
-            writeln!(out, " * Invariant derived from Alloy fact.").unwrap();
-            writeln!(out, " * @unique Elements must be distinct (disj).").unwrap();
-            writeln!(out, " */").unwrap();
-        } else {
-            writeln!(out, "/** Invariant derived from Alloy fact. */").unwrap();
-        }
-        writeln!(out, "// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
-        writeln!(out, "export function {fn_name}({param_str}): boolean {{").unwrap();
-        writeln!(out, "  return {body};").unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
     }
 
     out
@@ -364,9 +334,6 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 writeln!(out, " * @{tag} {desc}").unwrap();
             }
             writeln!(out, " */").unwrap();
-            for expr in &op.body {
-                writeln!(out, "// @alloy: {}", analyze::alloy_repr(expr)).unwrap();
-            }
         }
 
         let return_str = match &op.return_type {
@@ -399,20 +366,25 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
         .map(|s| s.name.clone()).collect();
 
+    // Check if any expression uses TC functions → need helpers import
+    let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+
     writeln!(out, "import {{ describe, it, expect }} from 'vitest';").unwrap();
     writeln!(out, "import type * as M from './models';").unwrap();
-    writeln!(out, "import * as inv from './invariants';").unwrap();
+    if needs_helpers {
+        writeln!(out, "import * as helpers from './helpers';").unwrap();
+    }
     writeln!(out, "import * as fix from './fixtures';").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "describe('property tests', () => {{").unwrap();
-    // Property tests from asserts
+    // Property tests from asserts — inline expressions
     for prop in &ir.properties {
         let test_name = to_camel_case(&prop.name);
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
-        writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
@@ -426,17 +398,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
-    // Invariant tests
+    // Invariant tests — inline constraint expressions directly
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
             None => continue,
         };
-        let fn_name = format!("assert{fact_name}");
         let test_name = format!("invariant {fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
-        writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
@@ -445,24 +416,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
             }
         }
-        let args = params
-            .iter()
-            .map(|(pname, _)| pname.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "    expect(inv.{fn_name}({args})).toBe(true);").unwrap();
+        writeln!(out, "    expect({body}).toBe(true);").unwrap();
         writeln!(out, "  }});").unwrap();
         writeln!(out).unwrap();
     }
 
-    // Boundary value tests (Feature 5)
+    // Boundary value tests — inline expressions (Feature 5)
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
             None => continue,
         };
-        let fn_name = format!("assert{fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let has_boundary = params.iter().any(|(_, tname)| {
             ir.structures.iter().any(|s| {
@@ -491,8 +457,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
-            writeln!(out, "    expect(inv.{fn_name}({args})).toBe(true);").unwrap();
+            writeln!(out, "    expect({body}).toBe(true);").unwrap();
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
 
@@ -513,8 +478,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>().join(", ");
-            writeln!(out, "    expect(inv.{fn_name}({args})).toBe(false);").unwrap();
+            writeln!(out, "    expect(!({body})).toBe(true);").unwrap();
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
         }
@@ -529,15 +493,13 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 Some(name) => name.clone(),
                 None => continue,
             };
-            let fact_fn = format!("assert{fact_name}");
             for op in &ir.operations {
                 let op_name = to_camel_case(&op.name);
                 let test_name = format!("{fact_name} preserved after {op_name}");
-                writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
                 writeln!(out, "  it('{test_name}', () => {{").unwrap();
-                writeln!(out, "    // pre: expect(inv.{fact_fn}()).toBe(true);").unwrap();
+                writeln!(out, "    // pre: expect(/* {fact_name} constraint */).toBe(true);").unwrap();
                 writeln!(out, "    // {op_name}(...);").unwrap();
-                writeln!(out, "    // post: expect(inv.{fact_fn}()).toBe(true);").unwrap();
+                writeln!(out, "    // post: expect(/* {fact_name} constraint */).toBe(true);").unwrap();
                 writeln!(out, "    throw new Error('oxidtr: implement cross-test');").unwrap();
                 writeln!(out, "  }});").unwrap();
                 writeln!(out).unwrap();
@@ -554,24 +516,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
 fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
-}
-
-fn expr_uses_disj(expr: &crate::parser::ast::Expr) -> bool {
-    use crate::parser::ast::Expr;
-    match expr {
-        Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().any(|b| b.disj) || expr_uses_disj(body)
-        }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
-            expr_uses_disj(left) || expr_uses_disj(right)
-        }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
-            expr_uses_disj(inner)
-        }
-        Expr::FieldAccess { base, .. } => expr_uses_disj(base),
-        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
-    }
 }
 
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {

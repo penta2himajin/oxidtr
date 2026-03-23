@@ -201,25 +201,25 @@ fn rust_boundary_tests_generated() {
 // ── Feature 6: disj → @unique annotation ────────────────────────────────────
 
 #[test]
-fn rust_unique_annotation_on_disj_constraint() {
+fn rust_no_invariants_for_disj_constraint() {
     let model = parser::parse(
         "sig Team { members: set User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: User | m1 != m2 }"
     ).unwrap();
     let ir = ir::lower(&model).unwrap();
     let files = oxidtr::backend::rust::generate(&ir);
-    let invariants = files.iter().find(|f| f.path == "invariants.rs").unwrap();
-    assert!(invariants.content.contains("@unique"), "missing @unique annotation for disj constraint");
+    assert!(!files.iter().any(|f| f.path == "invariants.rs"),
+        "should NOT generate invariants.rs");
 }
 
 #[test]
-fn ts_unique_annotation_on_disj_constraint() {
+fn ts_no_invariants_for_disj_constraint() {
     let model = parser::parse(
         "sig Team { members: set User }\nsig User {}\nfact DistinctMembers { all disj m1, m2: User | m1 != m2 }"
     ).unwrap();
     let ir = ir::lower(&model).unwrap();
     let files = oxidtr::backend::typescript::generate(&ir);
-    let invariants = files.iter().find(|f| f.path == "invariants.ts").unwrap();
-    assert!(invariants.content.contains("@unique"), "missing @unique annotation for disj constraint in TS");
+    assert!(!files.iter().any(|f| f.path == "invariants.ts"),
+        "should NOT generate invariants.ts");
 }
 
 // ── Feature 7: pre/post condition separation ────────────────────────────────

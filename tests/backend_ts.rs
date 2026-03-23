@@ -71,14 +71,12 @@ fn ts_generates_operation_stubs() {
 }
 
 #[test]
-fn ts_generates_invariant_functions() {
+fn ts_no_invariants_file() {
     let files = generate_from(
         "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
     );
-    let inv = find_file(&files, "invariants.ts");
-    assert!(inv.contains("export function assertHasRole("));
-    assert!(inv.contains("return "));
-    assert!(inv.contains(".every("));
+    assert!(!files.iter().any(|f| f.path == "invariants.ts"),
+        "should NOT generate invariants.ts");
 }
 
 #[test]
@@ -93,23 +91,22 @@ fn ts_generates_vitest_tests() {
 }
 
 #[test]
-fn ts_expr_uses_every_some_includes() {
+fn ts_tests_inline_every_some_includes() {
     let files = generate_from(
         "sig Item { tags: set Tag }\nsig Tag {}\nfact Tagged { all i: Item | some t: Tag | t in i.tags }",
     );
-    let inv = find_file(&files, "invariants.ts");
-    assert!(inv.contains(".every("), "expected .every()");
-    assert!(inv.contains(".some("), "expected .some()");
-    assert!(inv.contains(".has("), "expected .has() for Set membership");
+    let tests = find_file(&files, "tests.ts");
+    assert!(tests.contains(".every("), "expected .every() in tests");
+    assert!(tests.contains(".some("), "expected .some() in tests");
 }
 
 #[test]
-fn ts_expr_uses_length_for_cardinality() {
+fn ts_tests_inline_size_for_cardinality() {
     let files = generate_from(
         "sig Box { items: set Item }\nsig Item {}\nfact Bounded { all b: Box | #b.items = #b.items }",
     );
-    let inv = find_file(&files, "invariants.ts");
-    assert!(inv.contains(".size"), "expected .size for Set cardinality");
+    let tests = find_file(&files, "tests.ts");
+    assert!(tests.contains(".size"), "expected .size for Set cardinality in tests");
 }
 
 #[test]
@@ -125,8 +122,9 @@ fn ts_self_hosting_model_generates() {
     assert!(models.contains("export type Multiplicity"));
     assert!(models.contains("export type Expr ="));
 
-    let inv = find_file(&files, "invariants.ts");
-    assert!(inv.contains("assertSigToStructureBijection"));
+    // No invariants.ts file should be generated
+    assert!(!files.iter().any(|f| f.path == "invariants.ts"),
+        "should NOT generate invariants.ts for self-hosting model");
 
     let ops = find_file(&files, "operations.ts");
     assert!(ops.contains("lowerOneSig"));
@@ -233,4 +231,64 @@ fn ts_product_field_to_map() {
     let models = find_file(&files, "models.ts");
     assert!(models.contains("Map<Key, Value>"),
         "product field should map to Map:\n{models}");
+}
+
+// ── Stage 2: No invariants file, no @alloy comments, inlined expressions ────
+
+#[test]
+fn ts_no_alloy_comments_in_tests() {
+    let files = generate_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }\nassert AlwaysTrue { all u: User | u.role = u.role }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    assert!(!tests.contains("@alloy:"),
+        "tests.ts should NOT contain @alloy comments:\n{tests}");
+}
+
+#[test]
+fn ts_no_alloy_comments_in_operations() {
+    let files = generate_from(
+        "sig User {}\nsig Role {}\npred assign[u: one User, r: one Role] { u = u }",
+    );
+    let ops = find_file(&files, "operations.ts");
+    assert!(!ops.contains("@alloy:"),
+        "operations.ts should NOT contain @alloy comments:\n{ops}");
+}
+
+#[test]
+fn ts_tests_no_invariants_import() {
+    let files = generate_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    assert!(!tests.contains("import * as inv from './invariants'"),
+        "tests.ts should NOT import invariants:\n{tests}");
+}
+
+#[test]
+fn ts_tests_inline_constraint_expression() {
+    let files = generate_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    // Should inline the expression, not call inv.assertHasRole
+    assert!(!tests.contains("inv.assertHasRole"),
+        "tests should NOT call invariant function:\n{tests}");
+    assert!(tests.contains(".every("),
+        "tests should inline constraint expression:\n{tests}");
+}
+
+#[test]
+fn ts_helpers_file_for_tc() {
+    let files = generate_from(r#"
+        sig Node { next: lone Node }
+        fact Acyclic { no n: Node | n in n.^next }
+    "#);
+    assert!(files.iter().any(|f| f.path == "helpers.ts"),
+        "should generate helpers.ts for TC functions");
+    assert!(!files.iter().any(|f| f.path == "invariants.ts"),
+        "should NOT generate invariants.ts");
+    let helpers = find_file(&files, "helpers.ts");
+    assert!(helpers.contains("tcNext"),
+        "helpers.ts should contain TC function:\n{helpers}");
 }

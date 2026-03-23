@@ -12,41 +12,36 @@ use oxidtr::analyze;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
-// ── Feature A: @alloy comments survive round-trip ──────────────────────────
+// ── Feature A: no @alloy comments in Rust/TS generated code ────────────────
 
 #[test]
-fn rust_invariants_contain_alloy_comments() {
+fn rust_no_alloy_comments_anywhere() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = rust::generate(&ir_obj);
-    let invariants = files.iter().find(|f| f.path == "invariants.rs").unwrap();
 
-    // Every named constraint should have an @alloy comment
-    let alloy_count = invariants.content.lines()
-        .filter(|l| l.trim().starts_with("/// @alloy: "))
-        .count();
-    let named_constraints = ir_obj.constraints.iter()
-        .filter(|c| c.name.is_some())
-        .count();
-    assert!(alloy_count >= named_constraints,
-        "expected at least {named_constraints} @alloy comments in invariants.rs, found {alloy_count}");
+    for file in &files {
+        let alloy_count = file.content.lines()
+            .filter(|l| l.trim().contains("@alloy:"))
+            .count();
+        assert_eq!(alloy_count, 0,
+            "file {} should have no @alloy comments, found {alloy_count}", file.path);
+    }
 }
 
 #[test]
-fn ts_invariants_contain_alloy_comments() {
+fn ts_no_alloy_comments_anywhere() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = typescript::generate(&ir_obj);
-    let invariants = files.iter().find(|f| f.path == "invariants.ts").unwrap();
 
-    let alloy_count = invariants.content.lines()
-        .filter(|l| l.trim().starts_with("// @alloy: "))
-        .count();
-    let named_constraints = ir_obj.constraints.iter()
-        .filter(|c| c.name.is_some())
-        .count();
-    assert!(alloy_count >= named_constraints,
-        "expected at least {named_constraints} @alloy comments in invariants.ts, found {alloy_count}");
+    for file in &files {
+        let alloy_count = file.content.lines()
+            .filter(|l| l.trim().contains("@alloy:"))
+            .count();
+        assert_eq!(alloy_count, 0,
+            "file {} should have no @alloy comments, found {alloy_count}", file.path);
+    }
 }
 
 #[test]
@@ -83,15 +78,14 @@ fn java_invariants_contain_alloy_comments() {
         "expected at least {named_constraints} @alloy comments in Invariants.java, found {alloy_count}");
 }
 
-// ── Mine extractors detect @alloy comments ─────────────────────────────────
+// ── Mine extractors: Rust/TS no longer have @alloy comments ─────────────────
 
 #[test]
-fn rust_mine_extracts_alloy_comments() {
+fn rust_mine_no_alloy_comments() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = rust::generate(&ir_obj);
 
-    // Mine all generated files
     let mut all_alloy_facts = Vec::new();
     for file in &files {
         let mined = rust_extractor::extract(&file.content);
@@ -102,14 +96,12 @@ fn rust_mine_extracts_alloy_comments() {
         }
     }
 
-    assert!(!all_alloy_facts.is_empty(), "no @alloy facts extracted from Rust code");
-    // All should be high confidence
-    assert!(all_alloy_facts.iter().all(|f| f.confidence == Confidence::High),
-        "all @alloy facts should be High confidence");
+    assert!(all_alloy_facts.is_empty(),
+        "Rust generated code should have no @alloy comments, found {}", all_alloy_facts.len());
 }
 
 #[test]
-fn ts_mine_extracts_alloy_comments() {
+fn ts_mine_no_alloy_comments() {
     let model = parser::parse(SELF_MODEL).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = typescript::generate(&ir_obj);
@@ -124,8 +116,8 @@ fn ts_mine_extracts_alloy_comments() {
         }
     }
 
-    assert!(!all_alloy_facts.is_empty(), "no @alloy facts extracted from TS code");
-    assert!(all_alloy_facts.iter().all(|f| f.confidence == Confidence::High));
+    assert!(all_alloy_facts.is_empty(),
+        "TS generated code should have no @alloy comments, found {}", all_alloy_facts.len());
 }
 
 #[test]
@@ -306,39 +298,37 @@ fn self_hosting_lossless_round_trip() {
     let kt_files = kotlin::generate(&original_ir);
     let java_files = java::generate(&original_ir);
 
-    // Mine each, collecting @alloy facts
-    let mut alloy_facts_by_lang: Vec<(&str, Vec<String>)> = Vec::new();
+    // Rust and TS no longer have @alloy comments — verify they are clean
+    let rust_alloy = extract_alloy_from_rust(&rust_files);
+    assert!(rust_alloy.is_empty(), "Rust should have no @alloy facts");
+    let ts_alloy = extract_alloy_from_ts(&ts_files);
+    assert!(ts_alloy.is_empty(), "TS should have no @alloy facts");
 
+    // Kotlin and Java still have @alloy comments
     for (lang_name, files, extractor) in [
-        ("Rust", &rust_files, extract_alloy_from_rust as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
-        ("TypeScript", &ts_files, extract_alloy_from_ts),
-        ("Kotlin", &kt_files, extract_alloy_from_kt),
+        ("Kotlin", &kt_files, extract_alloy_from_kt as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
         ("Java", &java_files, extract_alloy_from_java),
     ] {
         let facts = extractor(files);
         assert!(!facts.is_empty(), "{lang_name}: no @alloy facts extracted");
-        alloy_facts_by_lang.push((lang_name, facts));
     }
 
-    // Each language should have extracted the same set of unique alloy expressions
-    let lang_fact_sets: Vec<(&str, Vec<String>)> = alloy_facts_by_lang.iter()
-        .map(|(name, facts)| {
-            let mut unique: Vec<String> = facts.clone();
-            unique.sort();
-            unique.dedup();
-            (*name, unique)
-        })
-        .collect();
-
-    // All languages should have at least the named constraint count
     let named_constraint_count = original_ir.constraints.iter()
         .filter(|c| c.name.is_some())
         .count();
 
-    for (lang, facts) in &lang_fact_sets {
-        assert!(facts.len() >= named_constraint_count,
-            "{lang}: expected at least {named_constraint_count} unique @alloy facts, got {}",
-            facts.len());
+    // Kotlin/Java should still have at least the named constraint count
+    for (lang_name, files, extractor) in [
+        ("Kotlin", &kt_files, extract_alloy_from_kt as fn(&[oxidtr::backend::GeneratedFile]) -> Vec<String>),
+        ("Java", &java_files, extract_alloy_from_java),
+    ] {
+        let facts = extractor(files);
+        let mut unique: Vec<String> = facts;
+        unique.sort();
+        unique.dedup();
+        assert!(unique.len() >= named_constraint_count,
+            "{lang_name}: expected at least {named_constraint_count} unique @alloy facts, got {}",
+            unique.len());
     }
 
     // Mine Rust code and render back to .als, then re-parse
@@ -361,16 +351,7 @@ fn self_hosting_lossless_round_trip() {
     let reparsed = reparsed.unwrap();
 
     // Verify structural preservation
-    // Note: mined model won't have all original sigs (some are collapsed in codegen)
-    // but it should have a reasonable subset
     assert!(reparsed.sigs.len() > 0, "re-parsed model should have sigs");
-
-    // Verify that @alloy comments appear as fact candidates
-    let alloy_comment_facts: Vec<_> = mined_model.fact_candidates.iter()
-        .filter(|f| f.source_pattern == "@alloy comment")
-        .collect();
-    assert!(!alloy_comment_facts.is_empty(),
-        "mined model should contain @alloy comment fact candidates");
 }
 
 // ── Helpers for the self-hosting test ───────────────────────────────────────

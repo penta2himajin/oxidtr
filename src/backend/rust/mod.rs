@@ -29,10 +29,11 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
     let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    if !ir.constraints.is_empty() || has_tc {
+    // Generate helpers.rs for TC functions (replaces invariants.rs)
+    if has_tc {
         files.push(GeneratedFile {
-            path: "invariants.rs".to_string(),
-            content: generate_invariants(ir),
+            path: "helpers.rs".to_string(),
+            content: generate_helpers(ir),
         });
     }
 
@@ -349,7 +350,6 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let desc = analyze::describe_expr(expr);
                 let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
                 writeln!(out, "/// @{tag}: {desc}").unwrap();
-                writeln!(out, "/// @alloy: {}", analyze::alloy_repr(expr)).unwrap();
             }
         }
 
@@ -371,15 +371,15 @@ fn rust_return_type(type_name: &str, mult: &Multiplicity) -> String {
     }
 }
 
-fn generate_invariants(ir: &OxidtrIR) -> String {
+/// Generate helpers.rs containing TC (transitive closure) functions.
+/// These were previously in invariants.rs.
+fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
-    let sig_names = collect_sig_names(ir);
 
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use crate::models::*;").unwrap();
     writeln!(out).unwrap();
 
-    // Check if any constraint uses transitive closure
     // Collect all TC fields and generate specific traversal functions
     let mut tc_fields = Vec::new();
     for c in &ir.constraints {
@@ -395,80 +395,11 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
         generate_tc_function(&mut out, tc);
     }
 
-    for constraint in &ir.constraints {
-        let fn_name = match &constraint.name {
-            Some(name) => format!("assert_{}", to_snake_case(name)),
-            None => continue, // skip anonymous facts for now
-        };
-
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
-
-        let param_str = params
-            .iter()
-            .map(|(pname, tname)| format!("{pname}: &[{tname}]"))
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        // Rust-specific: annotate type-level guarantees
-        {
-            let sig_constraints = analyze::analyze(ir);
-            let related: Vec<_> = params.iter()
-                .flat_map(|(_, tname)| {
-                    sig_constraints.iter().filter(move |c| match c {
-                        analyze::ConstraintInfo::Presence { sig_name, .. } => sig_name == tname,
-                        _ => false,
-                    })
-                })
-                .collect();
-            use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};
-            for c in &related {
-                if can_guarantee_by_type(c, TargetLang::Rust) == Guarantee::FullyByType {
-                    match c {
-                        analyze::ConstraintInfo::Presence { field_name, .. } => {
-                            writeln!(out, "/// Type-guaranteed: null safety via Option<T> for field `{field_name}`").unwrap();
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-        writeln!(out, "/// Invariant derived from Alloy fact.").unwrap();
-        // Feature 6: add @unique annotation when disj is used
-        if expr_uses_disj(&constraint.expr) {
-            writeln!(out, "/// @unique Elements must be distinct (disj).").unwrap();
-        }
-        writeln!(out, "/// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
-        writeln!(out, "#[allow(dead_code)]").unwrap();
-        writeln!(out, "pub fn {fn_name}({param_str}) -> bool {{").unwrap();
-        writeln!(out, "    {body}").unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
-    }
-
     out
 }
 
 fn collect_sig_names(ir: &OxidtrIR) -> std::collections::HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
-}
-
-fn expr_uses_disj(expr: &crate::parser::ast::Expr) -> bool {
-    use crate::parser::ast::Expr;
-    match expr {
-        Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().any(|b| b.disj) || expr_uses_disj(body)
-        }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
-            expr_uses_disj(left) || expr_uses_disj(right)
-        }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
-            expr_uses_disj(inner)
-        }
-        Expr::FieldAccess { base, .. } => expr_uses_disj(base),
-        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
-    }
 }
 
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
@@ -502,12 +433,18 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
         .map(|s| s.name.clone()).collect();
 
+    // Check if any expression uses TC functions → need helpers import
+    let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+
     writeln!(out, "#[cfg(test)]").unwrap();
     writeln!(out, "mod property_tests {{").unwrap();
     writeln!(out, "    #[allow(unused_imports)]").unwrap();
     writeln!(out, "    use crate::models::*;").unwrap();
-    writeln!(out, "    #[allow(unused_imports)]").unwrap();
-    writeln!(out, "    use crate::invariants::*;").unwrap();
+    if needs_helpers {
+        writeln!(out, "    #[allow(unused_imports)]").unwrap();
+        writeln!(out, "    use crate::helpers::*;").unwrap();
+    }
     writeln!(out, "    #[allow(unused_imports)]").unwrap();
     writeln!(out, "    use crate::fixtures::*;").unwrap();
     writeln!(out).unwrap();
@@ -518,7 +455,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
-        writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
 
@@ -536,7 +472,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
-    // Invariant tests — call each invariant function
+    // Invariant tests — inline constraint expressions directly
     // Rust has a strong type system: skip tests for constraints guaranteed by types.
     let all_constraints = analyze::analyze(ir);
     for constraint in &ir.constraints {
@@ -544,9 +480,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let fn_name = format!("assert_{}", to_snake_case(&fact_name));
         let test_name = format!("invariant_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check the analyzed constraints for the sigs referenced by this fact
         let sig_constraints: Vec<&analyze::ConstraintInfo> = params.iter()
@@ -580,7 +516,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             can_guarantee_by_type(c, TargetLang::Rust) == Guarantee::PartiallyByType
         });
 
-        writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         if any_partial {
             writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
         }
@@ -594,24 +529,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
             }
         }
-        let args = params
-            .iter()
-            .map(|(pname, _)| format!("&{pname}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(out, "        assert!({fn_name}({args}));").unwrap();
+        writeln!(out, "        assert!({body});").unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
     }
 
-    // Boundary value tests — use boundary fixtures with invariants (Feature 5)
+    // Boundary value tests — use boundary fixtures with inlined constraints (Feature 5)
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
             None => continue,
         };
-        let fn_name = format!("assert_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check if any param type has boundary fixtures
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -643,8 +573,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| format!("&{p}")).collect::<Vec<_>>().join(", ");
-            writeln!(out, "        assert!({fn_name}({args}), \"boundary values should satisfy invariant\");").unwrap();
+            writeln!(out, "        assert!({body}, \"boundary values should satisfy invariant\");").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
 
@@ -668,8 +597,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
             }
-            let args = params.iter().map(|(p, _)| format!("&{p}")).collect::<Vec<_>>().join(", ");
-            writeln!(out, "        assert!(!{fn_name}({args}), \"invalid values should violate invariant\");").unwrap();
+            writeln!(out, "        assert!(!({body}), \"invalid values should violate invariant\");").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         }
@@ -685,13 +613,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 Some(name) => name.clone(),
                 None => continue,
             };
-            let fact_fn = format!("assert_{}", to_snake_case(&fact_name));
 
             for op in &ir.operations {
                 let op_name = to_snake_case(&op.name);
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
-                writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
                 writeln!(out, "    #[test]").unwrap();
                 writeln!(out, "    fn {test_name}() {{").unwrap();
                 writeln!(
@@ -702,7 +628,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 .unwrap();
                 writeln!(
                     out,
-                    "        // pre: assert!({fact_fn}());"
+                    "        // pre: assert!(/* {fact_name} constraint */);",
                 )
                 .unwrap();
                 writeln!(
@@ -712,7 +638,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 .unwrap();
                 writeln!(
                     out,
-                    "        // post: assert!({fact_fn}());"
+                    "        // post: assert!(/* {fact_name} constraint */);",
                 )
                 .unwrap();
                 writeln!(
@@ -763,19 +689,39 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use crate::models::*;").unwrap();
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use crate::invariants::*;").unwrap();
+    writeln!(out, "use crate::fixtures::*;").unwrap();
+
+    // Check if TC functions are needed → import helpers
+    let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr));
+    if needs_helpers {
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(out, "use crate::helpers::*;").unwrap();
+    }
     writeln!(out).unwrap();
 
-    // Deduplicate by (fact, sig)
+    // Deduplicate: only one newtype per sig (first fact wins)
     newtype_pairs.sort();
     newtype_pairs.dedup();
+    // Remove duplicate sig_names, keeping only the first (fact, sig) for each sig
+    {
+        let mut seen_sigs = HashSet::new();
+        newtype_pairs.retain(|(_, sig)| seen_sigs.insert(sig.clone()));
+    }
 
     // Build constraint info for field-level range checks
     let all_constraints = analyze::analyze(ir);
 
     for (fact_name, sig_name) in &newtype_pairs {
         let newtype_name = format!("Validated{sig_name}");
-        let assert_fn = format!("assert_{}", to_snake_case(fact_name));
+
+        // Find the constraint to get the inlined expression and params
+        let constraint = ir.constraints.iter()
+            .find(|c| c.name.as_deref() == Some(fact_name.as_str()));
+        let inlined_info = constraint.map(|c| {
+            let body = expr_translator::translate_with_ir(&c.expr, ir);
+            let params = expr_translator::extract_params(&c.expr, &sig_names);
+            (body, params)
+        });
 
         // Collect field-level cardinality bounds for this sig
         let field_checks: Vec<(String, Option<usize>, Option<usize>)> = all_constraints.iter()
@@ -817,7 +763,21 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
-        writeln!(out, "        if {assert_fn}(&[value.clone()]) {{").unwrap();
+        // Inline the constraint expression directly instead of calling invariant function
+        // Bind param names with type annotations for closure inference
+        // Only the param matching sig_name gets value.clone(); others get empty Vec
+        if let Some((body, params)) = &inlined_info {
+            for (pname, tname) in params {
+                if tname == sig_name {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![value.clone()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
+            }
+            writeln!(out, "        if {body} {{").unwrap();
+        } else {
+            writeln!(out, "        if true {{").unwrap();
+        }
         writeln!(out, "            Ok({newtype_name}(value))").unwrap();
         writeln!(out, "        }} else {{").unwrap();
         writeln!(out, "            Err(\"{fact_name} invariant violated\")").unwrap();
