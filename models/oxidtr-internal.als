@@ -130,6 +130,14 @@ sig RustBackendConfig {
   rustFeatures: set String
 }
 
+abstract sig TsTestRunner {}
+one sig Bun    extends TsTestRunner {}
+one sig Vitest extends TsTestRunner {}
+
+sig TsBackendConfig {
+  testRunner: one TsTestRunner
+}
+
 sig TCField {
   tcFieldName: one String,
   tcSigName:   one String

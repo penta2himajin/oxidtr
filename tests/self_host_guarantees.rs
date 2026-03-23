@@ -346,21 +346,13 @@ edition = "2021"
     }
 
     // Run cargo test on generated code.
-    // Skip:
-    //   - cross-tests: require human implementation (marked #[ignore])
-    //   - invalid_: tautological identity constraints (e.g. #x.f = #x.f) can't be violated
-    //   - existential cross-sig invariants: need linked fixture graphs that default factories can't provide
-    //     (e.g. SigToStructureBijection, FactToConstraint, AssertToProperty, PredToOperation, IRFieldOwnership)
+    // Skip cross-tests (require human implementation, marked #[ignore])
+    // and invalid_ tests (tautological identity constraints).
     let output = std::process::Command::new("cargo")
         .args([
             "test", "--",
             "--skip", "preserved_after",
             "--skip", "invalid_",
-            "--skip", "sig_to_structure",
-            "--skip", "fact_to_constraint",
-            "--skip", "assert_to_property",
-            "--skip", "pred_to_operation",
-            "--skip", "i_r_field_ownership",
         ])
         .current_dir(crate_dir_str)
         .output()
@@ -372,6 +364,47 @@ edition = "2021"
     assert!(
         output.status.success(),
         "cargo test on generated crate failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn guarantee_3_generated_ts_tests_pass() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    let ir = parse_and_lower();
+    let ts_config = typescript::TsBackendConfig {
+        test_runner: typescript::TsTestRunner::Bun,
+    };
+    let files = typescript::generate_with_config(&ir, &ts_config);
+
+    // Write generated files
+    for file in &files {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+
+    // Also write validators.ts
+    let validators = typescript::generate_validators(&ir);
+    if !validators.is_empty() {
+        std::fs::write(dir.join("validators.ts"), &validators).unwrap();
+    }
+
+    // Run bun test on generated code.
+    // Skip cross-tests (it.skip) and invalid_ tests.
+    let output = std::process::Command::new("bun")
+        .args(["test", "./tests.ts"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run bun test (is bun installed?)");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Count pass/fail from bun output
+    // bun test exits 0 only if no failures (skips are OK)
+    assert!(
+        output.status.success(),
+        "bun test on generated TS code failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 

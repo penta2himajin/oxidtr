@@ -5,6 +5,7 @@ use oxidtr::backend::GeneratedFile;
 use oxidtr::mine::{kotlin_extractor, java_extractor, MinedMultiplicity};
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 
 fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
     files.iter().find(|f| f.path == path)
@@ -103,6 +104,7 @@ fn check_kotlin_self_hosting() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -196,6 +198,7 @@ fn check_java_self_hosting() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

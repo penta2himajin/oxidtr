@@ -29,6 +29,9 @@ enum Commands {
         /// Force JSON Schema generation (default: auto per language — on for TS/Java, off for Rust/Kotlin)
         #[arg(long)]
         schema: Option<bool>,
+        /// Test runner for TypeScript target (bun or vitest, default: bun)
+        #[arg(long, default_value = "bun")]
+        test_runner: TestRunnerArg,
     },
     /// Check structural consistency between Alloy model and implementation
     Check {
@@ -63,6 +66,12 @@ enum WarningArg {
 }
 
 #[derive(Clone, ValueEnum)]
+enum TestRunnerArg {
+    Bun,
+    Vitest,
+}
+
+#[derive(Clone, ValueEnum)]
 enum ConflictArg {
     Warn,
     Error,
@@ -72,7 +81,8 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { model, target, output, warnings, features, schema } => {
+        Commands::Generate { model, target, output, warnings, features, schema, test_runner } => {
+            use oxidtr::backend::typescript::TsTestRunner;
             let config = GenerateConfig {
                 target,
                 output_dir: output,
@@ -83,6 +93,10 @@ fn main() {
                 },
                 features,
                 schema,
+                ts_test_runner: match test_runner {
+                    TestRunnerArg::Bun => TsTestRunner::Bun,
+                    TestRunnerArg::Vitest => TsTestRunner::Vitest,
+                },
             };
             match generate::run(&model, &config) {
                 Ok(result) => {

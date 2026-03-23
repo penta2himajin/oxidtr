@@ -2,6 +2,7 @@
 
 use oxidtr::mine;
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 
 #[test]
 fn detect_lang_from_rs_file() {
@@ -86,6 +87,7 @@ fn mine_run_directory_auto_detect_rust() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -106,6 +108,7 @@ fn mine_run_directory_auto_detect_ts() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -124,6 +127,7 @@ fn mine_run_directory_auto_detect_kotlin() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -142,6 +146,7 @@ fn mine_run_directory_auto_detect_java() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

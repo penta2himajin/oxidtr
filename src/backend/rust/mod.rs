@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity, SigMultiplicity};
+use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -1148,36 +1148,8 @@ fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> 
     }
 }
 
-/// Detect direct ownership pattern: `all x: A | some y: B | x in y.field`
-/// Only matches Pattern 1 where x can be directly inserted into y.field.
-/// Pattern 2 (`all x: A | all y: B | some z: y.field | z.prop = x`) is handled
-/// by populated default fixtures instead, since the intermediate type differs.
-/// Returns (owned_param_name, owner_param_name, owner_type, field_name).
-fn detect_ownership_pattern(expr: &Expr, _ir: &OxidtrIR) -> Option<(String, String, String, String)> {
-    if let Expr::Quantifier { kind: QuantKind::All, bindings, body } = expr {
-        if bindings.len() != 1 || bindings[0].vars.len() != 1 { return None; }
-        let owned_var = &bindings[0].vars[0];
-        let owned_type = if let Expr::VarRef(name) = &bindings[0].domain { name.clone() } else { return None; };
-
-        // Pattern 1 only: all x: A | some y: B | x in y.field
-        if let Expr::Quantifier { kind: QuantKind::Some, bindings: inner_bindings, body: inner_body } = body.as_ref() {
-            if inner_bindings.len() == 1 && inner_bindings[0].vars.len() == 1 {
-                let owner_var = &inner_bindings[0].vars[0];
-                let owner_type = if let Expr::VarRef(name) = &inner_bindings[0].domain { name.clone() } else { return None; };
-
-                if let Expr::Comparison { op: CompareOp::In, left, right } = inner_body.as_ref() {
-                    if let (Expr::VarRef(lvar), Expr::FieldAccess { base, field }) = (left.as_ref(), right.as_ref()) {
-                        if let Expr::VarRef(rvar) = base.as_ref() {
-                            if lvar == owned_var && rvar == owner_var {
-                                return Some((to_snake_plural(&owned_type), to_snake_plural(&owner_type), owner_type, field.clone()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    None
+fn detect_ownership_pattern(expr: &Expr, ir: &OxidtrIR) -> Option<(String, String, String, String)> {
+    super::detect_ownership_pattern(expr, ir, to_snake_plural)
 }
 
 

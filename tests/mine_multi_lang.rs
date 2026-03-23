@@ -2,6 +2,7 @@
 
 use oxidtr::mine;
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use oxidtr::backend::typescript::TsTestRunner;
 
 #[test]
 fn multi_lang_merge_rust_and_schema() {
@@ -15,6 +16,7 @@ fn multi_lang_merge_rust_and_schema() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config_rs).unwrap();
 
@@ -45,6 +47,7 @@ fn multi_lang_merge_ts_and_schema() {
         warnings: WarningLevel::Off,
         features: vec![],
         schema: None,
+        ts_test_runner: TsTestRunner::Bun,
     };
     generate::run("models/oxidtr.als", &config_ts).unwrap();
 
