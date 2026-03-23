@@ -102,6 +102,10 @@ pub fn describe_expr(expr: &Expr) -> String {
                 CompareOp::Eq => "=",
                 CompareOp::NotEq => "!=",
                 CompareOp::In => "in",
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
             };
             format!("{} {o} {}", describe_expr(left), describe_expr(right))
         }
@@ -119,6 +123,7 @@ pub fn describe_expr(expr: &Expr) -> String {
         Expr::TransitiveClosure(inner) => format!("^{}", describe_expr(inner)),
         Expr::FieldAccess { base, field } => format!("{}.{field}", describe_expr(base)),
         Expr::VarRef(name) => name.clone(),
+        Expr::IntLiteral(n) => n.to_string(),
     }
 }
 
@@ -190,17 +195,24 @@ fn analyze_body_for_sig(
             }
         }
         // #s.field = N or #s.field <= N etc. (via Comparison on Cardinality)
-        Expr::Comparison { op, left, .. } => {
+        Expr::Comparison { op, left, right } => {
             // Look for cardinality on left
             if let Expr::Cardinality(inner) = left.as_ref() {
                 if let Expr::FieldAccess { field, .. } = inner.as_ref() {
-                    // Try to detect self-referencing #x.field pattern
-                    // For now, mark as cardinality constraint
-                    if let CompareOp::Eq = op {
+                    let n = extract_int(right);
+                    let bound = match op {
+                        CompareOp::Eq => Some(n.map_or(BoundKind::Exact(0), |v| BoundKind::Exact(v as usize))),
+                        CompareOp::Lte => n.map(|v| BoundKind::AtMost(v as usize)),
+                        CompareOp::Lt => n.map(|v| BoundKind::AtMost((v - 1) as usize)),
+                        CompareOp::Gte => n.map(|v| BoundKind::AtLeast(v as usize)),
+                        CompareOp::Gt => n.map(|v| BoundKind::AtLeast((v + 1) as usize)),
+                        _ => None,
+                    };
+                    if let Some(bound) = bound {
                         results.push(ConstraintInfo::CardinalityBound {
                             sig_name: sig_name.to_string(),
                             field_name: field.clone(),
-                            bound: BoundKind::Exact(0), // placeholder
+                            bound,
                         });
                     }
                 }
@@ -309,9 +321,19 @@ fn field_access_matches(expr: &Expr, field_name: &str) -> bool {
     matches!(expr, Expr::FieldAccess { field, .. } if field == field_name)
 }
 
+/// Extract an integer value from an expression, if it is an IntLiteral.
+fn extract_int(expr: &Expr) -> Option<i64> {
+    if let Expr::IntLiteral(n) = expr {
+        Some(*n)
+    } else {
+        None
+    }
+}
+
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,
+        Expr::IntLiteral(_) => false,
         Expr::Quantifier { domain, body, .. } => {
             expr_references_sig(domain, sig_name) || expr_references_sig(body, sig_name)
         }

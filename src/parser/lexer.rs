@@ -38,6 +38,10 @@ pub enum Token {
     Caret,
     Eq,
     NotEq,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
     Arrow,
     Pipe,
     // Literals
@@ -148,6 +152,22 @@ impl<'a> Lexer<'a> {
             b'#' => { self.advance(); return Token::Hash; }
             b'^' => { self.advance(); return Token::Caret; }
             b'|' => { self.advance(); return Token::Pipe; }
+            b'<' => {
+                self.advance();
+                if self.peek_byte() == Some(b'=') {
+                    self.advance();
+                    return Token::Lte;
+                }
+                return Token::Lt;
+            }
+            b'>' => {
+                self.advance();
+                if self.peek_byte() == Some(b'=') {
+                    self.advance();
+                    return Token::Gte;
+                }
+                return Token::Gt;
+            }
             b'=' => {
                 self.advance();
                 if self.peek_byte() == Some(b'>') {

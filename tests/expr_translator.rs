@@ -374,3 +374,62 @@ fn translate_eq_one_field_unchanged() {
         "one field Eq should use plain ==, got: {result}"
     );
 }
+
+// ── Integer literal and comparison operator tests ─────────────────────────────
+
+fn int_lit(n: i64) -> Expr {
+    Expr::IntLiteral(n)
+}
+
+fn cmp(op: CompareOp, left: Expr, right: Expr) -> Expr {
+    Expr::Comparison {
+        op,
+        left: Box::new(left),
+        right: Box::new(right),
+    }
+}
+
+#[test]
+fn translate_int_literal() {
+    assert_eq!(translate(&int_lit(42)), "42");
+    assert_eq!(translate(&int_lit(-1)), "-1");
+    assert_eq!(translate(&int_lit(0)), "0");
+}
+
+#[test]
+fn translate_lte_comparison() {
+    let expr = cmp(CompareOp::Lte, card(field(var("a"), "items")), int_lit(5));
+    assert_eq!(translate(&expr), "a.items.len() <= 5");
+}
+
+#[test]
+fn translate_gte_comparison() {
+    let expr = cmp(CompareOp::Gte, field(var("a"), "count"), int_lit(0));
+    assert_eq!(translate(&expr), "a.count >= 0");
+}
+
+#[test]
+fn translate_lt_comparison() {
+    let expr = cmp(CompareOp::Lt, field(var("a"), "x"), int_lit(10));
+    assert_eq!(translate(&expr), "a.x < 10");
+}
+
+#[test]
+fn translate_gt_comparison() {
+    let expr = cmp(CompareOp::Gt, field(var("a"), "x"), int_lit(1));
+    assert_eq!(translate(&expr), "a.x > 1");
+}
+
+#[test]
+fn translate_cardinality_eq_int() {
+    let expr = cmp(CompareOp::Eq, card(field(var("t"), "members")), int_lit(3));
+    assert_eq!(translate(&expr), "t.members.len() == 3");
+}
+
+#[test]
+fn translate_int_comparison_with_ir() {
+    let ir = make_ir_two_sigs("Team", "members", Multiplicity::Set, "User");
+    let expr = cmp(CompareOp::Lte, card(field(var("t"), "members")), int_lit(5));
+    let result = translate_with_ir(&expr, &ir);
+    assert_eq!(result, "t.members.len() <= 5");
+}

@@ -340,7 +340,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
         Expr::Quantifier { domain, body, .. } => expr_uses_tc(domain) || expr_uses_tc(body),
-        Expr::VarRef(_) => false,
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
 
@@ -555,7 +555,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
             expr_has_comparison(inner)
         }
         Expr::FieldAccess { base, .. } => expr_has_comparison(base),
-        Expr::VarRef(_) => false,
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
 

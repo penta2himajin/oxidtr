@@ -55,7 +55,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(inner, sig_names, params);
         }
         Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
-        Expr::VarRef(_) => {}
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
 
@@ -87,7 +87,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(domain, ir, out);
             collect_tc_fields(body, ir, out);
         }
-        Expr::VarRef(_) => {}
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
 
@@ -113,6 +113,8 @@ fn translate_inner(
     let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
 
     let result = match expr {
+        Expr::IntLiteral(n) => n.to_string(),
+
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
@@ -149,6 +151,10 @@ fn translate_inner(
                 CompareOp::NotEq => {
                     lone_comparison(left, right, "!==", ir, &|e, p| ti(e, p))
                 }
+                CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
+                CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
+                CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
+                CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
                 CompareOp::In => {
                     let l = ti(left, false);
                     if let Expr::FieldAccess { base, field } = right.as_ref() {

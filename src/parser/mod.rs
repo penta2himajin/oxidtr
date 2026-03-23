@@ -312,35 +312,26 @@ impl<'a> Parser<'a> {
 
     fn parse_comparison(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_unary()?;
-        match self.peek() {
-            Token::In => {
-                self.next();
-                let right = self.parse_unary()?;
-                Ok(Expr::Comparison {
-                    op: CompareOp::In,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            }
-            Token::Eq => {
-                self.next();
-                let right = self.parse_unary()?;
-                Ok(Expr::Comparison {
-                    op: CompareOp::Eq,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            }
-            Token::NotEq => {
-                self.next();
-                let right = self.parse_unary()?;
-                Ok(Expr::Comparison {
-                    op: CompareOp::NotEq,
-                    left: Box::new(left),
-                    right: Box::new(right),
-                })
-            }
-            _ => Ok(left),
+        let op = match self.peek() {
+            Token::In    => Some(CompareOp::In),
+            Token::Eq    => Some(CompareOp::Eq),
+            Token::NotEq => Some(CompareOp::NotEq),
+            Token::Lt    => Some(CompareOp::Lt),
+            Token::Gt    => Some(CompareOp::Gt),
+            Token::Lte   => Some(CompareOp::Lte),
+            Token::Gte   => Some(CompareOp::Gte),
+            _ => None,
+        };
+        if let Some(op) = op {
+            self.next();
+            let right = self.parse_unary()?;
+            Ok(Expr::Comparison {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            })
+        } else {
+            Ok(left)
         }
     }
 
@@ -408,6 +399,12 @@ impl<'a> Parser<'a> {
             Token::Ident(_) => {
                 let name = self.expect_ident()?;
                 Ok(Expr::VarRef(name))
+            }
+            Token::Int(_) => {
+                match self.next() {
+                    Token::Int(n) => Ok(Expr::IntLiteral(n)),
+                    _ => unreachable!(),
+                }
             }
             Token::LParen => {
                 self.next();

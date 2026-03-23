@@ -29,6 +29,10 @@ pub enum CompareOp {
     In,
     Eq,
     NotEq,
+    Lt,
+    Gt,
+    Lte,
+    Gte,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +52,7 @@ pub enum QuantKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
+    IntLiteral(i64),
     VarRef(String),
     FieldAccess {
         base: Box<Expr>,

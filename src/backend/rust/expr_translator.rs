@@ -68,7 +68,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(domain, ir, out);
             collect_tc_fields(body, ir, out);
         }
-        Expr::VarRef(_) => {}
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
 
@@ -97,12 +97,14 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         Expr::FieldAccess { base, .. } => {
             collect_params(base, sig_names, params);
         }
-        Expr::VarRef(_) => {}
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
 
 fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<String>) -> String {
     let result = match expr {
+        Expr::IntLiteral(n) => n.to_string(),
+
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
@@ -131,6 +133,10 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
                 CompareOp::Eq => format!("{l} == {r}"),
                 CompareOp::NotEq => format!("{l} != {r}"),
                 CompareOp::In => format!("{r}.contains(&{l})"),
+                CompareOp::Lt => format!("{l} < {r}"),
+                CompareOp::Gt => format!("{l} > {r}"),
+                CompareOp::Lte => format!("{l} <= {r}"),
+                CompareOp::Gte => format!("{l} >= {r}"),
             }
         }
 
@@ -253,6 +259,8 @@ fn translate_inner_ir(
     let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, sig_names, ir);
 
     let result = match expr {
+        Expr::IntLiteral(n) => n.to_string(),
+
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
@@ -283,6 +291,10 @@ fn translate_inner_ir(
                 CompareOp::NotEq => {
                     lone_comparison(left, right, "!=", ir, &|e, p| ti(e, p))
                 }
+                CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
+                CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
+                CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
+                CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
                 CompareOp::In => {
                     let l = ti(left, false);
                     // Check if right side is a field access to a lone field

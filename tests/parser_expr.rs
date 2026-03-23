@@ -176,3 +176,118 @@ fn parse_comments_ignored() {
     let model = parser::parse(input).expect("should parse");
     assert_eq!(model.sigs.len(), 2);
 }
+
+// ── Integer literal and comparison operator tests ─────────────────────────────
+
+#[test]
+fn parse_int_literal_in_cardinality_bound() {
+    let input = r#"
+        sig Team { members: set User }
+        sig User {}
+        fact { all t: Team | #t.members <= 5 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::Lte, left, right } => {
+                    assert!(matches!(left.as_ref(), Expr::Cardinality(_)));
+                    assert_eq!(*right.as_ref(), Expr::IntLiteral(5));
+                }
+                other => panic!("expected Comparison(Lte), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_gte_comparison() {
+    let input = r#"
+        sig Item { count: one Item }
+        fact { all i: Item | i.count >= 0 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::Gte, right, .. } => {
+                    assert_eq!(*right.as_ref(), Expr::IntLiteral(0));
+                }
+                other => panic!("expected Comparison(Gte), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_eq_with_int_literal() {
+    let input = r#"
+        sig A { items: set B }
+        sig B {}
+        fact { all a: A | #a.items = 3 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::Eq, right, .. } => {
+                    assert_eq!(*right.as_ref(), Expr::IntLiteral(3));
+                }
+                other => panic!("expected Comparison(Eq), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_lt_comparison() {
+    let input = r#"
+        sig A { x: one A }
+        fact { all a: A | a.x < 10 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            assert!(matches!(body.as_ref(), Expr::Comparison { op: CompareOp::Lt, .. }));
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_gt_comparison() {
+    let input = r#"
+        sig A { x: one A }
+        fact { all a: A | a.x > 1 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            assert!(matches!(body.as_ref(), Expr::Comparison { op: CompareOp::Gt, .. }));
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_negative_int_literal() {
+    let input = r#"
+        sig A { x: one A }
+        fact { all a: A | a.x >= -1 }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::Gte, right, .. } => {
+                    assert_eq!(*right.as_ref(), Expr::IntLiteral(-1));
+                }
+                other => panic!("expected Comparison(Gte), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
