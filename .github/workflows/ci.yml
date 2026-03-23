@@ -57,7 +57,7 @@ jobs:
       - name: Mine Java back to Alloy
         run: cargo run -- mine generated-java/ -o /tmp/mined-java.als
 
-      # Verify enrichment
+      # Verify enrichment (no invariants, no @alloy comments)
       - name: Verify enriched output
         run: |
           grep -q 'pub fn default_' generated/fixtures.rs
@@ -65,12 +65,32 @@ jobs:
           grep -q 'fun default' generated-kt/Fixtures.kt
           grep -q 'public static' generated-java/Fixtures.java
           grep -q '@NotNull' generated-java/Models.java
-          grep -q 'validators.ts' generated-ts/validators.ts || test -f generated-ts/validators.ts
 
-      # Verify language differentiation
-      - name: Verify TS validators exist
-        run: test -f generated-ts/validators.ts
-      - name: Verify Rust has fewer tests (type-guaranteed skips)
+      # Verify no invariants files (removed by design)
+      - name: Verify no invariants files
         run: |
-          grep -c '@alloy:' generated/tests.rs > /dev/null
-          grep -c 'Type-guaranteed' generated/invariants.rs > /dev/null || true
+          test ! -f generated/invariants.rs
+          test ! -f generated-ts/invariants.ts
+          test ! -f generated-kt/Invariants.kt
+          test ! -f generated-java/Invariants.java
+
+      # Verify helpers (TC functions) exist where needed
+      - name: Verify helpers files
+        run: |
+          test -f generated/helpers.rs
+          test -f generated-ts/helpers.ts
+
+      # Verify no @alloy comments in any generated code
+      - name: Verify no @alloy comments
+        run: |
+          ! grep -r '@alloy:' generated/ generated-ts/ generated-kt/ generated-java/
+
+      # Verify TS validators exist
+      - name: Verify TS validators
+        run: test -f generated-ts/validators.ts
+
+      # Verify inlined constraint expressions in tests
+      - name: Verify inlined constraints
+        run: |
+          grep -q '.iter().all(' generated/tests.rs
+          grep -q '.every(' generated-ts/tests.ts
