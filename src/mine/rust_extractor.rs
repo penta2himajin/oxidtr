@@ -6,67 +6,102 @@ use super::*;
 pub fn extract(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
-    let mut lines = source.lines().enumerate().peekable();
 
-    while let Some((line_num, line)) = lines.next() {
-        let trimmed = line.trim();
+    // Pass 1: Extract struct/enum declarations (type structure)
+    {
+        let mut lines = source.lines().enumerate().peekable();
+        while let Some((line_num, line)) = lines.next() {
+            let trimmed = line.trim();
 
-        // struct → sig
-        if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
-            // Unit struct: "pub struct Foo;" or "pub struct Foo {}" (self-closing)
-            let is_unit = trimmed.ends_with(';')
-                || !trimmed.contains('{')
-                || (trimmed.contains('{') && trimmed.contains('}'));
-            if is_unit {
+            // struct → sig
+            if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
+                let is_unit = trimmed.ends_with(';')
+                    || !trimmed.contains('{')
+                    || (trimmed.contains('{') && trimmed.contains('}'));
+                if is_unit {
+                    sigs.push(MinedSig {
+                        name,
+                        fields: vec![],
+                        is_abstract: false,
+                        parent: None,
+                        source_location: format!("line {}", line_num + 1),
+                    });
+                } else {
+                    let (fields, _body_lines) = collect_struct_fields(&mut lines);
+                    sigs.push(MinedSig {
+                        name,
+                        fields,
+                        is_abstract: false,
+                        parent: None,
+                        source_location: format!("line {}", line_num + 1),
+                    });
+                }
+                continue;
+            }
+
+            // enum → abstract sig + child sigs
+            if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
+                let variants = collect_enum_variants(&mut lines);
                 sigs.push(MinedSig {
-                    name,
+                    name: name.clone(),
                     fields: vec![],
-                    is_abstract: false,
+                    is_abstract: true,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
                 });
-            } else {
-                let (fields, body_lines) = collect_struct_fields(&mut lines);
-                sigs.push(MinedSig {
-                    name,
-                    fields,
-                    is_abstract: false,
-                    parent: None,
-                    source_location: format!("line {}", line_num + 1),
-                });
-                extract_facts_from_lines(&body_lines, line_num, &mut fact_candidates);
+                for (vname, vfields) in variants {
+                    sigs.push(MinedSig {
+                        name: vname,
+                        fields: vfields,
+                        is_abstract: false,
+                        parent: Some(name.clone()),
+                        source_location: format!("line {}", line_num + 1),
+                    });
+                }
+                continue;
+            }
+
+            // Skip fn/impl blocks to avoid depth confusion with struct/enum inside
+            if trimmed.contains('{') && !trimmed.starts_with("pub struct ")
+                && !trimmed.starts_with("pub enum ")
+                && (trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub(crate) fn ")
+                    || trimmed.starts_with("pub const ") || trimmed.starts_with("const "))
+            {
+                skip_block(&mut lines);
             }
         }
+    }
 
-        // enum → abstract sig + child sigs
-        if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
-            let variants = collect_enum_variants(&mut lines);
-            sigs.push(MinedSig {
-                name: name.clone(),
-                fields: vec![],
-                is_abstract: true,
-                parent: None,
-                source_location: format!("line {}", line_num + 1),
-            });
-            for (vname, vfields) in variants {
-                sigs.push(MinedSig {
-                    name: vname,
-                    fields: vfields,
-                    is_abstract: false,
-                    parent: Some(name.clone()),
-                    source_location: format!("line {}", line_num + 1),
-                });
+    // Pass 2: Extract fact candidates from function bodies
+    {
+        let mut lines = source.lines().enumerate().peekable();
+        while let Some((line_num, line)) = lines.next() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ") {
+                let body = collect_fn_body(&mut lines);
+                extract_facts_from_lines(&body, line_num, &mut fact_candidates);
             }
-        }
-
-        // Function bodies: extract general patterns
-        if trimmed.starts_with("pub fn ") || trimmed.starts_with("fn ") {
-            let body = collect_fn_body(&mut lines);
-            extract_facts_from_lines(&body, line_num, &mut fact_candidates);
         }
     }
 
     MinedModel { sigs, fact_candidates }
+}
+
+/// Skip a block (fn body, impl block, etc.) by tracking braces.
+fn skip_block(lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>) {
+    let mut depth = 1usize;
+    for (_ln, line) in lines.by_ref() {
+        let trimmed = line.trim();
+        for ch in trimmed.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if depth == 0 { break; }
+    }
 }
 
 fn parse_type_decl(line: &str, prefix: &str) -> Option<String> {
