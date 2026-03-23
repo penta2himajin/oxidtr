@@ -8,11 +8,21 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    generate_with_config(ir, &RustBackendConfig::default())
+}
+
+/// Configuration for the Rust backend.
+#[derive(Debug, Clone, Default)]
+pub struct RustBackendConfig {
+    pub features: Vec<String>,
+}
+
+pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedFile> {
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
         path: "models.rs".to_string(),
-        content: generate_models(ir),
+        content: generate_models_with_config(ir, config),
     });
 
     // Check if TC functions are needed by any expression
@@ -45,10 +55,28 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         content: generate_fixtures(ir),
     });
 
+    // Generate newtypes for named constraints
+    let newtype_content = generate_newtypes(ir);
+    if !newtype_content.is_empty() {
+        files.push(GeneratedFile {
+            path: "newtypes.rs".to_string(),
+            content: newtype_content,
+        });
+    }
+
     files
 }
 
-fn generate_models(ir: &OxidtrIR) -> String {
+fn generate_models_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> String {
+    let use_serde = config.features.contains(&"serde".to_string());
+    let mut out = generate_models_inner(ir, use_serde);
+    if use_serde {
+        out.insert_str(0, "use serde::{Serialize, Deserialize};\n\n");
+    }
+    out
+}
+
+fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     let mut out = String::new();
 
     // Collect parent→children mapping for enum generation
@@ -93,9 +121,9 @@ fn generate_models(ir: &OxidtrIR) -> String {
         }
 
         if s.is_enum {
-            generate_enum(&mut out, s, children.get(&s.name), ir, &self_ref_fields);
+            generate_enum(&mut out, s, children.get(&s.name), ir, &self_ref_fields, use_serde);
         } else {
-            generate_struct(&mut out, s, &self_ref_fields);
+            generate_struct(&mut out, s, &self_ref_fields, use_serde);
         }
         writeln!(out).unwrap();
     }
@@ -109,6 +137,7 @@ fn generate_enum(
     children: Option<&Vec<String>>,
     ir: &OxidtrIR,
     self_ref_fields: &HashSet<(String, String)>,
+    use_serde: bool,
 ) {
     // Build name→StructureNode lookup for child sigs
     let struct_map: HashMap<&str, &StructureNode> = ir
@@ -117,7 +146,18 @@ fn generate_enum(
         .map(|st| (st.name.as_str(), st))
         .collect();
 
-    writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+    if use_serde {
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]").unwrap();
+        // Check if any variant has fields — if so, use tagged representation
+        let has_data_variants = children.map_or(false, |vs| {
+            vs.iter().any(|v| struct_map.get(v.as_str()).map_or(false, |st| !st.fields.is_empty()))
+        });
+        if has_data_variants {
+            writeln!(out, "#[serde(tag = \"type\")]").unwrap();
+        }
+    } else {
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+    }
     writeln!(out, "pub enum {} {{", s.name).unwrap();
     if let Some(variants) = children {
         for v in variants {
@@ -146,8 +186,13 @@ fn generate_struct(
     out: &mut String,
     s: &StructureNode,
     self_ref_fields: &HashSet<(String, String)>,
+    use_serde: bool,
 ) {
-    writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+    if use_serde {
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]").unwrap();
+    } else {
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "pub struct {};", s.name).unwrap();
     } else {
@@ -286,12 +331,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
 
+    // Collect which sigs have fixture factories (non-enum, non-variant, with fields)
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names_set: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+    let has_fixture: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone()).collect();
+
     writeln!(out, "#[cfg(test)]").unwrap();
     writeln!(out, "mod property_tests {{").unwrap();
     writeln!(out, "    #[allow(unused_imports)]").unwrap();
     writeln!(out, "    use crate::models::*;").unwrap();
     writeln!(out, "    #[allow(unused_imports)]").unwrap();
     writeln!(out, "    use crate::invariants::*;").unwrap();
+    writeln!(out, "    #[allow(unused_imports)]").unwrap();
+    writeln!(out, "    use crate::fixtures::*;").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -304,7 +361,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    fn {test_name}() {{").unwrap();
 
         for (pname, tname) in &params {
-            writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+            if has_fixture.contains(tname) {
+                let snake = to_snake_case(tname);
+                writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+            } else {
+                writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+            }
         }
 
         writeln!(out, "        assert!({body});").unwrap();
@@ -325,7 +387,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+            if has_fixture.contains(tname) {
+                let snake = to_snake_case(tname);
+                writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+            } else {
+                writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+            }
         }
         let args = params
             .iter()
@@ -390,6 +457,89 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "}}").unwrap();
 
     out
+}
+
+/// Generate newtype wrappers for sigs that have named constraints.
+/// For each (constraint_name, sig_name) pair where the named constraint references the sig,
+/// generates `ValidatedSig(Sig)` + `TryFrom<Sig> for ValidatedSig`.
+fn generate_newtypes(ir: &OxidtrIR) -> String {
+    let sig_names = collect_sig_names(ir);
+    let mut out = String::new();
+
+    // Collect (fact_name, sig_name) pairs where the fact has a Comparison in its expression
+    let mut newtype_pairs: Vec<(String, String)> = Vec::new();
+    for constraint in &ir.constraints {
+        let fact_name = match &constraint.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        // Check if this constraint contains a Comparison
+        if !expr_has_comparison(&constraint.expr) {
+            continue;
+        }
+        // Find which sigs this constraint references
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        for (_pname, tname) in &params {
+            newtype_pairs.push((fact_name.clone(), tname.clone()));
+        }
+    }
+
+    if newtype_pairs.is_empty() {
+        return String::new();
+    }
+
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use crate::invariants::*;").unwrap();
+    writeln!(out).unwrap();
+
+    // Deduplicate by (fact, sig)
+    newtype_pairs.sort();
+    newtype_pairs.dedup();
+
+    for (fact_name, sig_name) in &newtype_pairs {
+        let newtype_name = format!("Validated{sig_name}");
+        let assert_fn = format!("assert_{}", to_snake_case(fact_name));
+
+        writeln!(out, "/// Newtype wrapper: {sig_name} validated by {fact_name}.").unwrap();
+        writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
+        writeln!(out, "pub struct {newtype_name}(pub {sig_name});").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "impl TryFrom<{sig_name}> for {newtype_name} {{").unwrap();
+        writeln!(out, "    type Error = &'static str;").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    fn try_from(value: {sig_name}) -> Result<Self, Self::Error> {{").unwrap();
+        writeln!(out, "        if {assert_fn}(&[value.clone()]) {{").unwrap();
+        writeln!(out, "            Ok({newtype_name}(value))").unwrap();
+        writeln!(out, "        }} else {{").unwrap();
+        writeln!(out, "            Err(\"{fact_name} invariant violated\")").unwrap();
+        writeln!(out, "        }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}
+
+/// Check if an expression contains a Comparison node.
+fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
+    use crate::parser::ast::Expr;
+    match expr {
+        Expr::Comparison { .. } => true,
+        Expr::BinaryLogic { left, right, .. } => {
+            expr_has_comparison(left) || expr_has_comparison(right)
+        }
+        Expr::Quantifier { body, domain, .. } => {
+            expr_has_comparison(body) || expr_has_comparison(domain)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            expr_has_comparison(inner)
+        }
+        Expr::FieldAccess { base, .. } => expr_has_comparison(base),
+        Expr::VarRef(_) => false,
+    }
 }
 
 fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {

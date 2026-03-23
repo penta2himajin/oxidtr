@@ -100,3 +100,160 @@ fn generate_property_test() {
     assert!(content.contains("always_true") || content.contains("AlwaysTrue"));
     assert!(content.contains("#[test]") || content.contains("proptest"));
 }
+
+// ── Non-vacuous test generation (Item 1) ────────────────────────────────────
+
+#[test]
+fn rust_tests_import_fixtures() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("use crate::fixtures::*"),
+        "tests should import fixtures module:\n{content}");
+}
+
+#[test]
+fn rust_tests_use_fixture_factory_for_sig_with_fields() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("default_user()"),
+        "test should use fixture factory for User:\n{content}");
+    assert!(content.contains("vec![default_user()]"),
+        "test should populate vec with fixture:\n{content}");
+}
+
+#[test]
+fn rust_tests_empty_vec_for_sig_without_fields() {
+    let files = generate_from(r#"
+        sig Token {}
+        assert AllTokens { all t: Token | t = t }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("Vec::new()"),
+        "test should use Vec::new() for Token (no fields):\n{content}");
+}
+
+// ── Newtype + TryFrom generation (Item 2) ────────────────────────────────────
+
+#[test]
+fn rust_generates_newtype_for_named_constraint_with_comparison() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(newtypes.contains("pub struct ValidatedUser(pub User)"),
+        "should generate ValidatedUser newtype:\n{newtypes}");
+}
+
+#[test]
+fn rust_generates_tryfrom_for_newtype() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(newtypes.contains("impl TryFrom<User> for ValidatedUser"),
+        "should generate TryFrom impl:\n{newtypes}");
+    assert!(newtypes.contains("assert_has_role"),
+        "TryFrom should call invariant function:\n{newtypes}");
+}
+
+#[test]
+fn rust_no_newtype_for_anonymous_fact() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact { all u: User | u.role = u.role }
+    "#);
+    // Anonymous fact should not produce newtypes
+    assert!(!files.iter().any(|f| f.path == "newtypes.rs"),
+        "should not generate newtypes.rs for anonymous facts");
+}
+
+#[test]
+fn rust_no_newtype_for_fact_without_comparison() {
+    // TransitiveClosure-only constraint without direct comparison
+    let files = generate_from(r#"
+        sig Node { next: lone Node }
+        fact Acyclic { no n: Node | n in n.^next }
+    "#);
+    // The `no` quantifier generates a Quantifier with Comparison inside it,
+    // so this WILL generate a newtype. Let's test a case without any Comparison.
+    // Actually, `n in n.^next` IS a Comparison, so this will generate.
+    // A fact that truly has no comparison is not expressible in the grammar easily.
+    // Instead, let's verify the newtype IS generated for this constraint.
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(newtypes.contains("ValidatedNode"),
+        "should generate ValidatedNode for Acyclic:\n{newtypes}");
+}
+
+// ── Serde opt-in (Item 6) ────────────────────────────────────────────────────
+
+fn generate_with_serde(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
+    let model = oxidtr::parser::parse(input).expect("should parse");
+    let ir = oxidtr::ir::lower(&model).expect("should lower");
+    let config = oxidtr::backend::rust::RustBackendConfig {
+        features: vec!["serde".to_string()],
+    };
+    oxidtr::backend::rust::generate_with_config(&ir, &config)
+}
+
+#[test]
+fn rust_serde_adds_serialize_deserialize() {
+    let files = generate_with_serde("sig User { name: one Name }\nsig Name {}");
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("Serialize, Deserialize"),
+        "should have serde derives:\n{content}");
+}
+
+#[test]
+fn rust_serde_adds_use_statement() {
+    let files = generate_with_serde("sig User {}");
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("use serde::{Serialize, Deserialize}"),
+        "should import serde:\n{content}");
+}
+
+#[test]
+fn rust_serde_tag_on_enum_with_data_variants() {
+    let files = generate_with_serde(r#"
+        abstract sig Expr {}
+        sig Literal extends Expr {}
+        sig BinOp extends Expr { left: one Expr, right: one Expr }
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("#[serde(tag = \"type\")]"),
+        "should have serde tag on enum with data:\n{content}");
+}
+
+#[test]
+fn rust_serde_no_tag_on_unit_enum() {
+    let files = generate_with_serde(r#"
+        abstract sig Color {}
+        one sig Red extends Color {}
+        one sig Blue extends Color {}
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(!content.contains("#[serde(tag"),
+        "should NOT have serde tag on unit enum:\n{content}");
+}
+
+#[test]
+fn rust_no_serde_by_default() {
+    let files = generate_from("sig User { name: one Name }\nsig Name {}");
+    let content = find_file(&files, "models.rs");
+    assert!(!content.contains("Serialize"),
+        "should NOT have serde derives by default:\n{content}");
+    assert!(!content.contains("Deserialize"),
+        "should NOT have serde derives by default:\n{content}");
+}

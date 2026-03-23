@@ -295,6 +295,16 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             .collect::<Vec<_>>()
             .join(", ");
 
+        // JSDoc from body expressions
+        if !op.body.is_empty() {
+            writeln!(out, "/**").unwrap();
+            for expr in &op.body {
+                let desc = analyze::describe_expr(expr);
+                writeln!(out, " * @pre {desc}").unwrap();
+            }
+            writeln!(out, " */").unwrap();
+        }
+
         writeln!(out, "export function {fn_name}({params}): void {{").unwrap();
         writeln!(out, "  throw new Error(\"oxidtr: implement {}\");", op.name).unwrap();
         writeln!(out, "}}").unwrap();
@@ -310,9 +320,20 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
 
+    // Collect which sigs have fixture factories (non-enum, non-variant, with fields)
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+    let has_fixture: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone()).collect();
+
     writeln!(out, "import {{ describe, it, expect }} from 'vitest';").unwrap();
     writeln!(out, "import type * as M from './models';").unwrap();
     writeln!(out, "import * as inv from './invariants';").unwrap();
+    writeln!(out, "import * as fix from './fixtures';").unwrap();
     writeln!(out).unwrap();
 
     writeln!(out, "describe('property tests', () => {{").unwrap();
@@ -324,7 +345,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+            if has_fixture.contains(tname) {
+                writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
+            } else {
+                writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+            }
         }
         writeln!(out, "    expect({body}).toBe(true);").unwrap();
         writeln!(out, "  }});").unwrap();
@@ -343,7 +368,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+            if has_fixture.contains(tname) {
+                writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
+            } else {
+                writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+            }
         }
         let args = params
             .iter()

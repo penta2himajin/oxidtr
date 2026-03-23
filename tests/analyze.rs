@@ -1,6 +1,6 @@
 use oxidtr::parser;
 use oxidtr::ir;
-use oxidtr::analyze::{self, ConstraintInfo};
+use oxidtr::analyze::{self, ConstraintInfo, BeanValidation};
 
 fn analyze_from(input: &str) -> Vec<ConstraintInfo> {
     let model = parser::parse(input).expect("parse");
@@ -91,6 +91,43 @@ fn schema_discriminated_union() {
     assert!(file.content.contains("\"oneOf\""));
     assert!(file.content.contains("\"discriminator\""));
     assert!(file.content.contains("\"kind\""));
+}
+
+// ── Bean Validation ─────────────────────────────────────────────────────────
+
+#[test]
+fn bean_validation_size_from_cardinality() {
+    let model = parser::parse(
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let validations = analyze::bean_validations_for_field(&ir, "Team", "members");
+    assert!(validations.iter().any(|v| matches!(v, BeanValidation::Size { .. })),
+        "expected @Size validation for members field");
+}
+
+#[test]
+fn bean_validation_min_max_from_comparison() {
+    // u.role != u (field compared to different expr) should trigger @Min/@Max
+    let model = parser::parse(
+        "sig User { role: one User }\nfact ValidRole { all u: User | u.role != u }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let validations = analyze::bean_validations_for_field(&ir, "User", "role");
+    assert!(validations.iter().any(|v| matches!(v, BeanValidation::MinMax { .. })),
+        "expected @Min/@Max validation for role field");
+}
+
+#[test]
+fn bean_validation_empty_for_unrelated_field() {
+    let model = parser::parse(
+        "sig User { name: one Role, age: one Role }\nsig Role {}\nfact ValidRole { all u: User | u.name = u.name }"
+    ).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let validations = analyze::bean_validations_for_field(&ir, "User", "age");
+    // age is not referenced in the constraint, so no @Min/@Max
+    assert!(!validations.iter().any(|v| matches!(v, BeanValidation::MinMax { .. })),
+        "expected no @Min/@Max validation for age field");
 }
 
 #[test]

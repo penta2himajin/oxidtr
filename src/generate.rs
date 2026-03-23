@@ -42,6 +42,7 @@ pub struct GenerateConfig {
     pub target: String,
     pub output_dir: String,
     pub warnings: WarningLevel,
+    pub features: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,7 +108,12 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
 
     // Generate target code
     let files = match config.target.as_str() {
-        "rust" => rust::generate(&ir),
+        "rust" => {
+            let rust_config = rust::RustBackendConfig {
+                features: config.features.clone(),
+            };
+            rust::generate_with_config(&ir, &rust_config)
+        }
         "typescript" | "ts" => typescript::generate(&ir),
         "kotlin" | "kt" => kotlin::generate(&ir),
         "java" => java::generate(&ir),

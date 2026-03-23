@@ -101,6 +101,7 @@ fn check_kotlin_self_hosting() {
         target: "kt".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 
@@ -192,6 +193,7 @@ fn check_java_self_hosting() {
         target: "java".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     generate::run("models/oxidtr.als", &config).unwrap();
 

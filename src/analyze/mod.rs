@@ -219,6 +219,96 @@ fn analyze_body_for_sig(
     }
 }
 
+/// Bean Validation annotation for a field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BeanValidation {
+    /// @Size(min=N, max=M) for collection fields
+    Size { min: Option<usize>, max: Option<usize>, fact_name: String },
+    /// @Min/@Max for comparison constraints (no integer literal in AST)
+    MinMax { fact_name: String },
+}
+
+/// Get Bean Validation annotations for a specific field on a sig.
+pub fn bean_validations_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<BeanValidation> {
+    let mut results = Vec::new();
+    let constraints = constraints_for_sig(ir, sig_name);
+    for c in &constraints {
+        match c {
+            ConstraintInfo::CardinalityBound { field_name: fname, bound, .. } if fname == field_name => {
+                let (min, max) = match bound {
+                    BoundKind::Exact(n) => (Some(*n), Some(*n)),
+                    BoundKind::AtMost(n) => (None, Some(*n)),
+                    BoundKind::AtLeast(n) => (Some(*n), None),
+                };
+                // Find the fact name for this constraint
+                let fact_name = ir.constraints.iter()
+                    .filter_map(|cn| cn.name.clone())
+                    .find(|name| {
+                        ir.constraints.iter().any(|cn| cn.name.as_deref() == Some(name)
+                            && expr_references_sig(&cn.expr, sig_name))
+                    })
+                    .unwrap_or_default();
+                results.push(BeanValidation::Size { min, max, fact_name });
+            }
+            _ => {}
+        }
+    }
+    // Check for Comparison constraints referencing this field (for @Min/@Max)
+    for c in &ir.constraints {
+        let fact_name = match &c.name {
+            Some(n) => n.clone(),
+            None => continue,
+        };
+        if expr_has_comparison_on_field(&c.expr, sig_name, field_name) {
+            results.push(BeanValidation::MinMax { fact_name });
+        }
+    }
+    results
+}
+
+/// Check if an expression contains a direct comparison (not cardinality) on a field.
+fn expr_has_comparison_on_field(expr: &Expr, sig_name: &str, field_name: &str) -> bool {
+    match expr {
+        Expr::Quantifier { kind: QuantKind::All, domain, body, .. } => {
+            if let Expr::VarRef(name) = domain.as_ref() {
+                if name == sig_name {
+                    return body_has_comparison_on_field(body, field_name);
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+fn body_has_comparison_on_field(body: &Expr, field_name: &str) -> bool {
+    match body {
+        Expr::Comparison { op, left, right, .. } => {
+            // Skip cardinality comparisons (handled by @Size) and In comparisons
+            if matches!(op, CompareOp::In) { return false; }
+            if matches!(left.as_ref(), Expr::Cardinality(_)) { return false; }
+            let left_matches = field_access_matches(left, field_name);
+            let right_matches = field_access_matches(right, field_name);
+            // Only flag if one side is the field and the other is different
+            // (e.g., u.role = someValue, not u.role = u.role which is tautological)
+            if left_matches && right_matches { return false; }
+            left_matches || right_matches
+        }
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
+            body_has_comparison_on_field(left, field_name)
+                || body_has_comparison_on_field(right, field_name)
+        }
+        Expr::BinaryLogic { op: LogicOp::Implies, right, .. } => {
+            body_has_comparison_on_field(right, field_name)
+        }
+        _ => false,
+    }
+}
+
+fn field_access_matches(expr: &Expr, field_name: &str) -> bool {
+    matches!(expr, Expr::FieldAccess { field, .. } if field == field_name)
+}
+
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,

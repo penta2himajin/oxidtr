@@ -99,7 +99,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         if s.is_enum {
             generate_sealed_interface(&mut out, s, ctx);
         } else {
-            generate_record(&mut out, s);
+            generate_record(&mut out, s, ir);
         }
         writeln!(out).unwrap();
     }
@@ -107,20 +107,53 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn generate_record(out: &mut String, s: &StructureNode) {
+fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
     if s.fields.is_empty() {
         writeln!(out, "public record {}() {{}}", s.name).unwrap();
     } else {
         let params: Vec<String> = s.fields.iter()
             .map(|f| {
-                let annotation = match f.mult {
-                    Multiplicity::One => "@NotNull ",
-                    _ => "",
+                let mut annotations = Vec::new();
+                match f.mult {
+                    Multiplicity::One => annotations.push("@NotNull".to_string()),
+                    _ => {}
                 };
-                format!("{annotation}{} {}", mult_to_java_type(&f.target, &f.mult), f.name)
+                // Bean Validation: @Size for set/seq fields with cardinality constraints
+                let validations = analyze::bean_validations_for_field(ir, &s.name, &f.name);
+                for v in &validations {
+                    match v {
+                        analyze::BeanValidation::Size { fact_name, .. } => {
+                            // No integer literals in Alloy AST; use comment-based annotation
+                            annotations.push(format!("/* @Size see fact: {fact_name} */"));
+                        }
+                        analyze::BeanValidation::MinMax { fact_name } => {
+                            annotations.push(format!("/* @Min/@Max see fact: {fact_name} */"));
+                        }
+                    }
+                }
+                let annotation_str = if annotations.is_empty() {
+                    String::new()
+                } else {
+                    format!("{} ", annotations.join(" "))
+                };
+                format!("{annotation_str}{} {}", mult_to_java_type(&f.target, &f.mult), f.name)
             })
             .collect();
-        writeln!(out, "public record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+
+        // Check if compact constructor is needed (Item 4)
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        if constraint_names.is_empty() {
+            writeln!(out, "public record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+        } else {
+            writeln!(out, "public record {}({}) {{", s.name, params.join(", ")).unwrap();
+            writeln!(out, "    public {} {{", s.name).unwrap();
+            for cn in &constraint_names {
+                writeln!(out, "        // Validated by: {cn}").unwrap();
+                writeln!(out, "        assert Invariants.assert{cn}();").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 
@@ -293,6 +326,16 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
+
+        // Javadoc from body expressions
+        if !op.body.is_empty() {
+            writeln!(out, "    /**").unwrap();
+            for expr in &op.body {
+                let desc = analyze::describe_expr(expr);
+                writeln!(out, "     * @pre {desc}").unwrap();
+            }
+            writeln!(out, "     */").unwrap();
+        }
 
         writeln!(out, "    public static void {}({params}) {{", op.name).unwrap();
         writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement {}\");", op.name).unwrap();

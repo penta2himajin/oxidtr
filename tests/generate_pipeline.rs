@@ -6,6 +6,7 @@ fn test_config(dir: &str) -> GenerateConfig {
         target: "rust".to_string(),
         output_dir: dir.to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     }
 }
 
@@ -71,6 +72,7 @@ fn generate_detects_warnings() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -93,6 +95,7 @@ fn generate_warnings_error_level_fails() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Error,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config);
@@ -114,6 +117,7 @@ fn generate_detects_missing_inverse() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -142,6 +146,7 @@ fn generate_no_missing_inverse_when_constrained() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -166,6 +171,7 @@ fn generate_detects_unconstrained_transitivity() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -192,6 +198,7 @@ fn generate_no_unconstrained_transitivity_when_fact_exists() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
 
     let result = generate::run(&model_path, &config).unwrap();
@@ -220,6 +227,7 @@ fn generate_detects_unhandled_response_pattern() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -247,6 +255,7 @@ fn generate_detects_missing_error_propagation() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -275,6 +284,7 @@ fn generate_no_unhandled_when_all_variants_have_preds() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -303,6 +313,7 @@ fn generate_no_unhandled_for_single_child_abstract() {
         target: "rust".to_string(),
         output_dir: out_dir.to_str().unwrap().to_string(),
         warnings: WarningLevel::Off,
+        features: vec![],
     };
     let result = generate::run(&model_path, &config).unwrap();
 

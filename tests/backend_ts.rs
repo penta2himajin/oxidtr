@@ -131,3 +131,58 @@ fn ts_self_hosting_model_generates() {
     let ops = find_file(&files, "operations.ts");
     assert!(ops.contains("lowerOneSig"));
 }
+
+// ── Operations JSDoc from body ──────────────────────────────────────────────
+
+#[test]
+fn ts_operations_jsdoc_from_body() {
+    let files = generate_from(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u.r = r }",
+    );
+    let ops = find_file(&files, "operations.ts");
+    assert!(ops.contains("/**"), "expected JSDoc comment:\n{ops}");
+    assert!(ops.contains("@pre"), "expected @pre tag:\n{ops}");
+}
+
+#[test]
+fn ts_operations_jsdoc_body_content() {
+    let files = generate_from(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
+    );
+    let ops = find_file(&files, "operations.ts");
+    // The body u = u should be described
+    assert!(ops.contains("@pre u = u"), "expected body description:\n{ops}");
+}
+
+// ── Non-vacuous test generation ─────────────────────────────────────────────
+
+#[test]
+fn ts_tests_import_fixtures() {
+    let files = generate_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    assert!(tests.contains("import * as fix from './fixtures'"),
+        "tests should import fixtures:\n{tests}");
+}
+
+#[test]
+fn ts_tests_use_fixture_factory_for_sig_with_fields() {
+    let files = generate_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    assert!(tests.contains("fix.defaultUser()"),
+        "test should use fixture factory for User:\n{tests}");
+}
+
+#[test]
+fn ts_tests_empty_array_for_sig_without_fields() {
+    let files = generate_from(
+        "sig Token {}\nassert AllTokens { all t: Token | t = t }",
+    );
+    let tests = find_file(&files, "tests.ts");
+    // Token has no fields → no fixture factory → stays as empty array
+    assert!(tests.contains("Token[] = []"),
+        "test should use empty array for Token (no fields):\n{tests}");
+}

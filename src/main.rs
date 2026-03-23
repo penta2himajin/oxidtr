@@ -23,6 +23,9 @@ enum Commands {
         output: String,
         #[arg(long, default_value = "warn")]
         warnings: WarningArg,
+        /// Comma-separated feature flags (e.g., serde)
+        #[arg(long, value_delimiter = ',')]
+        features: Vec<String>,
     },
     /// Check structural consistency between Alloy model and implementation
     Check {
@@ -57,7 +60,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { model, target, output, warnings } => {
+        Commands::Generate { model, target, output, warnings, features } => {
             let config = GenerateConfig {
                 target,
                 output_dir: output,
@@ -66,6 +69,7 @@ fn main() {
                     WarningArg::Warn  => WarningLevel::Warn,
                     WarningArg::Off   => WarningLevel::Off,
                 },
+                features,
             };
             match generate::run(&model, &config) {
                 Ok(result) => {

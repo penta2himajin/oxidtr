@@ -137,6 +137,20 @@ fn parse_java_param(param: &str) -> Option<MinedField> {
 fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
     let t = java_type.trim();
 
+    // @Nullable annotation or comment — check before stripping other comments
+    if t.contains("/* @Nullable */") {
+        let clean = t.replace("/* @Nullable */", "").trim().to_string();
+        return (MinedMultiplicity::Lone, strip_block_comments(&clean));
+    }
+    if t.contains("@Nullable") {
+        let clean = t.replace("@Nullable", "").trim().to_string();
+        return (MinedMultiplicity::Lone, strip_block_comments(&clean));
+    }
+
+    // Strip remaining block comments (e.g., /* @Size see fact: ... */)
+    let t = strip_block_comments(t);
+    let t = t.trim();
+
     // List<T> → set
     if let Some(inner) = strip_wrapper(t, "List<", ">") {
         return (MinedMultiplicity::Set, inner.to_string());
@@ -145,16 +159,19 @@ fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
     if let Some(inner) = strip_wrapper(t, "Optional<", ">") {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
-    // @Nullable annotation or comment — check full pattern first
-    if t.contains("/* @Nullable */") {
-        let clean = t.replace("/* @Nullable */", "").trim().to_string();
-        return (MinedMultiplicity::Lone, clean);
-    }
-    if t.contains("@Nullable") {
-        let clean = t.replace("@Nullable", "").trim().to_string();
-        return (MinedMultiplicity::Lone, clean);
-    }
     (MinedMultiplicity::One, t.to_string())
+}
+
+fn strip_block_comments(s: &str) -> String {
+    let mut result = s.to_string();
+    while let (Some(start), Some(end)) = (result.find("/*"), result.find("*/")) {
+        if end > start {
+            result = format!("{}{}", &result[..start], &result[end + 2..]);
+        } else {
+            break;
+        }
+    }
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn strip_wrapper<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {

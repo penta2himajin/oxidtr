@@ -95,7 +95,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         if s.is_enum {
             generate_sealed_class(&mut out, s, ctx);
         } else {
-            generate_data_class(&mut out, s);
+            generate_data_class(&mut out, s, ir);
         }
         writeln!(out).unwrap();
     }
@@ -103,7 +103,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn generate_data_class(out: &mut String, s: &StructureNode) {
+fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR) {
     if s.fields.is_empty() {
         writeln!(out, "data class {}(val placeholder: Unit = Unit)", s.name).unwrap();
     } else {
@@ -111,6 +111,23 @@ fn generate_data_class(out: &mut String, s: &StructureNode) {
         for (i, f) in s.fields.iter().enumerate() {
             let type_str = mult_to_kt_type(&f.target, &f.mult);
             let comma = if i < s.fields.len() - 1 { "," } else { "" };
+            // Bean Validation annotations
+            let validations = analyze::bean_validations_for_field(ir, &s.name, &f.name);
+            let mut annotations = Vec::new();
+            for v in &validations {
+                match v {
+                    analyze::BeanValidation::Size { fact_name, .. } => {
+                        // No integer literals in Alloy AST; use comment-based annotation
+                        annotations.push(format!("/* @Size see fact: {fact_name} */"));
+                    }
+                    analyze::BeanValidation::MinMax { fact_name } => {
+                        annotations.push(format!("/* @Min/@Max see fact: {fact_name} */"));
+                    }
+                }
+            }
+            for ann in &annotations {
+                writeln!(out, "    {ann}").unwrap();
+            }
             writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
         }
         writeln!(out, ")").unwrap();
@@ -278,6 +295,16 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             })
             .collect::<Vec<_>>()
             .join(", ");
+
+        // KDoc from body expressions
+        if !op.body.is_empty() {
+            writeln!(out, "/**").unwrap();
+            for expr in &op.body {
+                let desc = analyze::describe_expr(expr);
+                writeln!(out, " * @pre {desc}").unwrap();
+            }
+            writeln!(out, " */").unwrap();
+        }
 
         writeln!(out, "fun {}({params}) {{", op.name).unwrap();
         writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();

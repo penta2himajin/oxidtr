@@ -168,6 +168,9 @@ fn extract_constructor_params(line: &str) -> Vec<MinedField> {
 }
 
 fn parse_kt_param(param: &str) -> Option<MinedField> {
+    // Strip block comments (e.g., /* @Size see fact: ... */) before parsing
+    let cleaned = strip_block_comments(param);
+    let param = cleaned.trim();
     // "val name: Type" or "val name: Type?"
     let rest = param.strip_prefix("val ").or_else(|| param.strip_prefix("var "))?;
     let colon = rest.find(':')?;
@@ -176,6 +179,18 @@ fn parse_kt_param(param: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim();
     let (mult, target) = kt_type_to_mult(type_str);
     Some(MinedField { name, mult, target })
+}
+
+fn strip_block_comments(s: &str) -> String {
+    let mut result = s.to_string();
+    while let (Some(start), Some(end)) = (result.find("/*"), result.find("*/")) {
+        if end > start {
+            result = format!("{}{}", &result[..start], &result[end + 2..]);
+        } else {
+            break;
+        }
+    }
+    result.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn kt_type_to_mult(kt_type: &str) -> (MinedMultiplicity, String) {

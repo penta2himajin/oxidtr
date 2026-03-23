@@ -111,6 +111,50 @@ fn kt_self_hosting() {
     assert!(inv.contains("assertSigToStructureBijection"));
 }
 
+// ── Kotlin: Bean Validation ─────────────────────────────────────────────────
+
+#[test]
+fn kt_bean_validation_size_on_cardinality_constraint() {
+    let files = generate_kt(
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+    );
+    let m = find_file(&files, "Models.kt");
+    assert!(m.contains("@Size see fact:"), "expected @Size annotation on members field:\n{m}");
+}
+
+#[test]
+fn kt_bean_validation_min_max_on_comparison() {
+    let files = generate_kt(
+        "sig User { role: one User }\nfact ValidRole { all u: User | u.role != u }",
+    );
+    let m = find_file(&files, "Models.kt");
+    assert!(m.contains("@Min/@Max see fact: ValidRole"), "expected @Min/@Max comment:\n{m}");
+}
+
+// ── Kotlin: Operations doc ──────────────────────────────────────────────────
+
+#[test]
+fn kt_operations_kdoc_from_body() {
+    let files = generate_kt(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u.r = r }",
+    );
+    let ops = find_file(&files, "Operations.kt");
+    assert!(ops.contains("/**"), "expected KDoc comment:\n{ops}");
+    assert!(ops.contains("@pre"), "expected @pre tag:\n{ops}");
+}
+
+#[test]
+fn kt_operations_no_doc_when_empty_body() {
+    // Operations with no body should not have doc comments
+    // (in practice all preds have bodies, but empty body means no docs)
+    let files = generate_kt(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
+    );
+    let ops = find_file(&files, "Operations.kt");
+    // This pred has a body expression (u = u), so it should have docs
+    assert!(ops.contains("@pre"), "expected @pre for body expression:\n{ops}");
+}
+
 // ── Java ───────────────────────────────────────────────────────────────────
 
 #[test]
@@ -187,4 +231,75 @@ fn java_self_hosting() {
 
     let inv = find_file(&files, "Invariants.java");
     assert!(inv.contains("assertSigToStructureBijection"));
+}
+
+// ── Java: Bean Validation ──────────────────────────────────────────────────
+
+#[test]
+fn java_bean_validation_notnull_on_one() {
+    let files = generate_java("sig User { name: one Role }\nsig Role {}");
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("@NotNull"), "expected @NotNull on one-mult field");
+}
+
+#[test]
+fn java_bean_validation_size_on_cardinality_constraint() {
+    let files = generate_java(
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members = #t.members }",
+    );
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("@Size see fact:"), "expected @Size annotation:\n{m}");
+}
+
+#[test]
+fn java_bean_validation_min_max_on_comparison() {
+    let files = generate_java(
+        "sig User { role: one User }\nfact ValidRole { all u: User | u.role != u }",
+    );
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("@Min/@Max see fact: ValidRole"), "expected @Min/@Max comment:\n{m}");
+}
+
+// ── Java: Compact Constructor ──────────────────────────────────────────────
+
+#[test]
+fn java_compact_constructor_for_constrained_record() {
+    let files = generate_java(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }",
+    );
+    let m = find_file(&files, "Models.java");
+    assert!(m.contains("public User {"), "expected compact constructor:\n{m}");
+    assert!(m.contains("Validated by: HasRole"), "expected validation comment:\n{m}");
+    assert!(m.contains("Invariants.assertHasRole"), "expected invariant assertion:\n{m}");
+}
+
+#[test]
+fn java_no_compact_constructor_without_constraints() {
+    let files = generate_java("sig User { name: one Role }\nsig Role {}");
+    let m = find_file(&files, "Models.java");
+    // Should be a simple record without compact constructor
+    assert!(m.contains("public record User(") && m.contains(") {}"), "expected simple record:\n{m}");
+    assert!(!m.contains("public User {"), "should not have compact constructor:\n{m}");
+}
+
+// ── Java: Operations doc ────────────────────────────────────────────────────
+
+#[test]
+fn java_operations_javadoc_from_body() {
+    let files = generate_java(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u.r = r }",
+    );
+    let ops = find_file(&files, "Operations.java");
+    assert!(ops.contains("/**"), "expected Javadoc comment:\n{ops}");
+    assert!(ops.contains("@pre"), "expected @pre tag:\n{ops}");
+}
+
+#[test]
+fn java_operations_no_doc_when_no_body() {
+    // A pred with body should have docs
+    let files = generate_java(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
+    );
+    let ops = find_file(&files, "Operations.java");
+    assert!(ops.contains("@pre"), "expected @pre for body expression:\n{ops}");
 }
