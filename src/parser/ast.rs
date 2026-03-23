@@ -15,11 +15,19 @@ pub struct FieldDecl {
     pub target: String, // refers to sig name
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SigMultiplicity {
+    Default,  // plain `sig`
+    One,      // `one sig` — exactly one instance (singleton)
+    Some,     // `some sig` — one or more instances
+    Lone,     // `lone sig` — zero or one instance
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SigDecl {
     pub name: String,
     pub is_abstract: bool,
-    pub is_singleton: bool,
+    pub multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<FieldDecl>,
 }

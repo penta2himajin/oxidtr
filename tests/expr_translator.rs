@@ -93,14 +93,14 @@ fn make_ir_two_sigs(
     let node_b = StructureNode {
         name: sig_b.to_string(),
         is_enum: false,
-        is_singleton: false,
+        sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![],
     };
     let node_a = StructureNode {
         name: sig_a.to_string(),
         is_enum: false,
-        is_singleton: false,
+        sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![IRField {
             name: field_name.to_string(),
@@ -120,7 +120,7 @@ fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> Oxi
     let node = StructureNode {
         name: sig_name.to_string(),
         is_enum: false,
-        is_singleton: false,
+        sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![IRField {
             name: field_name.to_string(),

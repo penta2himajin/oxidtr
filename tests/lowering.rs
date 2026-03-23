@@ -144,7 +144,7 @@ fn lower_one_sig_preserves_singleton_flag() {
     let ast = parser::parse(src).unwrap();
     let ir = ir::lower(&ast).unwrap();
     let mult_one = ir.structures.iter().find(|s| s.name == "MultOne").unwrap();
-    assert!(mult_one.is_singleton, "one sig should propagate is_singleton to IR");
+    assert_eq!(mult_one.sig_multiplicity, oxidtr::parser::ast::SigMultiplicity::One, "one sig should propagate sig_multiplicity=One to IR");
 }
 
 #[test]
@@ -170,6 +170,65 @@ fn unhandled_response_not_fired_for_singleton_children() {
     assert!(
         !result.warnings.iter().any(|w| matches!(w.kind, WarningKind::UnhandledResponsePattern)),
         "singleton-only abstract sig should not trigger UNHANDLED_RESPONSE_PATTERN"
+    );
+}
+
+#[test]
+fn lower_some_sig_preserves_multiplicity() {
+    use oxidtr::parser;
+    use oxidtr::ir;
+    use oxidtr::parser::ast::SigMultiplicity;
+    let src = "some sig Foo {}";
+    let ast = parser::parse(src).unwrap();
+    let ir = ir::lower(&ast).unwrap();
+    assert_eq!(ir.structures[0].sig_multiplicity, SigMultiplicity::Some);
+}
+
+#[test]
+fn lower_lone_sig_preserves_multiplicity() {
+    use oxidtr::parser;
+    use oxidtr::ir;
+    use oxidtr::parser::ast::SigMultiplicity;
+    let src = "lone sig Foo {}";
+    let ast = parser::parse(src).unwrap();
+    let ir = ir::lower(&ast).unwrap();
+    assert_eq!(ir.structures[0].sig_multiplicity, SigMultiplicity::Lone);
+}
+
+#[test]
+fn lower_default_sig_has_default_multiplicity() {
+    use oxidtr::parser;
+    use oxidtr::ir;
+    use oxidtr::parser::ast::SigMultiplicity;
+    let src = "sig Foo {}";
+    let ast = parser::parse(src).unwrap();
+    let ir = ir::lower(&ast).unwrap();
+    assert_eq!(ir.structures[0].sig_multiplicity, SigMultiplicity::Default);
+}
+
+#[test]
+fn unhandled_response_not_fired_for_some_and_lone_children() {
+    use oxidtr::generate::{self, GenerateConfig, WarningLevel, WarningKind};
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = dir.path().join("model.als");
+    // All children have multiplicity modifiers → not a response pattern
+    fs::write(&model_path, r#"
+        abstract sig Status {}
+        one sig Active  extends Status {}
+        some sig Pending extends Status {}
+        lone sig Archived extends Status {}
+    "#).unwrap();
+    let config = GenerateConfig {
+        target: "rust".to_string(),
+        output_dir: dir.path().join("out").to_str().unwrap().to_string(),
+        warnings: WarningLevel::Off,
+        features: vec![],
+    };
+    let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
+    assert!(
+        !result.warnings.iter().any(|w| matches!(w.kind, WarningKind::UnhandledResponsePattern)),
+        "some/lone sig children should not trigger UNHANDLED_RESPONSE_PATTERN"
     );
 }
 

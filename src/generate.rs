@@ -1,4 +1,5 @@
 use crate::parser;
+use crate::parser::ast::SigMultiplicity;
 use crate::ir;
 use crate::backend::rust;
 use crate::backend::typescript;
@@ -316,10 +317,11 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
                 _ => continue, // single-child or no children → skip
             };
             // 全 child が one sig (singleton) なら値 enum → response パターンではない
+            // some sig / lone sig children are also considered constrained (not response patterns)
             let all_singletons = variants.iter().all(|&v| {
                 ir.structures.iter()
                     .find(|sn| sn.name == v)
-                    .map_or(false, |sn| sn.is_singleton)
+                    .map_or(false, |sn| sn.sig_multiplicity != SigMultiplicity::Default)
             });
             if all_singletons { continue; }
             for &variant in variants {

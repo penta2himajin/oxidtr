@@ -5,7 +5,7 @@ use oxidtr::check::{self, CheckConfig};
 use oxidtr::check::impl_parser::{self, ExtractedField};
 use oxidtr::check::differ::{self, DiffItem};
 use oxidtr::ir::nodes::{OxidtrIR, StructureNode, IRField, OperationNode};
-use oxidtr::parser::ast::Multiplicity;
+use oxidtr::parser::ast::{Multiplicity, SigMultiplicity};
 
 // ── impl_parser: type_to_mult ─────────────────────────────────────────────────
 
@@ -148,7 +148,7 @@ fn differ_no_diff_when_in_sync() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
-            is_singleton: false,
+            sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField {
                 name: "name".into(),
@@ -178,7 +178,7 @@ fn differ_no_diff_when_in_sync() {
 fn differ_missing_struct() {
     use oxidtr::check::impl_parser::ExtractedImpl;
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, is_singleton: false, parent: None, fields: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
@@ -205,7 +205,7 @@ fn differ_missing_field() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
-            is_singleton: false,
+            sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "email".into(), mult: Multiplicity::One, target: "String".into() }],
         }],
@@ -226,7 +226,7 @@ fn differ_missing_field() {
 fn differ_extra_field() {
     use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, is_singleton: false, parent: None, fields: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl {
@@ -251,7 +251,7 @@ fn differ_multiplicity_mismatch() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
-            is_singleton: false,
+            sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "manager".into(), mult: Multiplicity::Lone, target: "User".into() }],
         }],

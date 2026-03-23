@@ -89,18 +89,50 @@ impl<'a> Parser<'a> {
                 Token::Abstract => {
                     self.next();
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(true, false)?);
+                    model.sigs.push(self.parse_sig_body(true, SigMultiplicity::Default)?);
                 }
                 Token::One => {
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, true)?);
+                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::One)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
                                 message: "'one' must be followed by 'sig'".to_string(),
+                                pos: self.lexer.pos(),
+                            });
+                        }
+                    }
+                }
+                Token::Some_ => {
+                    // Peek ahead: `some sig` is a sig decl; otherwise it's an expression (handled elsewhere)
+                    self.next();
+                    match self.peek() {
+                        Token::Sig => {
+                            self.next();
+                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Some)?);
+                        }
+                        _ => {
+                            return Err(ParseError::InvalidSyntax {
+                                message: "'some' at top level must be followed by 'sig'".to_string(),
+                                pos: self.lexer.pos(),
+                            });
+                        }
+                    }
+                }
+                Token::Lone => {
+                    // Peek ahead: `lone sig` is a sig decl; otherwise it's a field multiplicity
+                    self.next();
+                    match self.peek() {
+                        Token::Sig => {
+                            self.next();
+                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Lone)?);
+                        }
+                        _ => {
+                            return Err(ParseError::InvalidSyntax {
+                                message: "'lone' at top level must be followed by 'sig'".to_string(),
                                 pos: self.lexer.pos(),
                             });
                         }
@@ -133,10 +165,10 @@ impl<'a> Parser<'a> {
 
     fn parse_sig(&mut self, is_abstract: bool) -> Result<SigDecl, ParseError> {
         self.expect(&Token::Sig)?;
-        self.parse_sig_body(is_abstract, false)
+        self.parse_sig_body(is_abstract, SigMultiplicity::Default)
     }
 
-    fn parse_sig_body(&mut self, is_abstract: bool, is_singleton: bool) -> Result<SigDecl, ParseError> {
+    fn parse_sig_body(&mut self, is_abstract: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
         let name = self.expect_ident()?;
 
         let parent = if self.peek() == Token::Extends {
@@ -161,7 +193,7 @@ impl<'a> Parser<'a> {
         Ok(SigDecl {
             name,
             is_abstract,
-            is_singleton,
+            multiplicity,
             parent,
             fields,
         })
@@ -427,6 +459,7 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek() {
                 Token::Eof | Token::Sig | Token::Abstract | Token::One
+                | Token::Some_ | Token::Lone
                 | Token::Fact | Token::Pred | Token::Assert
                 | Token::Check | Token::Run => break,
                 _ => { self.next(); }

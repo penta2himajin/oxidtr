@@ -1,7 +1,7 @@
 /// oxidtr IR — language-independent intermediate representation.
 /// Lowered from Alloy AST; consumed by target backends.
 
-use crate::parser::ast::{Expr, Multiplicity};
+use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IRField {
@@ -14,7 +14,7 @@ pub struct IRField {
 pub struct StructureNode {
     pub name: String,
     pub is_enum: bool,
-    pub is_singleton: bool,
+    pub sig_multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<IRField>,
 }

@@ -75,7 +75,7 @@ fn parse_one_sig_sets_singleton_flag() {
     use oxidtr::parser::parse;
     let model = parse("one sig Foo {}").unwrap();
     let sig = &model.sigs[0];
-    assert!(sig.is_singleton, "one sig should set is_singleton=true");
+    assert_eq!(sig.multiplicity, SigMultiplicity::One, "one sig should set multiplicity=One");
     assert!(!sig.is_abstract);
 }
 
@@ -83,5 +83,73 @@ fn parse_one_sig_sets_singleton_flag() {
 fn parse_regular_sig_not_singleton() {
     use oxidtr::parser::parse;
     let model = parse("sig Foo {}").unwrap();
-    assert!(!model.sigs[0].is_singleton);
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Default);
+}
+
+#[test]
+fn parse_some_sig() {
+    let model = parser::parse("some sig Foo {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Some);
+    assert!(!model.sigs[0].is_abstract);
+}
+
+#[test]
+fn parse_lone_sig() {
+    let model = parser::parse("lone sig Foo {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Lone);
+    assert!(!model.sigs[0].is_abstract);
+}
+
+#[test]
+fn parse_some_sig_extends() {
+    let model = parser::parse("some sig Foo extends Bar {}").unwrap();
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[0].parent.as_deref(), Some("Bar"));
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Some);
+}
+
+#[test]
+fn parse_lone_sig_extends() {
+    let model = parser::parse("lone sig Foo extends Bar {}").unwrap();
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[0].parent.as_deref(), Some("Bar"));
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Lone);
+}
+
+#[test]
+fn parse_some_sig_with_fields() {
+    let model = parser::parse("some sig Foo { bar: one Baz }").unwrap();
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Some);
+    assert_eq!(model.sigs[0].fields.len(), 1);
+    assert_eq!(model.sigs[0].fields[0].name, "bar");
+}
+
+#[test]
+fn parse_lone_sig_with_fields() {
+    let model = parser::parse("lone sig Foo { bar: lone Baz }").unwrap();
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Lone);
+    assert_eq!(model.sigs[0].fields.len(), 1);
+    assert_eq!(model.sigs[0].fields[0].mult, Multiplicity::Lone);
+}
+
+#[test]
+fn parse_mixed_sig_multiplicities() {
+    let input = r#"
+        abstract sig Base {}
+        one sig A extends Base {}
+        some sig B extends Base {}
+        lone sig C extends Base {}
+        sig D extends Base {}
+    "#;
+    let model = parser::parse(input).unwrap();
+    assert_eq!(model.sigs.len(), 5);
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Default); // abstract sig
+    assert_eq!(model.sigs[1].multiplicity, SigMultiplicity::One);
+    assert_eq!(model.sigs[2].multiplicity, SigMultiplicity::Some);
+    assert_eq!(model.sigs[3].multiplicity, SigMultiplicity::Lone);
+    assert_eq!(model.sigs[4].multiplicity, SigMultiplicity::Default);
 }
