@@ -863,7 +863,14 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
         let param_name = s.name[..1].to_lowercase();
         let constraints = analyze::constraints_for_sig(ir, &s.name);
 
+        // Named facts that reference this sig — may not be fully translatable,
+        // but their names must appear here so `oxidtr check` can verify coverage.
+        let named_facts = analyze::constraint_names_for_sig(ir, &s.name);
+
         writeln!(out, "/** Runtime validator for {} — checks all known constraints. */", s.name).unwrap();
+        for fact in &named_facts {
+            writeln!(out, "// @covers: {fact}").unwrap();
+        }
         writeln!(out, "export function {fn_name}({param_name}: M.{}): string[] {{", s.name).unwrap();
         writeln!(out, "  const errors: string[] = [];").unwrap();
 
