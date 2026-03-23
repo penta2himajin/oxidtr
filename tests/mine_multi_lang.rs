@@ -275,3 +275,97 @@ export interface Group {}
     let parsed = oxidtr::parser::parse(&rendered);
     assert!(parsed.is_ok(), "merged model should parse:\n{rendered}\nerror: {:?}", parsed.err());
 }
+
+// ── Conflict mode behavior ─────────────────────────────────────────────────
+
+#[test]
+fn conflict_result_has_details() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    // Create conflicting definitions
+    std::fs::write(dir.join("models.rs"), r#"
+use std::collections::BTreeSet;
+pub struct Team {
+    pub members: BTreeSet<User>,
+}
+pub struct User {}
+"#).unwrap();
+
+    std::fs::write(dir.join("models.ts"), r#"
+export interface Team {
+  members: User[];
+}
+export interface User {}
+"#).unwrap();
+
+    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+
+    // MergeResult should contain actionable conflict info
+    assert!(!result.conflicts.is_empty());
+    let conflict = &result.conflicts[0];
+    assert_eq!(conflict.sig_name, "Team");
+    assert_eq!(conflict.field_name, "members");
+    assert!(!conflict.sources.is_empty(), "sources should list both languages");
+    assert!(!conflict.description.is_empty(), "description should explain the conflict");
+
+    // Model should still be produced (warn mode behavior)
+    assert!(!result.model.sigs.is_empty(), "model should still be generated despite conflicts");
+    assert!(result.model.sigs.iter().any(|s| s.name == "Team"));
+}
+
+#[test]
+fn no_conflict_on_same_structure() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    // Identical structure in both languages (domain types only)
+    std::fs::write(dir.join("models.rs"), r#"
+pub struct Config {
+    pub items: Vec<Item>,
+    pub owner: Option<Owner>,
+}
+pub struct Item {}
+pub struct Owner {}
+"#).unwrap();
+
+    std::fs::write(dir.join("Models.kt"), r#"
+data class Config(
+    val items: List<Item>,
+    val owner: Owner?
+)
+data class Item(val placeholder: Unit = Unit)
+data class Owner(val placeholder: Unit = Unit)
+"#).unwrap();
+
+    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    assert!(result.conflicts.is_empty(),
+        "same structure across Rust+Kotlin should have no conflicts: {:?}", result.conflicts);
+    assert!(result.sources_used.len() >= 2);
+}
+
+#[test]
+fn conflict_on_target_type_mismatch() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    // Same field name but different target type
+    std::fs::write(dir.join("models.rs"), r#"
+pub struct Order {
+    pub status: OrderStatus,
+}
+pub struct OrderStatus {}
+"#).unwrap();
+
+    std::fs::write(dir.join("models.ts"), r#"
+export interface Order {
+  status: string;
+}
+"#).unwrap();
+
+    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    assert!(result.conflicts.iter().any(|c|
+        c.sig_name == "Order" && c.field_name == "status"
+            && c.description.contains("target type")
+    ), "should detect target type mismatch: {:?}", result.conflicts);
+}
