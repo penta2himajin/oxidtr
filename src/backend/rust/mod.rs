@@ -310,6 +310,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let desc = analyze::describe_expr(expr);
                 let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
                 writeln!(out, "/// @{tag}: {desc}").unwrap();
+                writeln!(out, "/// @alloy: {}", analyze::alloy_repr(expr)).unwrap();
             }
         }
 
@@ -375,6 +376,7 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
         if expr_uses_disj(&constraint.expr) {
             writeln!(out, "/// @unique Elements must be distinct (disj).").unwrap();
         }
+        writeln!(out, "/// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "#[allow(dead_code)]").unwrap();
         writeln!(out, "pub fn {fn_name}({param_str}) -> bool {{").unwrap();
         writeln!(out, "    {body}").unwrap();
@@ -454,6 +456,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
+        writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
 
@@ -481,6 +484,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let test_name = format!("invariant_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
 
+        writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "    #[test]").unwrap();
         writeln!(out, "    fn {test_name}() {{").unwrap();
         for (pname, tname) in &params {
@@ -588,6 +592,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 let op_name = to_snake_case(&op.name);
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
+                writeln!(out, "    /// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
                 writeln!(out, "    #[test]").unwrap();
                 writeln!(out, "    fn {test_name}() {{").unwrap();
                 writeln!(

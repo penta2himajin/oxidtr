@@ -289,6 +289,7 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
         } else {
             writeln!(out, "    /** Invariant derived from Alloy fact. */").unwrap();
         }
+        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "    public static boolean {fn_name}({param_str}) {{").unwrap();
         writeln!(out, "        return {body};").unwrap();
         writeln!(out, "    }}").unwrap();
@@ -378,6 +379,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 writeln!(out, "     * @{tag} {desc}").unwrap();
             }
             writeln!(out, "     */").unwrap();
+            for expr in &op.body {
+                writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(expr)).unwrap();
+            }
         }
 
         let return_type = match &op.return_type {
@@ -412,6 +416,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
+        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -427,6 +432,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let fn_name = format!("assert{fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
 
+        writeln!(out, "    // @alloy: {}", crate::analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void invariant_{}() {{", fact_name).unwrap();
         for (pname, tname) in &params {

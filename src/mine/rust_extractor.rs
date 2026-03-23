@@ -8,6 +8,12 @@ pub fn extract(source: &str) -> MinedModel {
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
 
+    // First pass: extract top-level @alloy comments
+    extract_alloy_comments(
+        source.lines().enumerate().map(|(ln, line)| (ln, line.to_string())),
+        &mut fact_candidates,
+    );
+
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
@@ -225,12 +231,172 @@ fn collect_fn_body(
     body
 }
 
+/// Extract @alloy: comments from lines, returning high-confidence fact candidates.
+fn extract_alloy_comments(
+    lines: impl Iterator<Item = (usize, String)>,
+    facts: &mut Vec<MinedFactCandidate>,
+) {
+    for (ln, line) in lines {
+        let trimmed = line.trim();
+        // Match "/// @alloy: ..." or "// @alloy: ..."
+        let alloy_text = trimmed.strip_prefix("/// @alloy: ")
+            .or_else(|| trimmed.strip_prefix("// @alloy: "));
+        if let Some(text) = alloy_text {
+            facts.push(MinedFactCandidate {
+                alloy_text: text.trim().to_string(),
+                confidence: Confidence::High,
+                source_location: format!("line {}", ln + 1),
+                source_pattern: "@alloy comment".to_string(),
+            });
+        }
+    }
+}
+
+/// Reverse-translate a Rust expression back to Alloy syntax.
+/// Only handles patterns we know our own generator produces.
+pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
+    let s = code_line.trim();
+    // .iter().all(|v| body) → all v: Xxx | body
+    if let Some(result) = try_reverse_quantifier(s) {
+        return Some(result);
+    }
+    // .contains(&v) → v in xxx
+    if let Some(result) = try_reverse_contains(s) {
+        return Some(result);
+    }
+    // .len() → #xxx
+    if let Some(result) = try_reverse_cardinality(s) {
+        return Some(result);
+    }
+    // Comparison operators
+    if let Some(result) = try_reverse_comparison(s) {
+        return Some(result);
+    }
+    // Boolean logic
+    if let Some(result) = try_reverse_logic(s) {
+        return Some(result);
+    }
+    None
+}
+
+fn try_reverse_quantifier(s: &str) -> Option<String> {
+    // xxx.iter().all(|v| body)
+    if let Some(pos) = s.find(".iter().all(|") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".iter().all(|".len()..];
+        let pipe_pos = rest.find('|')?;
+        let var = rest[..pipe_pos].trim();
+        let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
+        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+        return Some(format!("all {var}: {collection} | {body_alloy}"));
+    }
+    // !xxx.iter().any(|v| body) → no v: Xxx | body
+    if s.starts_with('!') {
+        let inner = &s[1..];
+        if let Some(pos) = inner.find(".iter().any(|") {
+            let collection = inner[..pos].trim();
+            let rest = &inner[pos + ".iter().any(|".len()..];
+            let pipe_pos = rest.find('|')?;
+            let var = rest[..pipe_pos].trim();
+            let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
+            let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+            return Some(format!("no {var}: {collection} | {body_alloy}"));
+        }
+    }
+    // xxx.iter().any(|v| body) → some v: Xxx | body
+    if let Some(pos) = s.find(".iter().any(|") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".iter().any(|".len()..];
+        let pipe_pos = rest.find('|')?;
+        let var = rest[..pipe_pos].trim();
+        let body = rest[pipe_pos + 1..].trim().trim_end_matches(')');
+        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+        return Some(format!("some {var}: {collection} | {body_alloy}"));
+    }
+    None
+}
+
+fn try_reverse_contains(s: &str) -> Option<String> {
+    // xxx.contains(&v) → v in xxx
+    let pos = s.find(".contains(&")?;
+    let collection = s[..pos].trim();
+    let rest = &s[pos + ".contains(&".len()..];
+    let end = rest.find(')')?;
+    let element = rest[..end].trim();
+    Some(format!("{element} in {collection}"))
+}
+
+fn try_reverse_cardinality(s: &str) -> Option<String> {
+    // xxx.len() → #xxx
+    let pos = s.find(".len()")?;
+    let inner = s[..pos].trim();
+    Some(format!("#{inner}"))
+}
+
+fn try_reverse_comparison(s: &str) -> Option<String> {
+    // a == b → a = b, a != b → a != b, a < b → a < b, etc.
+    for (rust_op, alloy_op) in &[(" == ", " = "), (" != ", " != "), (" <= ", " <= "),
+                                   (" >= ", " >= "), (" < ", " < "), (" > ", " > ")] {
+        if let Some(pos) = s.find(rust_op) {
+            let left = s[..pos].trim();
+            let right = s[pos + rust_op.len()..].trim();
+            let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+            let right_alloy = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+            return Some(format!("{left_alloy}{alloy_op}{right_alloy}"));
+        }
+    }
+    None
+}
+
+fn try_reverse_logic(s: &str) -> Option<String> {
+    // !a || b → a implies b (only at top level)
+    if s.starts_with('!') && s.contains(" || ") {
+        let inner = &s[1..];
+        if let Some(pos) = inner.find(" || ") {
+            let a = inner[..pos].trim().trim_start_matches('(').trim_end_matches(')');
+            let b = inner[pos + 4..].trim();
+            let a_alloy = reverse_translate_expr(a).unwrap_or_else(|| a.to_string());
+            let b_alloy = reverse_translate_expr(b).unwrap_or_else(|| b.to_string());
+            return Some(format!("{a_alloy} implies {b_alloy}"));
+        }
+    }
+    // a && b → a and b
+    if let Some(pos) = s.find(" && ") {
+        let left = s[..pos].trim();
+        let right = s[pos + 4..].trim();
+        let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+        let right_alloy = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+        return Some(format!("{left_alloy} and {right_alloy}"));
+    }
+    // a || b → a or b
+    if let Some(pos) = s.find(" || ") {
+        let left = s[..pos].trim();
+        let right = s[pos + 4..].trim();
+        let left_alloy = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+        let right_alloy = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+        return Some(format!("{left_alloy} or {right_alloy}"));
+    }
+    // !a → not a
+    if s.starts_with('!') {
+        let inner = s[1..].trim();
+        let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+        return Some(format!("not {inner_alloy}"));
+    }
+    None
+}
+
 /// Extract fact candidates from code patterns.
 fn extract_facts_from_lines(
     body: &[(usize, String)],
     _context_line: usize,
     facts: &mut Vec<MinedFactCandidate>,
 ) {
+    // First extract @alloy comments
+    extract_alloy_comments(
+        body.iter().map(|(ln, line)| (*ln, line.clone())),
+        facts,
+    );
+
     for (ln, line) in body {
         let loc = format!("line {}", ln + 1);
 

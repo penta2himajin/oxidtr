@@ -466,6 +466,100 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
     }
 }
 
+/// Render an expression back to valid Alloy syntax.
+/// Unlike `describe_expr` which is human-readable, this produces parseable Alloy.
+pub fn alloy_repr(expr: &Expr) -> String {
+    match expr {
+        Expr::Quantifier { kind, bindings, body } => {
+            let q = match kind {
+                QuantKind::All => "all",
+                QuantKind::Some => "some",
+                QuantKind::No => "no",
+            };
+            let bindings_str: Vec<String> = bindings.iter().map(|b| {
+                let disj_prefix = if b.disj { "disj " } else { "" };
+                let vars = b.vars.join(", ");
+                let d = alloy_repr(&b.domain);
+                format!("{disj_prefix}{vars}: {d}")
+            }).collect();
+            let b = alloy_repr(body);
+            format!("{q} {} | {b}", bindings_str.join(", "))
+        }
+        Expr::Comparison { op, left, right } => {
+            let o = match op {
+                CompareOp::Eq => "=",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => "in",
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{} {} {}", alloy_repr(left), o, alloy_repr(right))
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let o = match op {
+                LogicOp::And => "and",
+                LogicOp::Or => "or",
+                LogicOp::Implies => "implies",
+                LogicOp::Iff => "iff",
+            };
+            let left_str = alloy_repr_maybe_paren(left, op);
+            let right_str = alloy_repr_maybe_paren(right, op);
+            format!("{left_str} {o} {right_str}")
+        }
+        Expr::Not(inner) => format!("not {}", alloy_repr_atom(inner)),
+        Expr::Cardinality(inner) => format!("#{}", alloy_repr_atom(inner)),
+        Expr::TransitiveClosure(inner) => format!("^{}", alloy_repr_atom(inner)),
+        Expr::FieldAccess { base, field } => format!("{}.{field}", alloy_repr_atom(base)),
+        Expr::VarRef(name) => name.clone(),
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::SetOp { op, left, right } => {
+            let o = match op {
+                SetOpKind::Union => "+",
+                SetOpKind::Intersection => "&",
+                SetOpKind::Difference => "-",
+            };
+            format!("{} {o} {}", alloy_repr(left), alloy_repr(right))
+        }
+        Expr::Product { left, right } => {
+            format!("{} -> {}", alloy_repr(left), alloy_repr(right))
+        }
+    }
+}
+
+/// Wrap in parens if the sub-expression is a lower-precedence binary logic.
+fn alloy_repr_maybe_paren(expr: &Expr, parent_op: &LogicOp) -> String {
+    match expr {
+        Expr::BinaryLogic { op, .. } if needs_paren(op, parent_op) => {
+            format!("({})", alloy_repr(expr))
+        }
+        _ => alloy_repr(expr),
+    }
+}
+
+/// Whether a child op needs parens inside a parent op.
+fn needs_paren(child: &LogicOp, parent: &LogicOp) -> bool {
+    let precedence = |op: &LogicOp| -> u8 {
+        match op {
+            LogicOp::Iff => 0,
+            LogicOp::Implies => 1,
+            LogicOp::Or => 2,
+            LogicOp::And => 3,
+        }
+    };
+    precedence(child) < precedence(parent)
+}
+
+/// Render an expression as an atomic unit (add parens if it's complex).
+fn alloy_repr_atom(expr: &Expr) -> String {
+    match expr {
+        Expr::VarRef(_) | Expr::IntLiteral(_) => alloy_repr(expr),
+        Expr::FieldAccess { .. } => alloy_repr(expr),
+        _ => format!("({})", alloy_repr(expr)),
+    }
+}
+
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
     match expr {
         Expr::VarRef(name) => name == sig_name,

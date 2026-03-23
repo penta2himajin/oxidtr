@@ -237,6 +237,7 @@ fn generate_invariants(ir: &OxidtrIR) -> String {
         } else {
             writeln!(out, "/** Invariant derived from Alloy fact. */").unwrap();
         }
+        writeln!(out, "// @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "export function {fn_name}({param_str}): boolean {{").unwrap();
         writeln!(out, "  return {body};").unwrap();
         writeln!(out, "}}").unwrap();
@@ -330,6 +331,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 writeln!(out, " * @{tag} {desc}").unwrap();
             }
             writeln!(out, " */").unwrap();
+            for expr in &op.body {
+                writeln!(out, "// @alloy: {}", analyze::alloy_repr(expr)).unwrap();
+            }
         }
 
         let return_str = match &op.return_type {
@@ -375,6 +379,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
+        writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&prop.expr)).unwrap();
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
@@ -398,6 +403,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let test_name = format!("invariant {fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
 
+        writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
@@ -494,6 +500,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             for op in &ir.operations {
                 let op_name = to_camel_case(&op.name);
                 let test_name = format!("{fact_name} preserved after {op_name}");
+                writeln!(out, "  // @alloy: {}", analyze::alloy_repr(&constraint.expr)).unwrap();
                 writeln!(out, "  it('{test_name}', () => {{").unwrap();
                 writeln!(out, "    // pre: expect(inv.{fact_fn}()).toBe(true);").unwrap();
                 writeln!(out, "    // {op_name}(...);").unwrap();

@@ -9,6 +9,12 @@ pub fn extract(source: &str) -> MinedModel {
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
 
+    // Extract top-level @alloy comments
+    extract_alloy_comments(
+        source.lines().enumerate().map(|(ln, line)| (ln, line.to_string())),
+        &mut fact_candidates,
+    );
+
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
@@ -321,11 +327,117 @@ fn collect_block(
     body
 }
 
+/// Extract @alloy: comments from lines.
+fn extract_alloy_comments(
+    lines: impl Iterator<Item = (usize, String)>,
+    facts: &mut Vec<MinedFactCandidate>,
+) {
+    for (ln, line) in lines {
+        let trimmed = line.trim();
+        let alloy_text = trimmed.strip_prefix("// @alloy: ")
+            .or_else(|| trimmed.strip_prefix("/// @alloy: "));
+        if let Some(text) = alloy_text {
+            facts.push(MinedFactCandidate {
+                alloy_text: text.trim().to_string(),
+                confidence: Confidence::High,
+                source_location: format!("line {}", ln + 1),
+                source_pattern: "@alloy comment".to_string(),
+            });
+        }
+    }
+}
+
+/// Reverse-translate a Java expression back to Alloy syntax.
+pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
+    let s = code_line.trim();
+    // .stream().allMatch(v -> body) → all v: Xxx | body
+    if let Some(pos) = s.find(".stream().allMatch(") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".stream().allMatch(".len()..];
+        let arrow = rest.find(" -> ")?;
+        let var = rest[..arrow].trim();
+        let body = rest[arrow + 4..].trim().trim_end_matches(')');
+        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+        return Some(format!("all {var}: {collection} | {body_alloy}"));
+    }
+    // .stream().noneMatch(v -> body) → no v: Xxx | body
+    if let Some(pos) = s.find(".stream().noneMatch(") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".stream().noneMatch(".len()..];
+        let arrow = rest.find(" -> ")?;
+        let var = rest[..arrow].trim();
+        let body = rest[arrow + 4..].trim().trim_end_matches(')');
+        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+        return Some(format!("no {var}: {collection} | {body_alloy}"));
+    }
+    // .stream().anyMatch(v -> body) → some v: Xxx | body
+    if let Some(pos) = s.find(".stream().anyMatch(") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".stream().anyMatch(".len()..];
+        let arrow = rest.find(" -> ")?;
+        let var = rest[..arrow].trim();
+        let body = rest[arrow + 4..].trim().trim_end_matches(')');
+        let body_alloy = reverse_translate_expr(body.trim()).unwrap_or_else(|| body.trim().to_string());
+        return Some(format!("some {var}: {collection} | {body_alloy}"));
+    }
+    // .contains(v) → v in xxx
+    if let Some(pos) = s.find(".contains(") {
+        let collection = s[..pos].trim();
+        let rest = &s[pos + ".contains(".len()..];
+        let end = rest.find(')')?;
+        let element = rest[..end].trim();
+        return Some(format!("{element} in {collection}"));
+    }
+    // .size() → #xxx
+    if let Some(pos) = s.find(".size()") {
+        let inner = s[..pos].trim();
+        return Some(format!("#{inner}"));
+    }
+    // == / != comparisons
+    for (java_op, alloy_op) in &[(" == ", " = "), (" != ", " != "), (" <= ", " <= "),
+                                   (" >= ", " >= "), (" < ", " < "), (" > ", " > ")] {
+        if let Some(pos) = s.find(java_op) {
+            let left = s[..pos].trim();
+            let right = s[pos + java_op.len()..].trim();
+            let l = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+            let r = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+            return Some(format!("{l}{alloy_op}{r}"));
+        }
+    }
+    // && → and, || → or
+    if let Some(pos) = s.find(" && ") {
+        let left = s[..pos].trim();
+        let right = s[pos + 4..].trim();
+        let l = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+        let r = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+        return Some(format!("{l} and {r}"));
+    }
+    if let Some(pos) = s.find(" || ") {
+        let left = s[..pos].trim();
+        let right = s[pos + 4..].trim();
+        let l = reverse_translate_expr(left).unwrap_or_else(|| left.to_string());
+        let r = reverse_translate_expr(right).unwrap_or_else(|| right.to_string());
+        return Some(format!("{l} or {r}"));
+    }
+    if s.starts_with('!') {
+        let inner = s[1..].trim();
+        let inner_alloy = reverse_translate_expr(inner).unwrap_or_else(|| inner.to_string());
+        return Some(format!("not {inner_alloy}"));
+    }
+    None
+}
+
 fn extract_java_facts(
     body: &[(usize, String)],
     _context_line: usize,
     facts: &mut Vec<MinedFactCandidate>,
 ) {
+    // Extract @alloy comments from function body
+    extract_alloy_comments(
+        body.iter().map(|(ln, line)| (*ln, line.clone())),
+        facts,
+    );
+
     for (ln, line) in body {
         let loc = format!("line {}", ln + 1);
 
