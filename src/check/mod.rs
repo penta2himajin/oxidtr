@@ -76,6 +76,10 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "Models.java", "Operations.java", mine::java_extractor::extract)?;
         let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.java")?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+    } else if impl_dir.join("Models.swift").exists() {
+        let extracted = extract_mined(impl_dir, "Models.swift", "Operations.swift", mine::swift_extractor::extract)?;
+        let validation_sources = collect_validation_sources_swift(impl_dir)?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
@@ -90,7 +94,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
             }
             Err(_) => {
                 return Err(CheckError::ImplNotFound(
-                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, and general mine)".to_string()
+                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, and general mine)".to_string()
                 ));
             }
         }
@@ -151,6 +155,16 @@ fn collect_validation_sources_jvm(impl_dir: &Path, tests_file: &str) -> Result<V
     let models_kt_path = impl_dir.join("Models.kt");
     if models_kt_path.exists() {
         sources.push(std::fs::read_to_string(&models_kt_path)?);
+    }
+    Ok(sources)
+}
+
+/// Collect validation source texts from Swift impl directory.
+fn collect_validation_sources_swift(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let tests_path = impl_dir.join("Tests.swift");
+    if tests_path.exists() {
+        sources.push(std::fs::read_to_string(&tests_path)?);
     }
     Ok(sources)
 }
@@ -268,9 +282,11 @@ fn extract_fns_generic(src: &str) -> Vec<ExtractedFn> {
         // TS: "export function name(" / "function name("
         // Kotlin: "fun name("
         // Java: "public static void name(" / "public static boolean name("
+        // Swift: "func name("
         let rest = trimmed.strip_prefix("export function ")
             .or_else(|| trimmed.strip_prefix("function "))
             .or_else(|| trimmed.strip_prefix("fun "))
+            .or_else(|| trimmed.strip_prefix("func "))
             .or_else(|| {
                 // Java: after "public static <return_type> " or "static <return_type> "
                 let after = if trimmed.starts_with("public static ") {

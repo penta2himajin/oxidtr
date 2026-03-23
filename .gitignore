@@ -1,4 +1,7 @@
 /target
 /generated
 /generated-ts
+/generated-kt
+/generated-java
+/generated-swift
 /local_docs

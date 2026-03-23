@@ -9,6 +9,7 @@ use oxidtr::ir;
 use oxidtr::backend::rust;
 use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
+use oxidtr::backend::swift;
 use oxidtr::check;
 // NOTE: Tests that require external toolchains (cargo test, bun test, gradle test)
 // have been moved to target_validation.rs.
@@ -136,6 +137,26 @@ fn guarantee_1_java_tests_cover_named_facts() {
         assert!(
             has_invariant || has_boundary,
             "fact {fact} should appear in Tests.java"
+        );
+    }
+}
+
+#[test]
+fn guarantee_1_swift_tests_cover_named_facts() {
+    let ir = parse_and_lower();
+    let files = swift::generate(&ir);
+    let tests = files.iter().find(|f| f.path == "Tests.swift")
+        .expect("Tests.swift should be generated");
+
+    let facts = named_facts(&ir);
+    for fact in &facts {
+        let has_invariant = tests.content.contains(&format!("test_invariant_{fact}"))
+            || tests.content.contains(&format!("Type-guaranteed: {fact}"));
+        let has_boundary = tests.content.contains(&format!("test_boundary_{fact}"));
+        let has_cross = tests.content.contains(&format!("{fact}_preserved_after_"));
+        assert!(
+            has_invariant || has_boundary || has_cross,
+            "fact {fact} should appear in Tests.swift"
         );
     }
 }
@@ -290,6 +311,27 @@ fn guarantee_3_java_cross_tests_are_disabled() {
     }
 }
 
+#[test]
+fn guarantee_3_swift_cross_tests_are_disabled() {
+    let ir = parse_and_lower();
+    let files = swift::generate(&ir);
+    let tests = files.iter().find(|f| f.path == "Tests.swift")
+        .expect("Tests.swift should be generated");
+
+    if tests.content.contains("Cross-tests") {
+        let lines: Vec<&str> = tests.content.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if line.contains("preserved_after_") && line.contains("func ") {
+                assert!(
+                    line.contains("disabled_test_"),
+                    "Swift cross-test at line {} should use disabled_test_ prefix: {}",
+                    i + 1, line.trim()
+                );
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Guarantee 4: Mine results match original model semantically
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -304,6 +346,7 @@ fn guarantee_4_mine_covers_all_sigs_and_fields() {
         ("ts", Box::new(|ir| typescript::generate(ir))),
         ("kt", Box::new(|ir| kotlin::generate(ir))),
         ("java", Box::new(|ir| java::generate(ir))),
+        ("swift", Box::new(|ir| swift::generate(ir))),
     ];
 
     for (lang, generate_fn) in &languages {

@@ -5,7 +5,7 @@
 /// "Guarantee budget is constant. Stronger type systems reduce test generation;
 /// weaker ones increase it."
 ///
-/// Language strength ranking: Rust > Kotlin > Java > TypeScript
+/// Language strength ranking: Rust > Swift ≈ Kotlin > Java > TypeScript
 
 use super::ConstraintInfo;
 
@@ -24,6 +24,7 @@ pub enum Guarantee {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TargetLang {
     Rust,
+    Swift,
     Kotlin,
     Java,
     TypeScript,
@@ -34,6 +35,7 @@ impl TargetLang {
     pub fn from_target_str(s: &str) -> Option<Self> {
         match s {
             "rust" => Some(TargetLang::Rust),
+            "swift" => Some(TargetLang::Swift),
             "kotlin" | "kt" => Some(TargetLang::Kotlin),
             "java" => Some(TargetLang::Java),
             "typescript" | "ts" => Some(TargetLang::TypeScript),
@@ -46,7 +48,7 @@ impl TargetLang {
         // All languages default off. Use --schema to enable.
         // TS round-trip tests use --schema for lossless cardinality recovery.
         match self {
-            TargetLang::Rust | TargetLang::Kotlin | TargetLang::Java | TargetLang::TypeScript => false,
+            TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::TypeScript => false,
         }
     }
 }
@@ -66,7 +68,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         // Null safety via Option<T> (Rust) or T? (Kotlin)
         ConstraintInfo::Presence { kind: super::PresenceKind::Required, .. } => {
             match lang {
-                TargetLang::Rust | TargetLang::Kotlin => Guarantee::FullyByType,
+                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
                 TargetLang::Java => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
@@ -74,7 +76,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         // Absence (no sig.field) — same pattern
         ConstraintInfo::Presence { kind: super::PresenceKind::Absent, .. } => {
             match lang {
-                TargetLang::Rust | TargetLang::Kotlin => Guarantee::FullyByType,
+                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
                 TargetLang::Java => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
@@ -121,7 +123,7 @@ pub fn has_type_guarantee(constraints: &[ConstraintInfo], lang: TargetLang, sig_
 /// Rust (match), Kotlin (when), Java (switch) → FullyByType. TS → RequiresTest.
 pub fn enum_exhaustiveness_guarantee(lang: TargetLang) -> Guarantee {
     match lang {
-        TargetLang::Rust | TargetLang::Kotlin | TargetLang::Java => Guarantee::FullyByType,
+        TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java => Guarantee::FullyByType,
         TargetLang::TypeScript => Guarantee::RequiresTest,
     }
 }
