@@ -32,6 +32,7 @@ mise exec rust -- cargo run -- generate models/oxidtr.als --target ts --output g
 mise exec rust -- cargo run -- generate models/oxidtr.als --target kt --output generated-kt
 mise exec rust -- cargo run -- generate models/oxidtr.als --target java --output generated-java
 mise exec rust -- cargo run -- generate models/oxidtr.als --target swift --output generated-swift
+mise exec rust -- cargo run -- generate models/oxidtr.als --target go --output generated-go
 mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated
 mise exec rust -- cargo run -- mine generated/
 mise exec rust -- cargo run -- mine src/ --lang rust
@@ -59,6 +60,7 @@ src/
     typescript/     TS backend + expr_translator
     jvm/            共通JVM層 + Kotlin/Java backends + expr_translator
     swift/          Swift backend + expr_translator
+    go/             Go backend + expr_translator
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
   check/            構造的整合性検証 (differ, impl_parser)
@@ -77,7 +79,7 @@ src/
 - **モデルが唯一の信頼源** — 型・テスト・検証は全てAlloyモデルから導出
 - **保証の総量は一定** — 型が強い言語はテスト減、弱い言語はテスト増
 - **最小依存** — oxidtr自身がAlloyモデルでセルフホスト可能であること
-- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整
+- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整 (Rust > Swift ≈ Kotlin > Go ≈ Java > TypeScript)
 
 ## 開発ワークフロー
 
@@ -122,7 +124,7 @@ cargo run -- mine generated/ -o /tmp/mined.als
 | `parser_sig`, `parser_expr` | Alloyパーサー |
 | `lowering` | AST→IR変換 |
 | `expr_translator` | 式変換 (Rust) |
-| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift` | 各言語コード生成 |
+| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go` | 各言語コード生成 |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `check` | 構造的整合性検証 |
@@ -135,9 +137,9 @@ cargo run -- mine generated/ -o /tmp/mined.als
 |---|---|
 | `self_hosting` | パース・lower・生成・内容検査・mine sig coverage |
 | `self_host_guarantees` | fact→テスト変換・cross-testマーカー・mine/check整合性 |
-| `round_trip`, `round_trip_jvm`, `round_trip_swift`, `round_trip_enriched` | ラウンドトリップ検証 |
+| `round_trip`, `round_trip_jvm`, `round_trip_swift`, `round_trip_go`, `round_trip_enriched` | ラウンドトリップ検証 |
 | `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
-| `mine_rust`, `mine_ts`, `mine_swift` | mine抽出 (言語別) |
+| `mine_rust`, `mine_ts`, `mine_swift`, `mine_go` | mine抽出 (言語別) |
 | `mine_auto_detect`, `mine_multi_lang` | mine自動検出・multi-lang merge |
 | `mine_new_patterns`, `mine_general_patterns` | 一般コードパターン抽出 |
 
@@ -156,7 +158,8 @@ cargo run -- mine generated/ -o /tmp/mined.als
 `local_docs/oxidtr-spec.md` の実装計画セクションを参照。
 
 主要な未実装:
-- Phase 8-10: Go / C# / Lean backends
+- Phase 8: Go backend ✅ (完了)
+- Phase 9-10: C# / Lean backends
 - Phase 11-13: Alloy 6 時相拡張 (var/always/eventually)
 - explore: Alloyインスタンス異常パターン検出
 - cover: カバレッジ×fact直交テスト生成

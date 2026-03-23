@@ -8,6 +8,7 @@ use oxidtr::backend::{rust, typescript, GeneratedFile};
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::backend::typescript::TsTestRunner;
+use oxidtr::backend::go;
 use oxidtr::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang, enum_exhaustiveness_guarantee};
 use oxidtr::analyze::{ConstraintInfo, PresenceKind, BoundKind};
 
@@ -39,6 +40,7 @@ fn guarantee_null_safety_varies_by_language() {
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Swift), Guarantee::FullyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Kotlin), Guarantee::FullyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Java), Guarantee::PartiallyByType);
+    assert_eq!(can_guarantee_by_type(&c, TargetLang::Go), Guarantee::PartiallyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::TypeScript), Guarantee::RequiresTest);
 }
 
@@ -53,6 +55,7 @@ fn guarantee_cardinality_varies_by_language() {
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Swift), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Kotlin), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Java), Guarantee::RequiresTest);
+    assert_eq!(can_guarantee_by_type(&c, TargetLang::Go), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::TypeScript), Guarantee::RequiresTest);
 }
 
@@ -62,7 +65,7 @@ fn guarantee_no_self_ref_always_requires_test() {
         sig_name: "Node".to_string(),
         field_name: "parent".to_string(),
     };
-    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
+    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::Go, TargetLang::TypeScript] {
         assert_eq!(can_guarantee_by_type(&c, lang), Guarantee::RequiresTest);
     }
 }
@@ -73,7 +76,7 @@ fn guarantee_acyclicity_always_requires_test() {
         sig_name: "Node".to_string(),
         field_name: "parent".to_string(),
     };
-    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
+    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::Go, TargetLang::TypeScript] {
         assert_eq!(can_guarantee_by_type(&c, lang), Guarantee::RequiresTest);
     }
 }
@@ -84,6 +87,7 @@ fn guarantee_enum_exhaustiveness_by_language() {
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Swift), Guarantee::FullyByType);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Kotlin), Guarantee::FullyByType);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Java), Guarantee::FullyByType);
+    assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Go), Guarantee::RequiresTest);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::TypeScript), Guarantee::RequiresTest);
 }
 
@@ -365,12 +369,14 @@ fn self_hosting_all_targets_still_work() {
     let ts_files = typescript::generate(&ir_val);
     let kt_files = kotlin::generate(&ir_val);
     let java_files = java::generate(&ir_val);
+    let go_files = go::generate(&ir_val);
 
     // Each backend produces models + tests at minimum
     assert!(file_exists(&rust_files, "models.rs"), "Rust should generate models.rs");
     assert!(file_exists(&ts_files, "models.ts"), "TS should generate models.ts");
     assert!(file_exists(&kt_files, "Models.kt"), "Kotlin should generate Models.kt");
     assert!(file_exists(&java_files, "Models.java"), "Java should generate Models.java");
+    assert!(file_exists(&go_files, "models.go"), "Go should generate models.go");
 
     // TS additionally generates validators
     let validators = typescript::generate_validators(&ir_val);
