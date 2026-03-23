@@ -136,6 +136,67 @@ pub struct Role {}
 }
 
 #[test]
+fn check_general_kotlin_code_against_model() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let model_path = tmp.path().join("model.als");
+    std::fs::write(&model_path, r#"
+sig User { group: lone Group, roles: set Role }
+sig Group {}
+sig Role {}
+"#).unwrap();
+
+    let impl_dir = tmp.path().join("impl");
+    std::fs::create_dir_all(impl_dir.join("domain")).unwrap();
+
+    std::fs::write(impl_dir.join("domain/User.kt"), r#"
+data class User(
+    val group: Group?,
+    val roles: Set<Role>
+)
+"#).unwrap();
+
+    std::fs::write(impl_dir.join("domain/Group.kt"), "data class Group(val placeholder: Unit = Unit)\n").unwrap();
+    std::fs::write(impl_dir.join("domain/Role.kt"), "data class Role(val placeholder: Unit = Unit)\n").unwrap();
+
+    let config = CheckConfig { impl_dir: impl_dir.to_str().unwrap().to_string() };
+    let result = check::run(model_path.to_str().unwrap(), &config).unwrap();
+
+    let missing: Vec<_> = result.diffs.iter()
+        .filter(|d| matches!(d, oxidtr::check::differ::DiffItem::MissingStruct { .. }))
+        .collect();
+    assert!(missing.is_empty(), "should find sigs from general Kotlin: {:?}", missing);
+}
+
+#[test]
+fn check_general_java_code_against_model() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    let model_path = tmp.path().join("model.als");
+    std::fs::write(&model_path, r#"
+sig User { name: one Name }
+sig Name {}
+"#).unwrap();
+
+    let impl_dir = tmp.path().join("impl");
+    std::fs::create_dir_all(impl_dir.join("model")).unwrap();
+
+    std::fs::write(impl_dir.join("model/User.java"), r#"
+public record User(Name name) {}
+"#).unwrap();
+
+    std::fs::write(impl_dir.join("model/Name.java"), "public record Name() {}\n").unwrap();
+
+    let config = CheckConfig { impl_dir: impl_dir.to_str().unwrap().to_string() };
+    let result = check::run(model_path.to_str().unwrap(), &config).unwrap();
+
+    let missing: Vec<_> = result.diffs.iter()
+        .filter(|d| matches!(d, oxidtr::check::differ::DiffItem::MissingStruct { .. }))
+        .collect();
+    assert!(missing.is_empty(), "should find sigs from general Java: {:?}", missing);
+}
+
+#[test]
 fn check_self_hosting_general_mode() {
     // Check oxidtr's own src/ against oxidtr-internal.als
     // This uses the mine fallback since src/ has no models.rs at root
