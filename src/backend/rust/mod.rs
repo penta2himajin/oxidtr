@@ -453,6 +453,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     for prop in &ir.properties {
         let test_name = to_snake_case(&prop.name);
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        // Skip tests that reference enum variants (not standalone types in Rust)
+        if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+            continue;
+        }
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
         writeln!(out, "    #[test]").unwrap();
@@ -482,6 +486,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         };
         let test_name = format!("invariant_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        // Skip tests that reference enum variants (not standalone types in Rust)
+        if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+            continue;
+        }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check the analyzed constraints for the sigs referenced by this fact
@@ -739,6 +747,13 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         let mut seen_sigs = HashSet::new();
         newtype_pairs.retain(|(_, sig)| seen_sigs.insert(sig.clone()));
     }
+    // Filter out enum variants — they are not standalone types, so newtypes make no sense
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+    newtype_pairs.retain(|(_, sig)| !variant_names.contains(sig) && !enum_parents.contains(sig));
 
     // Build constraint info for field-level range checks
     let all_constraints = analyze::analyze(ir);
