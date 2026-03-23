@@ -843,6 +843,27 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
+        // Disj uniqueness checks for seq fields
+        {
+            let disj = analyze::disj_fields(ir);
+            if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+                for (dsig, dfield) in &disj {
+                    if dsig == sig_name {
+                        if let Some(f) = structure.fields.iter().find(|f| f.name == *dfield) {
+                            if f.mult == Multiplicity::Seq {
+                                writeln!(out, "        {{").unwrap();
+                                writeln!(out, "            let mut seen = std::collections::HashSet::new();").unwrap();
+                                writeln!(out, "            if !value.{dfield}.iter().all(|e| seen.insert(e)) {{").unwrap();
+                                writeln!(out, "                return Err(\"{dfield} must not contain duplicates (disj constraint)\");").unwrap();
+                                writeln!(out, "            }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Acyclic field checks (walk the chain, detect if value is reachable from itself)
         {
             let acyclic_fields: Vec<String> = all_constraints.iter()

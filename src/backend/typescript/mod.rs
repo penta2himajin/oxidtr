@@ -924,6 +924,18 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
             }
         }
 
+        // Disj uniqueness checks for seq fields
+        let disj = analyze::disj_fields(ir);
+        for (dsig, dfield) in &disj {
+            if dsig == &s.name {
+                if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                    if f.mult == Multiplicity::Seq {
+                        writeln!(out, "  if (new Set({param_name}.{dfield}).size !== {param_name}.{dfield}.length) errors.push(\"{dfield} must not contain duplicates (disj constraint)\");").unwrap();
+                    }
+                }
+            }
+        }
+
         writeln!(out, "  return errors;").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
