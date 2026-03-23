@@ -2,7 +2,7 @@ use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -173,6 +173,21 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             if target_mult == SigMultiplicity::Lone && f.mult == Multiplicity::One {
                 annotations.push("/* @Nullable — lone sig may not exist */".to_string());
             }
+            // NoSelfRef: field must not reference self
+            let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+            let no_self_ref = sig_constraints.iter().any(|c| {
+                matches!(c, analyze::ConstraintInfo::NoSelfRef { field_name: fname, .. } if fname == &f.name)
+            });
+            if no_self_ref {
+                annotations.push(format!("/* require({} != this) — no self-reference */", f.name));
+            }
+            // Acyclic: field chain must not form a cycle
+            let acyclic = sig_constraints.iter().any(|c| {
+                matches!(c, analyze::ConstraintInfo::Acyclic { field_name: fname, .. } if fname == &f.name)
+            });
+            if acyclic {
+                annotations.push(format!("/* acyclic: {}.^{} must not contain this */", f.name, f.name));
+            }
             // Gap 3: disj → suggest Set
             if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
                 if f.mult == Multiplicity::Seq {
@@ -184,7 +199,39 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             }
             writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
         }
-        writeln!(out, ")").unwrap();
+        // Sig-level constraint annotations (FieldOrdering → init block)
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let mut init_checks: Vec<String> = Vec::new();
+        for c in &sig_constraints {
+            match c {
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let op_str = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    init_checks.push(format!("require({left_field} {op_str} {right_field}) {{ \"{left_field} must be {op_str} {right_field}\" }}"));
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    init_checks.push(format!("// {desc}"));
+                }
+                _ => {}
+            }
+        }
+        if init_checks.is_empty() {
+            writeln!(out, ")").unwrap();
+        } else {
+            writeln!(out, ") {{").unwrap();
+            writeln!(out, "    init {{").unwrap();
+            for check in &init_checks {
+                writeln!(out, "        {check}").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 
@@ -520,6 +567,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)

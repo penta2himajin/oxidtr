@@ -50,6 +50,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(left, ir, out);
             collect_tc_fields(right, ir, out);
         }
+        Expr::MultFormula { expr: inner, .. } => collect_tc_fields(inner, ir, out),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -86,6 +87,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(inner, sig_names, params);
         }
         Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
+        Expr::MultFormula { expr: inner, .. } => collect_params(inner, sig_names, params),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -184,6 +186,15 @@ fn translate_inner(
             let l = ti(left, false);
             let r = ti(right, false);
             format!("Pair{{{l}, {r}}}")
+        }
+
+        Expr::MultFormula { kind, expr: inner } => {
+            let translated = ti(inner, false);
+            match kind {
+                crate::parser::ast::QuantKind::Some => format!("{translated} != nil"),
+                crate::parser::ast::QuantKind::No => format!("{translated} == nil"),
+                _ => format!("{kind:?}({translated})"),
+            }
         }
     };
 

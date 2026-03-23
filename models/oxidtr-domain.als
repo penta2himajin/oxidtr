@@ -44,6 +44,10 @@ sig Product extends Expr {
   prodLeft:  one Expr,
   prodRight: one Expr
 }
+sig MultFormula extends Expr {
+  mfKind: one QuantKind,
+  mfExpr: one Expr
+}
 
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}
@@ -215,6 +219,39 @@ sig OxidtrIR {
   constraints: set ConstraintNode,
   operations:  set OperationNode,
   properties:  set PropertyNode
+}
+
+-------------------------------------------------------------------------------
+-- Constraint analysis (ConstraintInfo variants)
+-------------------------------------------------------------------------------
+
+sig FieldOrdering {
+  foSig:        one StructureNode,
+  foLeftField:  one FieldDecl,
+  foOp:         one CompareOp,
+  foRightField: one FieldDecl
+}
+
+sig Implication {
+  implSig:        one StructureNode,
+  implCondition:  one Expr,
+  implConsequent: one Expr
+}
+
+sig Prohibition {
+  prohSig:       one StructureNode,
+  prohCondition: one Expr
+}
+
+sig Disjoint {
+  disjSig:   one StructureNode,
+  disjLeft:  one Expr,
+  disjRight: one Expr
+}
+
+sig Exhaustive {
+  exhSig:        one StructureNode,
+  exhCategories: set Expr
 }
 
 -------------------------------------------------------------------------------

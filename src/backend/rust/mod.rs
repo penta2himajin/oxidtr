@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -408,6 +408,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)
@@ -787,6 +788,18 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             })
             .collect();
 
+        // Collect NoSelfRef fields for this sig
+        let no_self_ref_fields: Vec<String> = all_constraints.iter()
+            .filter_map(|c| {
+                if let analyze::ConstraintInfo::NoSelfRef { sig_name: s, field_name } = c {
+                    if s == sig_name {
+                        return Some(field_name.clone());
+                    }
+                }
+                None
+            })
+            .collect();
+
         writeln!(out, "/// Newtype wrapper: {sig_name} validated by {fact_name}.").unwrap();
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, Hash)]").unwrap();
         writeln!(out, "pub struct {newtype_name}(pub {sig_name});").unwrap();
@@ -807,6 +820,104 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 writeln!(out, "        if value.{field_name}.len() > {n} {{").unwrap();
                 writeln!(out, "            return Err(\"{fact_name}: {field_name} has more than {n} elements\");").unwrap();
                 writeln!(out, "        }}").unwrap();
+            }
+        }
+
+        // NoSelfRef field checks
+        if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+            for field_name in &no_self_ref_fields {
+                if let Some(f) = structure.fields.iter().find(|f| f.name == *field_name) {
+                    match f.mult {
+                        Multiplicity::Lone => {
+                            writeln!(out, "        if value.{field_name}.as_ref().map_or(false, |f| f.as_ref() == &value) {{").unwrap();
+                            writeln!(out, "            return Err(\"{field_name} must not reference self\");").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                        Multiplicity::One => {
+                            writeln!(out, "        if *value.{field_name} == value {{").unwrap();
+                            writeln!(out, "            return Err(\"{field_name} must not reference self\");").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Disj uniqueness checks for seq fields
+        {
+            let disj = analyze::disj_fields(ir);
+            if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+                for (dsig, dfield) in &disj {
+                    if dsig == sig_name {
+                        if let Some(f) = structure.fields.iter().find(|f| f.name == *dfield) {
+                            if f.mult == Multiplicity::Seq {
+                                writeln!(out, "        {{").unwrap();
+                                writeln!(out, "            let mut seen = std::collections::HashSet::new();").unwrap();
+                                writeln!(out, "            if !value.{dfield}.iter().all(|e| seen.insert(e)) {{").unwrap();
+                                writeln!(out, "                return Err(\"{dfield} must not contain duplicates (disj constraint)\");").unwrap();
+                                writeln!(out, "            }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Acyclic field checks (walk the chain, detect if value is reachable from itself)
+        {
+            let acyclic_fields: Vec<String> = all_constraints.iter()
+                .filter_map(|c| {
+                    if let analyze::ConstraintInfo::Acyclic { sig_name: s, field_name } = c {
+                        if s == sig_name {
+                            return Some(field_name.clone());
+                        }
+                    }
+                    None
+                })
+                .collect();
+            if let Some(structure) = ir.structures.iter().find(|s| s.name == *sig_name) {
+                for field_name in &acyclic_fields {
+                    if let Some(f) = structure.fields.iter().find(|f| f.name == *field_name) {
+                        if f.mult == Multiplicity::Lone && f.target == *sig_name {
+                            writeln!(out, "        {{").unwrap();
+                            writeln!(out, "            let mut cur = value.{field_name}.as_deref();").unwrap();
+                            writeln!(out, "            while let Some(node) = cur {{").unwrap();
+                            writeln!(out, "                if node == &value {{").unwrap();
+                            writeln!(out, "                    return Err(\"{field_name} must not form a cycle\");").unwrap();
+                            writeln!(out, "                }}").unwrap();
+                            writeln!(out, "                cur = node.{field_name}.as_deref();").unwrap();
+                            writeln!(out, "            }}").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                    }
+                }
+            }
+        }
+
+        // FieldOrdering checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::FieldOrdering { sig_name: s, left_field, op, right_field } = c {
+                if s == sig_name {
+                    let rust_op = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    let negated = match op {
+                        CompareOp::Lt => ">=",
+                        CompareOp::Gt => "<=",
+                        CompareOp::Lte => ">",
+                        CompareOp::Gte => "<",
+                        _ => continue,
+                    };
+                    writeln!(out, "        if value.{left_field} {negated} value.{right_field} {{").unwrap();
+                    writeln!(out, "            return Err(\"{left_field} must be {rust_op} {right_field}\");").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
             }
         }
 
@@ -853,6 +964,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
             expr_has_comparison(inner)
         }
+        Expr::MultFormula { expr: inner, .. } => expr_has_comparison(inner),
         Expr::FieldAccess { base, .. } => expr_has_comparison(base),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }

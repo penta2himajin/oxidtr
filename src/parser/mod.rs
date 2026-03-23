@@ -459,11 +459,36 @@ impl<'a> Parser<'a> {
                 let inner = self.parse_field_access()?;
                 Ok(Expr::Cardinality(Box::new(inner)))
             }
-            Token::All | Token::Some_ | Token::No => {
+            Token::All => {
                 self.parse_quantifier()
+            }
+            Token::Some_ | Token::No => {
+                // Try quantifier first (some/no x: S | body), fall back to formula (some/no expr)
+                let saved = self.lexer.pos();
+                match self.parse_quantifier() {
+                    Ok(expr) => Ok(expr),
+                    Err(_) => {
+                        self.lexer.set_pos(saved);
+                        self.parse_mult_formula()
+                    }
+                }
             }
             _ => self.parse_field_access(),
         }
+    }
+
+    /// Parse `some expr` or `no expr` as a multiplicity formula.
+    fn parse_mult_formula(&mut self) -> Result<Expr, ParseError> {
+        let kind = match self.next() {
+            Token::Some_ => QuantKind::Some,
+            Token::No => QuantKind::No,
+            _ => unreachable!(),
+        };
+        let inner = self.parse_field_access()?;
+        Ok(Expr::MultFormula {
+            kind,
+            expr: Box::new(inner),
+        })
     }
 
     fn parse_quantifier(&mut self) -> Result<Expr, ParseError> {

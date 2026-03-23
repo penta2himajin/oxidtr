@@ -420,6 +420,7 @@ fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> 
         Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
             expr_references_sig_name(inner, sig_name)
         }
+        Expr::MultFormula { expr: inner, .. } => expr_references_sig_name(inner, sig_name),
         Expr::FieldAccess { base, .. } => expr_references_sig_name(base, sig_name),
         Expr::IntLiteral(_) => false,
     }
@@ -447,6 +448,7 @@ fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, fiel
         }
         Expr::Cardinality(inner) => constraint_references_field(inner, _sig, field),
         Expr::TransitiveClosure(inner) => constraint_references_field(inner, _sig, field),
+        Expr::MultFormula { expr: inner, .. } => constraint_references_field(inner, _sig, field),
         Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             constraint_references_field(left, _sig, field)
                 || constraint_references_field(right, _sig, field)
@@ -492,6 +494,7 @@ fn collect_tc_fields(expr: &crate::parser::ast::Expr, out: &mut std::collections
             collect_tc_fields(left, out); collect_tc_fields(right, out);
         }
         Expr::Not(inner) | Expr::Cardinality(inner) => collect_tc_fields(inner, out),
+        Expr::MultFormula { expr: inner, .. } => collect_tc_fields(inner, out),
         Expr::Quantifier { bindings, body, .. } => {
             for b in bindings { collect_tc_fields(&b.domain, out); }
             collect_tc_fields(body, out);
@@ -535,6 +538,7 @@ fn constraint_references_field_non_tc(expr: &crate::parser::ast::Expr, field: &s
         Expr::Not(inner) | Expr::Cardinality(inner) => {
             constraint_references_field_non_tc(inner, field)
         }
+        Expr::MultFormula { expr: inner, .. } => constraint_references_field_non_tc(inner, field),
         Expr::Quantifier { bindings, body, .. } => {
             bindings.iter().any(|b| constraint_references_field_non_tc(&b.domain, field))
                 || constraint_references_field_non_tc(body, field)

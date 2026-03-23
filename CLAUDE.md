@@ -164,6 +164,29 @@ cargo run -- mine generated/ -o /tmp/mined.als
 - explore: Alloyインスタンス異常パターン検出
 - cover: カバレッジ×fact直交テスト生成
 
+### fact本体式の活用における伸びしろ
+
+現在の実装状況と残課題:
+
+**実装済み（テスト生成 + ランタイム検証コード）:**
+- NoSelfRef: Rust TryFrom / TS validator / Kotlin・Java注釈
+- Acyclic: Rust TryFrom（チェーン走査） / TS validator（Setベース）
+- Disj一意性: Rust TryFrom（HashSet） / TS validator（Set.size）
+- FieldOrdering: Rust TryFrom / TS validator / Kotlin init block / Java compact constructor
+- Implication: TS validator（translate_validator_expr） / Kotlin・Java コメント
+- Iff / Prohibition: TS validator（translate_validator_expr）
+
+**検出済みだがコード生成がコメント止まり:**
+- Disjoint (`no (A & B)`): TSコメント出力のみ。switch/matchの排他性チェック生成が可能
+- Exhaustive (`all x | x in A or x in B or ...`): TSコメント出力のみ。switch/matchのdefault: never型チェック、Rustのunreachable!()アーム生成が可能
+
+**パーサー拡張済み・活用余地あり:**
+- `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。solidionのドメインモデルでimpliesパターンの記述が可能に
+
+**未到達の領域:**
+- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: Alloy静的モデルの表現限界。Alloy 6時相拡張（`var`/`always`/`eventually`）の領域
+- Lean backend: fact本体式を定理として完全変換する最終目標。「制約を実行時に検証する」から「制約を証明する」への移行
+
 ## Alloyモデルへのフィードバック
 
 コード生成やテストの改善に伴い `models/oxidtr.als` も更新すること:

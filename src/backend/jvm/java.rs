@@ -2,7 +2,7 @@ use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -168,6 +168,21 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         }
                     }
                 }
+                // NoSelfRef: field must not reference self
+                let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+                let no_self_ref = sig_constraints.iter().any(|c| {
+                    matches!(c, analyze::ConstraintInfo::NoSelfRef { field_name: fname, .. } if fname == &f.name)
+                });
+                if no_self_ref {
+                    annotations.push(format!("/* requires {} != this — no self-reference */", f.name));
+                }
+                // Acyclic: field chain must not form a cycle
+                let acyclic = sig_constraints.iter().any(|c| {
+                    matches!(c, analyze::ConstraintInfo::Acyclic { field_name: fname, .. } if fname == &f.name)
+                });
+                if acyclic {
+                    annotations.push(format!("/* acyclic: {}.^{} must not contain this */", f.name, f.name));
+                }
                 // Gap 3: disj → suggest Set
                 if disj_fields.iter().any(|(sig, field)| sig == &s.name && field == &f.name) {
                     if f.mult == Multiplicity::Seq {
@@ -188,7 +203,39 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
             })
             .collect();
 
-        writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+        // FieldOrdering → compact constructor with validation
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let mut constructor_checks: Vec<String> = Vec::new();
+        for c in &sig_constraints {
+            match c {
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let (op_str, negated) = match op {
+                        CompareOp::Lt => ("<", ">="),
+                        CompareOp::Gt => (">", "<="),
+                        CompareOp::Lte => ("<=", ">"),
+                        CompareOp::Gte => (">=", "<"),
+                        _ => continue,
+                    };
+                    constructor_checks.push(format!("if ({left_field} {negated} {right_field}) throw new IllegalArgumentException(\"{left_field} must be {op_str} {right_field}\");"));
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    constructor_checks.push(format!("// {desc}"));
+                }
+                _ => {}
+            }
+        }
+        if constructor_checks.is_empty() {
+            writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+        } else {
+            writeln!(out, "record {}({}) {{", s.name, params.join(", ")).unwrap();
+            writeln!(out, "    {} {{", s.name).unwrap();
+            for check in &constructor_checks {
+                writeln!(out, "        {check}").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 
@@ -513,6 +560,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)

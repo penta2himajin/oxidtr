@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use super::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -573,6 +573,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TransitiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
+        Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_uses_tc(left) || expr_uses_tc(right)
@@ -917,7 +918,63 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                 analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
                     writeln!(out, "  if ({param_name}.{field_name} === {param_name}) errors.push(\"{field_name} must not reference self\");").unwrap();
                 }
-                _ => {} // Named, Membership, Acyclic — too complex for simple validators
+                analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                    writeln!(out, "  {{ const seen = new Set<unknown>(); let cur: unknown = {param_name}; while (cur != null) {{ if (seen.has(cur)) {{ errors.push(\"{field_name} must not form a cycle\"); break; }} seen.add(cur); cur = (cur as Record<string, unknown>).{field_name}; }} }}").unwrap();
+                }
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let ts_op = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => continue,
+                    };
+                    let negated_op = match op {
+                        CompareOp::Lt => ">=",
+                        CompareOp::Gt => "<=",
+                        CompareOp::Lte => ">",
+                        CompareOp::Gte => "<",
+                        _ => continue,
+                    };
+                    writeln!(out, "  if ({param_name}.{left_field} {negated_op} {param_name}.{right_field}) errors.push(\"{left_field} must be {ts_op} {right_field}\");").unwrap();
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let cond = translate_validator_expr(condition, &s.name, &param_name);
+                    let cons = translate_validator_expr(consequent, &s.name, &param_name);
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    writeln!(out, "  if ({cond} && !({cons})) errors.push(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                }
+                analyze::ConstraintInfo::Iff { left, right, .. } => {
+                    let l = translate_validator_expr(left, &s.name, &param_name);
+                    let r = translate_validator_expr(right, &s.name, &param_name);
+                    let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                    writeln!(out, "  if (({l}) !== ({r})) errors.push(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                }
+                analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                    let cond = translate_validator_expr(condition, &s.name, &param_name);
+                    let desc = analyze::describe_expr(condition);
+                    writeln!(out, "  if ({cond}) errors.push(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
+                }
+                analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                    writeln!(out, "  // Disjoint: {left} and {right} must not overlap").unwrap();
+                }
+                analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                    let cats = categories.join(", ");
+                    writeln!(out, "  // Exhaustive: must belong to one of [{cats}]").unwrap();
+                }
+                _ => {} // Named, Membership — not directly translatable to simple validators
+            }
+        }
+
+        // Disj uniqueness checks for seq fields
+        let disj = analyze::disj_fields(ir);
+        for (dsig, dfield) in &disj {
+            if dsig == &s.name {
+                if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                    if f.mult == Multiplicity::Seq {
+                        writeln!(out, "  if (new Set({param_name}.{dfield}).size !== {param_name}.{dfield}.length) errors.push(\"{dfield} must not contain duplicates (disj constraint)\");").unwrap();
+                    }
+                }
             }
         }
 
@@ -927,4 +984,56 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
     }
 
     out
+}
+
+/// Translate an Alloy expression to TypeScript for single-instance validator context.
+/// `sig_name` is the sig name used by substitute_var, `param` is the TS parameter name.
+fn translate_validator_expr(expr: &crate::parser::ast::Expr, sig_name: &str, param: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { param.to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr(base, sig_name, param), field)
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr(left, sig_name, param);
+            let r = translate_validator_expr(right, sig_name, param);
+            let o = match op {
+                CompareOp::Eq => "===",
+                CompareOp::NotEq => "!==",
+                CompareOp::In => return format!("{r}.includes({l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr(left, sig_name, param);
+            let r = translate_validator_expr(right, sig_name, param);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) === ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr(inner, sig_name, param)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr(inner, sig_name, param);
+            match kind {
+                QuantKind::Some => format!("{e} != null"),
+                QuantKind::No => format!("{e} == null"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.length", translate_validator_expr(inner, sig_name, param))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
+    }
 }
