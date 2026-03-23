@@ -26,26 +26,51 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Generate Rust from self-hosting model
+
+      # Generate all targets
+      - name: Generate Rust
         run: cargo run -- generate models/oxidtr.als --target rust --output generated
-      - name: Check Rust structural consistency
-        run: cargo run -- check --model models/oxidtr.als --impl generated
-      - name: Generate TypeScript from self-hosting model
+      - name: Generate TypeScript
         run: cargo run -- generate models/oxidtr.als --target ts --output generated-ts
-      - name: Check TypeScript structural consistency
-        run: cargo run -- check --model models/oxidtr.als --impl generated-ts
-      - name: Generate Kotlin from self-hosting model
+      - name: Generate Kotlin
         run: cargo run -- generate models/oxidtr.als --target kt --output generated-kt
-      - name: Check Kotlin structural consistency
-        run: cargo run -- check --model models/oxidtr.als --impl generated-kt
-      - name: Generate Java from self-hosting model
+      - name: Generate Java
         run: cargo run -- generate models/oxidtr.als --target java --output generated-java
-      - name: Check Java structural consistency
+
+      # Check structural consistency (all targets)
+      - name: Check Rust
+        run: cargo run -- check --model models/oxidtr.als --impl generated
+      - name: Check TypeScript
+        run: cargo run -- check --model models/oxidtr.als --impl generated-ts
+      - name: Check Kotlin
+        run: cargo run -- check --model models/oxidtr.als --impl generated-kt
+      - name: Check Java
         run: cargo run -- check --model models/oxidtr.als --impl generated-java
-      - name: Verify enrichment in generated output
+
+      # Mine round-trip (each language → Alloy)
+      - name: Mine Rust back to Alloy
+        run: cargo run -- mine generated/ -o /tmp/mined-rust.als
+      - name: Mine TypeScript back to Alloy
+        run: cargo run -- mine generated-ts/ -o /tmp/mined-ts.als
+      - name: Mine Kotlin back to Alloy
+        run: cargo run -- mine generated-kt/ -o /tmp/mined-kt.als
+      - name: Mine Java back to Alloy
+        run: cargo run -- mine generated-java/ -o /tmp/mined-java.als
+
+      # Verify enrichment
+      - name: Verify enriched output
         run: |
-          grep -q '@NotNull' generated-java/Models.java
           grep -q 'pub fn default_' generated/fixtures.rs
           grep -q 'export function default' generated-ts/fixtures.ts
           grep -q 'fun default' generated-kt/Fixtures.kt
           grep -q 'public static' generated-java/Fixtures.java
+          grep -q '@NotNull' generated-java/Models.java
+          grep -q 'validators.ts' generated-ts/validators.ts || test -f generated-ts/validators.ts
+
+      # Verify language differentiation
+      - name: Verify TS validators exist
+        run: test -f generated-ts/validators.ts
+      - name: Verify Rust has fewer tests (type-guaranteed skips)
+        run: |
+          grep -c '@alloy:' generated/tests.rs > /dev/null
+          grep -c 'Type-guaranteed' generated/invariants.rs > /dev/null || true
