@@ -3,6 +3,7 @@ pub mod expr_translator;
 use super::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::Multiplicity;
+use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -37,6 +38,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
             content: generate_tests(ir),
         });
     }
+
+    files.push(GeneratedFile {
+        path: "fixtures.ts".to_string(),
+        content: generate_fixtures(ir),
+    });
 
     files
 }
@@ -80,6 +86,16 @@ fn generate_models(ir: &OxidtrIR) -> String {
     for s in &ir.structures {
         if variant_names.contains(&s.name) {
             continue;
+        }
+
+        // JSDoc from constraints
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        if !constraint_names.is_empty() {
+            writeln!(out, "/**").unwrap();
+            for cn in &constraint_names {
+                writeln!(out, " * @invariant {cn}").unwrap();
+            }
+            writeln!(out, " */").unwrap();
         }
 
         if s.is_enum {
@@ -398,5 +414,47 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
+// ── fixtures.ts ────────────────────────────────────────────────────────────
+
+fn generate_fixtures(ir: &OxidtrIR) -> String {
+    let mut out = String::new();
+
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+
+    writeln!(out, "import type * as M from './models';").unwrap();
+    writeln!(out).unwrap();
+
+    for s in &ir.structures {
+        if variant_names.contains(&s.name) || s.is_enum { continue; }
+        if s.fields.is_empty() { continue; }
+
+        let fn_name = format!("default{}", s.name);
+        writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();
+        writeln!(out, "export function {fn_name}(): M.{} {{", s.name).unwrap();
+        writeln!(out, "  return {{").unwrap();
+        for f in &s.fields {
+            let val = ts_default_value(&f.target, &f.mult);
+            writeln!(out, "    {}: {},", f.name, val).unwrap();
+        }
+        writeln!(out, "  }};").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}
+
+fn ts_default_value(target: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::Lone => "null".to_string(),
+        Multiplicity::Set | Multiplicity::Seq => "[]".to_string(),
+        Multiplicity::One => format!("default{}()", target),
     }
 }

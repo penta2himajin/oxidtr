@@ -3,6 +3,7 @@ use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::Multiplicity;
+use crate::analyze;
 use std::fmt::Write;
 
 struct JavaLang;
@@ -66,6 +67,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         });
     }
 
+    files.push(GeneratedFile {
+        path: "Fixtures.java".to_string(),
+        content: generate_fixtures(ir, &ctx),
+    });
+
     files
 }
 
@@ -80,6 +86,15 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
+
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        if !constraint_names.is_empty() {
+            writeln!(out, "/**").unwrap();
+            for cn in &constraint_names {
+                writeln!(out, " * @invariant {cn}").unwrap();
+            }
+            writeln!(out, " */").unwrap();
+        }
 
         if s.is_enum {
             generate_sealed_interface(&mut out, s, ctx);
@@ -97,7 +112,13 @@ fn generate_record(out: &mut String, s: &StructureNode) {
         writeln!(out, "public record {}() {{}}", s.name).unwrap();
     } else {
         let params: Vec<String> = s.fields.iter()
-            .map(|f| format!("{} {}", mult_to_java_type(&f.target, &f.mult), f.name))
+            .map(|f| {
+                let annotation = match f.mult {
+                    Multiplicity::One => "@NotNull ",
+                    _ => "",
+                };
+                format!("{annotation}{} {}", mult_to_java_type(&f.target, &f.mult), f.name)
+            })
             .collect();
         writeln!(out, "public record {}({}) {{}}", s.name, params.join(", ")).unwrap();
     }
@@ -351,5 +372,39 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
+// ── Fixtures.java ──────────────────────────────────────────────────────────
+
+fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
+    let mut out = String::new();
+
+    writeln!(out, "public class Fixtures {{").unwrap();
+
+    for s in &ir.structures {
+        if ctx.is_variant(&s.name) || s.is_enum { continue; }
+        if s.fields.is_empty() { continue; }
+
+        let params: Vec<String> = s.fields.iter()
+            .map(|f| java_default_value(&f.target, &f.mult))
+            .collect();
+
+        writeln!(out, "    /** Factory: create a default valid {} */", s.name).unwrap();
+        writeln!(out, "    public static {} default{}() {{", s.name, s.name).unwrap();
+        writeln!(out, "        return new {}({});", s.name, params.join(", ")).unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    writeln!(out, "}}").unwrap();
+    out
+}
+
+fn java_default_value(target: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::Lone => "null".to_string(),
+        Multiplicity::Set | Multiplicity::Seq => "List.of()".to_string(),
+        Multiplicity::One => format!("default{target}()"),
     }
 }

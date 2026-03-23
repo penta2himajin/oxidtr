@@ -3,6 +3,7 @@ use super::expr_translator::JvmLang;
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
 use crate::parser::ast::Multiplicity;
+use crate::analyze;
 use std::fmt::Write;
 
 struct KotlinLang;
@@ -66,6 +67,11 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         });
     }
 
+    files.push(GeneratedFile {
+        path: "Fixtures.kt".to_string(),
+        content: generate_fixtures(ir, &ctx),
+    });
+
     files
 }
 
@@ -76,6 +82,15 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
+
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        if !constraint_names.is_empty() {
+            writeln!(out, "/**").unwrap();
+            for cn in &constraint_names {
+                writeln!(out, " * @property Invariant: {cn}").unwrap();
+            }
+            writeln!(out, " */").unwrap();
+        }
 
         if s.is_enum {
             generate_sealed_class(&mut out, s, ctx);
@@ -363,5 +378,36 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
+// ── Fixtures.kt ────────────────────────────────────────────────────────────
+
+fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
+    let mut out = String::new();
+
+    for s in &ir.structures {
+        if ctx.is_variant(&s.name) || s.is_enum { continue; }
+        if s.fields.is_empty() { continue; }
+
+        writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();
+        writeln!(out, "fun default{}(): {} = {}(", s.name, s.name, s.name).unwrap();
+        for (i, f) in s.fields.iter().enumerate() {
+            let val = kt_default_value(&f.target, &f.mult);
+            let comma = if i < s.fields.len() - 1 { "," } else { "" };
+            writeln!(out, "    {} = {val}{comma}", f.name).unwrap();
+        }
+        writeln!(out, ")").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}
+
+fn kt_default_value(target: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::Lone => "null".to_string(),
+        Multiplicity::Set | Multiplicity::Seq => "emptyList()".to_string(),
+        Multiplicity::One => format!("default{target}()"),
     }
 }
