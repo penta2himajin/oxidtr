@@ -2,6 +2,7 @@ pub mod rust_extractor;
 pub mod ts_extractor;
 pub mod kotlin_extractor;
 pub mod java_extractor;
+pub mod swift_extractor;
 pub mod schema_extractor;
 pub mod renderer;
 
@@ -19,6 +20,7 @@ pub fn detect_lang(path: &Path) -> Option<String> {
         if path.join("Models.kt").exists() { return Some("kt".to_string()); }
         if path.join("Models.java").exists() { return Some("java".to_string()); }
         if path.join("models.rs").exists() { return Some("rust".to_string()); }
+        if path.join("Models.swift").exists() { return Some("swift".to_string()); }
         if path.join("schemas.json").exists() { return Some("schema".to_string()); }
 
         // Scan for any matching extension
@@ -40,6 +42,7 @@ fn detect_lang_from_file(path: &Path) -> Option<String> {
         "ts" => Some("ts".to_string()),
         "kt" => Some("kotlin".to_string()),
         "java" => Some("java".to_string()),
+        "swift" => Some("swift".to_string()),
         "json" => Some("schema".to_string()),
         _ => None,
     }
@@ -141,6 +144,9 @@ fn detect_all_langs(dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
 
     let java_files = collect_files(dir, "java");
     if !java_files.is_empty() { result.push(("java".to_string(), java_files)); }
+
+    let swift_files = collect_files(dir, "swift");
+    if !swift_files.is_empty() { result.push(("swift".to_string(), swift_files)); }
 
     // JSON Schema as supplemental
     let schema_path = dir.join("schemas.json");
@@ -259,6 +265,7 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
         "typescript" | "ts" => collect_files(dir, "ts"),
         "kotlin" | "kt" => collect_files(dir, "kt"),
         "java" => collect_files(dir, "java"),
+        "swift" => collect_files(dir, "swift"),
         "schema" | "json" => {
             let schema_path = dir.join("schemas.json");
             if schema_path.exists() { vec![schema_path] } else { collect_files(dir, "json") }
@@ -309,6 +316,7 @@ fn extract_with_lang(content: &str, lang: &str) -> Result<MinedModel, String> {
         "typescript" | "ts" => Ok(ts_extractor::extract(content)),
         "kotlin" | "kt" => Ok(kotlin_extractor::extract(content)),
         "java" => Ok(java_extractor::extract(content)),
+        "swift" => Ok(swift_extractor::extract(content)),
         "schema" | "json" => Ok(schema_extractor::extract(content)),
         other => Err(format!("unsupported language: {other}")),
     }

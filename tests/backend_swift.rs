@@ -1,0 +1,184 @@
+use oxidtr::parser;
+use oxidtr::ir;
+use oxidtr::backend::swift;
+use oxidtr::backend::GeneratedFile;
+
+fn generate_swift(input: &str) -> Vec<GeneratedFile> {
+    let model = parser::parse(input).expect("parse");
+    let ir = ir::lower(&model).expect("lower");
+    swift::generate(&ir)
+}
+
+fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
+    files.iter().find(|f| f.path == path)
+        .map(|f| f.content.as_str())
+        .unwrap_or_else(|| panic!("file {path} not found"))
+}
+
+// ── Models.swift ─────────────────────────────────────────────────────────────
+
+#[test]
+fn swift_struct_for_sig() {
+    let files = generate_swift("sig User { name: one Role }\nsig Role {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("struct User: Equatable {"));
+    assert!(m.contains("let name: Role"));
+}
+
+#[test]
+fn swift_optional_for_lone() {
+    let files = generate_swift("sig Node { parent: lone Node }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("let parent: Node?"));
+}
+
+#[test]
+fn swift_set_for_set() {
+    let files = generate_swift("sig Group { members: set User }\nsig User {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("let members: Set<User>"));
+}
+
+#[test]
+fn swift_array_for_seq() {
+    let files = generate_swift("sig Order { items: seq Item }\nsig Item {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("let items: [Item]"));
+}
+
+#[test]
+fn swift_enum_for_all_singleton() {
+    let files = generate_swift(
+        "abstract sig Color {}\none sig Red extends Color {}\none sig Blue extends Color {}",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("enum Color: Equatable, Hashable, CaseIterable {"));
+    assert!(m.contains("case red"));
+    assert!(m.contains("case blue"));
+}
+
+#[test]
+fn swift_enum_with_associated_values() {
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Literal extends Expr {}\nsig BinOp extends Expr { left: one Expr, right: one Expr }",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("enum Expr: Equatable {"));
+    assert!(m.contains("case binOp(left: Expr, right: Expr)"));
+    assert!(m.contains("case literal"));
+}
+
+// ── Operations.swift ─────────────────────────────────────────────────────────
+
+#[test]
+fn swift_operations_use_fatalerror() {
+    let files = generate_swift("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
+    let ops = find_file(&files, "Operations.swift");
+    assert!(ops.contains("func changeRole("));
+    assert!(ops.contains("fatalError("));
+}
+
+#[test]
+fn swift_operations_return_type() {
+    let files = generate_swift("sig User {}\nfun findUser[name: one User]: one User { name = name }");
+    let ops = find_file(&files, "Operations.swift");
+    assert!(ops.contains("-> User"));
+}
+
+// ── Tests.swift ──────────────────────────────────────────────────────────────
+
+#[test]
+fn swift_tests_inline_constraint_expressions() {
+    let files = generate_swift(
+        "sig User { roles: set Role }\nsig Role {}\nfact AllUsersHaveRoles { all u: User | #u.roles > 0 }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("XCTAssertTrue("));
+    assert!(t.contains(".allSatisfy"));
+}
+
+#[test]
+fn swift_tests_generated_properly() {
+    // Constraint with cardinality check — Swift should generate test
+    let files = generate_swift(
+        "sig User { roles: set Role }\nsig Role {}\nfact UserHasRoles { all u: User | #u.roles > 0 }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("func test_invariant_"));
+    assert!(t.contains("XCTAssertTrue("));
+}
+
+// ── Fixtures.swift ───────────────────────────────────────────────────────────
+
+#[test]
+fn swift_fixtures_generated() {
+    let files = generate_swift("sig User { name: one Role, group: lone Group }\nsig Role {}\nsig Group {}");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultUser()"));
+    assert!(f.contains("-> User"));
+    assert!(f.contains("nil"));
+}
+
+#[test]
+fn swift_fixtures_enum_default() {
+    let files = generate_swift(
+        "abstract sig Color {}\none sig Red extends Color {}\none sig Blue extends Color {}",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultColor()"));
+    assert!(f.contains(".red"));
+}
+
+#[test]
+fn swift_fixtures_boundary() {
+    let files = generate_swift(
+        "sig Team { members: set User }\nsig User {}\nfact TeamSize { all t: Team | #t.members <= 5 }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func boundaryTeam()"));
+    assert!(f.contains("func invalidTeam()"));
+}
+
+// ── Helpers.swift ────────────────────────────────────────────────────────────
+
+#[test]
+fn swift_helpers_for_tc() {
+    let files = generate_swift(
+        "sig Node { parent: lone Node }\nassert Acyclic { all n: Node | not (n in n.^parent) }",
+    );
+    let h = files.iter().find(|f| f.path == "Helpers.swift");
+    assert!(h.is_some(), "Helpers.swift should be generated for TC");
+    let h = h.unwrap();
+    assert!(h.content.contains("func tcParent("));
+    assert!(h.content.contains("while let node = current"));
+}
+
+// ── Cross-tests ──────────────────────────────────────────────────────────────
+
+#[test]
+fn swift_cross_tests_are_disabled() {
+    let files = generate_swift(
+        "sig User { name: one Role }\nsig Role {}\nfact F { all u: User | u = u }\npred doSomething[u: one User] { u = u }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    if t.contains("Cross-tests") {
+        assert!(t.contains("disabled_test_"), "Swift cross-tests should be disabled via naming convention");
+    }
+}
+
+// ── Import statements ────────────────────────────────────────────────────────
+
+#[test]
+fn swift_models_import_foundation() {
+    let files = generate_swift("sig User {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("import Foundation"));
+}
+
+#[test]
+fn swift_tests_import_xctest() {
+    let files = generate_swift("sig User {}\nassert P { all u: User | u = u }");
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("import XCTest"));
+    assert!(t.contains("XCTestCase"));
+}

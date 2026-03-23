@@ -36,6 +36,7 @@ fn guarantee_null_safety_varies_by_language() {
         kind: PresenceKind::Required,
     };
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Rust), Guarantee::FullyByType);
+    assert_eq!(can_guarantee_by_type(&c, TargetLang::Swift), Guarantee::FullyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Kotlin), Guarantee::FullyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Java), Guarantee::PartiallyByType);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::TypeScript), Guarantee::RequiresTest);
@@ -49,6 +50,7 @@ fn guarantee_cardinality_varies_by_language() {
         bound: BoundKind::AtMost(5),
     };
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Rust), Guarantee::PartiallyByType);
+    assert_eq!(can_guarantee_by_type(&c, TargetLang::Swift), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Kotlin), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::Java), Guarantee::RequiresTest);
     assert_eq!(can_guarantee_by_type(&c, TargetLang::TypeScript), Guarantee::RequiresTest);
@@ -60,7 +62,7 @@ fn guarantee_no_self_ref_always_requires_test() {
         sig_name: "Node".to_string(),
         field_name: "parent".to_string(),
     };
-    for lang in [TargetLang::Rust, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
+    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
         assert_eq!(can_guarantee_by_type(&c, lang), Guarantee::RequiresTest);
     }
 }
@@ -71,7 +73,7 @@ fn guarantee_acyclicity_always_requires_test() {
         sig_name: "Node".to_string(),
         field_name: "parent".to_string(),
     };
-    for lang in [TargetLang::Rust, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
+    for lang in [TargetLang::Rust, TargetLang::Swift, TargetLang::Kotlin, TargetLang::Java, TargetLang::TypeScript] {
         assert_eq!(can_guarantee_by_type(&c, lang), Guarantee::RequiresTest);
     }
 }
@@ -79,6 +81,7 @@ fn guarantee_acyclicity_always_requires_test() {
 #[test]
 fn guarantee_enum_exhaustiveness_by_language() {
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Rust), Guarantee::FullyByType);
+    assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Swift), Guarantee::FullyByType);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Kotlin), Guarantee::FullyByType);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::Java), Guarantee::FullyByType);
     assert_eq!(enum_exhaustiveness_guarantee(TargetLang::TypeScript), Guarantee::RequiresTest);
