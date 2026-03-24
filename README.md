@@ -50,6 +50,9 @@ The parser handles the full Alloy structural grammar:
 | `#` (cardinality) | Full, with numeric bound extraction |
 | `^` (transitive closure) | Full |
 | `+` / `&` / `-` (set operations) | Full |
+| `var` field modifier (Alloy 6) | Full |
+| `x'` prime operator (Alloy 6) | Full |
+| `always` / `eventually` / `after` / `historically` / `once` / `before` (Alloy 6) | Parsed, backend passthrough |
 | `check` / `run` commands | Skipped (design-time only) |
 
 ## Supported targets
@@ -158,11 +161,13 @@ cargo run -- extract generated/
 | 6+ | Multi-language extract merge with conflict detection |
 | 7 | Swift backend (struct/enum, XCTest, allSatisfy/contains, extract extractor) |
 | 8 | Go backend (struct/iota/interface, testing, extract extractor) |
+| 11 | Alloy 6 temporal parser (var, prime, always/eventually/after/historically/once/before) |
 
 ### Planned
 
 | Phase | Description | Target platforms |
 |---|---|---|
+| 12-13 | **Alloy 6 temporal code generation** | var/always/eventually → backend emit |
 | 9 | **C# backend** | .NET / Unity / Blazor / Azure |
 | 10 | **Lean backend** (polarstar) | High-assurance domains |
 | — | explore | Alloy instance anomaly detection |

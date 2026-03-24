@@ -41,6 +41,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
         .iter()
         .map(|f| IRField {
             name: f.name.clone(),
+            is_var: f.is_var,
             mult: f.mult.clone(),
             target: f.target.clone(),
             value_type: f.value_type.clone(),

@@ -104,7 +104,7 @@ fn make_ir_two_sigs(
             name: field_name.to_string(),
             mult,
             target: sig_b.to_string(),
-            value_type: None, raw_union_type: None }],
+            is_var: false, value_type: None, raw_union_type: None }],
         intersection_of: vec![],
     };
     OxidtrIR {
@@ -125,7 +125,7 @@ fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> Oxi
             name: field_name.to_string(),
             mult,
             target: sig_name.to_string(),
-            value_type: None, raw_union_type: None }],
+            is_var: false, value_type: None, raw_union_type: None }],
         intersection_of: vec![],
     };
     OxidtrIR {

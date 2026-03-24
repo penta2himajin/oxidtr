@@ -48,6 +48,19 @@ sig MultFormula extends Expr {
   mfKind: one QuantKind,
   mfExpr: one Expr
 }
+sig Prime extends Expr { primeInner: one Expr }
+sig TemporalUnary extends Expr {
+  tuOp: one TemporalUnaryOp,
+  tuExpr: one Expr
+}
+
+abstract sig TemporalUnaryOp {}
+one sig Always       extends TemporalUnaryOp {}
+one sig Eventually   extends TemporalUnaryOp {}
+one sig After        extends TemporalUnaryOp {}
+one sig Historically extends TemporalUnaryOp {}
+one sig Once         extends TemporalUnaryOp {}
+one sig Before       extends TemporalUnaryOp {}
 
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}

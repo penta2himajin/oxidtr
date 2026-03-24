@@ -153,3 +153,40 @@ fn parse_mixed_sig_multiplicities() {
     assert_eq!(model.sigs[3].multiplicity, SigMultiplicity::Lone);
     assert_eq!(model.sigs[4].multiplicity, SigMultiplicity::Default);
 }
+
+// ── Alloy 6: var field tests ───────────────────────────────────────────────────
+
+#[test]
+fn parse_var_field() {
+    let input = "sig Server { var load: one Int, name: one String }";
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.sigs[0].fields.len(), 2);
+    assert!(model.sigs[0].fields[0].is_var, "var field should have is_var=true");
+    assert_eq!(model.sigs[0].fields[0].name, "load");
+    assert!(!model.sigs[0].fields[1].is_var, "non-var field should have is_var=false");
+}
+
+#[test]
+fn parse_var_field_set_mult() {
+    let input = "sig Server { var connections: set Client }";
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.sigs[0].fields[0].name, "connections");
+    assert!(model.sigs[0].fields[0].is_var);
+    assert_eq!(model.sigs[0].fields[0].mult, Multiplicity::Set);
+    assert_eq!(model.sigs[0].fields[0].target, "Client");
+}
+
+#[test]
+fn parse_var_field_lone() {
+    let input = "sig Node { var next: lone Node }";
+    let model = parser::parse(input).expect("should parse");
+    assert!(model.sigs[0].fields[0].is_var);
+    assert_eq!(model.sigs[0].fields[0].mult, Multiplicity::Lone);
+}
+
+#[test]
+fn parse_non_var_field_is_var_false() {
+    let input = "sig Foo { bar: one Baz }";
+    let model = parser::parse(input).expect("should parse");
+    assert!(!model.sigs[0].fields[0].is_var);
+}
