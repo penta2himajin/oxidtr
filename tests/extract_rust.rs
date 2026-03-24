@@ -312,6 +312,10 @@ fn is_language_primitive_covers_all_languages() {
     assert!(is_language_primitive("complex64"));
     assert!(is_language_primitive("complex128"));
 
+    // Boolean literal types (subtypes of Boolean)
+    assert!(is_language_primitive("true"));
+    assert!(is_language_primitive("false"));
+
     // User-defined types should NOT be primitives
     assert!(!is_language_primitive("User"));
     assert!(!is_language_primitive("AppConfig"));

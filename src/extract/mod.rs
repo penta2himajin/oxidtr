@@ -404,6 +404,8 @@ pub fn is_language_primitive(name: &str) -> bool {
         | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
         | "float32" | "float64" | "rune" | "error"
         | "complex64" | "complex128"
+        // Boolean literal types (subtypes of Boolean, shared across all languages)
+        | "true" | "false"
         // Go/TS shared (already covered above: any, bool, string, int, byte)
     )
 }
