@@ -160,7 +160,8 @@ cargo run -- extract generated/ -o /tmp/mined.als
 主要な未実装:
 - Phase 8: Go backend ✅ (完了)
 - Phase 9-10: C# / Lean backends
-- Phase 11-13: Alloy 6 時相拡張 (var/always/eventually)
+- Phase 11: Alloy 6 時相パーサー ✅ (完了: var field, prime operator, temporal unary operators)
+- Phase 12-13: Alloy 6 時相コード生成 (var/always/eventually → backend emit)
 - explore: Alloyインスタンス異常パターン検出
 - cover: カバレッジ×fact直交テスト生成
 
@@ -184,7 +185,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。solidionのドメインモデルでimpliesパターンの記述が可能に
 
 **未到達の領域:**
-- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: Alloy静的モデルの表現限界。Alloy 6時相拡張（`var`/`always`/`eventually`）の領域
+- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: Alloy 6時相拡張のパーサーは実装済み、コード生成への接続が残課題
 - Lean backend: fact本体式を定理として完全変換する最終目標。「制約を実行時に検証する」から「制約を証明する」への移行
 
 ## Alloyモデルへのフィードバック
