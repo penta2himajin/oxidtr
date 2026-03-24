@@ -51,17 +51,17 @@ jobs:
       - name: Check Swift
         run: cargo run -- check --model models/oxidtr.als --impl generated-swift
 
-      # Mine round-trip (each language → Alloy)
-      - name: Mine Rust back to Alloy
-        run: cargo run -- mine generated/ -o /tmp/mined-rust.als
-      - name: Mine TypeScript back to Alloy
-        run: cargo run -- mine generated-ts/ -o /tmp/mined-ts.als
-      - name: Mine Kotlin back to Alloy
-        run: cargo run -- mine generated-kt/ -o /tmp/mined-kt.als
-      - name: Mine Java back to Alloy
-        run: cargo run -- mine generated-java/ -o /tmp/mined-java.als
-      - name: Mine Swift back to Alloy
-        run: cargo run -- mine generated-swift/ -o /tmp/mined-swift.als
+      # Extract round-trip (each language → Alloy)
+      - name: Extract Rust back to Alloy
+        run: cargo run -- extract generated/ -o /tmp/mined-rust.als
+      - name: Extract TypeScript back to Alloy
+        run: cargo run -- extract generated-ts/ -o /tmp/mined-ts.als
+      - name: Extract Kotlin back to Alloy
+        run: cargo run -- extract generated-kt/ -o /tmp/mined-kt.als
+      - name: Extract Java back to Alloy
+        run: cargo run -- extract generated-java/ -o /tmp/mined-java.als
+      - name: Extract Swift back to Alloy
+        run: cargo run -- extract generated-swift/ -o /tmp/mined-swift.als
 
       # Verify enrichment (no invariants, no @alloy comments)
       - name: Verify enriched output

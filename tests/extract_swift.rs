@@ -1,5 +1,5 @@
-use oxidtr::mine::swift_extractor;
-use oxidtr::mine::{MinedMultiplicity, Confidence};
+use oxidtr::extract::swift_extractor;
+use oxidtr::extract::{MinedMultiplicity, Confidence};
 
 #[test]
 fn swift_extract_struct() {

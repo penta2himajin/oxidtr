@@ -5,8 +5,8 @@ use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::{rust, typescript};
 use oxidtr::backend::jvm::{kotlin, java};
-use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor};
-use oxidtr::mine::renderer;
+use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor};
+use oxidtr::extract::renderer;
 use oxidtr::analyze;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
@@ -311,7 +311,7 @@ fn self_hosting_lossless_round_trip() {
     }
 
     // Mine Rust code and render back to .als, then re-parse
-    let mut mined_model = oxidtr::mine::MinedModel {
+    let mut mined_model = oxidtr::extract::MinedModel {
         sigs: Vec::new(),
         fact_candidates: Vec::new(),
     };

@@ -6,7 +6,7 @@ use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::{rust, typescript, GeneratedFile};
 use oxidtr::backend::jvm::{kotlin, java};
-use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, MinedMultiplicity};
+use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, MinedMultiplicity};
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::backend::typescript::TsTestRunner;

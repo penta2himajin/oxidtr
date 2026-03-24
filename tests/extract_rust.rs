@@ -1,6 +1,6 @@
-use oxidtr::mine::rust_extractor;
-use oxidtr::mine::renderer;
-use oxidtr::mine::{MinedMultiplicity, Confidence, resolve_external_types};
+use oxidtr::extract::rust_extractor;
+use oxidtr::extract::renderer;
+use oxidtr::extract::{MinedMultiplicity, Confidence, resolve_external_types};
 
 #[test]
 fn mine_rust_struct_to_sig() {

@@ -1,5 +1,5 @@
-use oxidtr::mine::go_extractor;
-use oxidtr::mine::MinedMultiplicity;
+use oxidtr::extract::go_extractor;
+use oxidtr::extract::MinedMultiplicity;
 
 #[test]
 fn go_extract_struct() {

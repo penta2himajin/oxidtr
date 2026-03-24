@@ -1,6 +1,6 @@
-use oxidtr::mine::ts_extractor;
-use oxidtr::mine::renderer;
-use oxidtr::mine::{MinedMultiplicity, Confidence};
+use oxidtr::extract::ts_extractor;
+use oxidtr::extract::renderer;
+use oxidtr::extract::{MinedMultiplicity, Confidence};
 
 #[test]
 fn mine_ts_interface_to_sig() {

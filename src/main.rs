@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::check::{self, CheckConfig};
-use oxidtr::mine;
+use oxidtr::extract;
 
 #[derive(Parser)]
 #[command(name = "oxidtr")]
@@ -43,7 +43,7 @@ enum Commands {
         r#impl: String,
     },
     /// Extract Alloy model draft from existing source code
-    Mine {
+    Extract {
         /// Path to source file or directory
         source: String,
         /// Source language (auto-detected; omit for multi-lang merge)
@@ -115,8 +115,8 @@ fn main() {
             }
         }
 
-        Commands::Mine { source, lang, output, conflict } => {
-            let result = match mine::run_merge(&source, lang.as_deref()) {
+        Commands::Extract { source, lang, output, conflict } => {
+            let result = match extract::run_merge(&source, lang.as_deref()) {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("error: {e}");
@@ -137,7 +137,7 @@ fn main() {
                 }
             }
 
-            let rendered = mine::renderer::render(&result.model);
+            let rendered = extract::renderer::render(&result.model);
 
             if let Some(path) = output {
                 if let Err(e) = std::fs::write(&path, &rendered) {
