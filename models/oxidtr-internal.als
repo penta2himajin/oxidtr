@@ -58,7 +58,7 @@ one sig Int      extends Token {}
 one sig Eof      extends Token {}
 
 sig Lexer {
-  lexerPos: one String
+  lexerPos: one SigDecl
 }
 
 -------------------------------------------------------------------------------
@@ -90,44 +90,41 @@ one sig Off   extends WarningLevel {}
 
 sig Warning {
   kind:       one WarningKind,
-  message:    one String,
-  location:   one String,
-  suggestion: lone String
+  message:    one SigDecl,
+  location:   one SigDecl,
+  suggestion: lone SigDecl
 }
 
 sig GenerateConfig {
-  target:    one String,
-  outputDir: one String,
+  target:    one SigDecl,
+  outputDir: one SigDecl,
   warnings:  one WarningLevel,
-  features:  set String,
-  schema:    lone String
+  features:  set SigDecl,
+  schema:    lone SigDecl
 }
 
 sig GenerateResult {
-  filesWritten: set String,
+  filesWritten: set SigDecl,
   genWarnings:  set Warning
 }
 
 abstract sig GenerateError {}
 
 sig GeneratedFile {
-  filePath:    one String,
-  fileContent: one String
+  filePath:    one SigDecl,
+  fileContent: one SigDecl
 }
 
--- Placeholder sigs for host-language primitive types.
--- These have no Alloy-level structure but are referenced in field declarations.
-sig String {}
-sig bool {}
-sig i64 {}
-sig usize {}
+-- Note: Host-language primitive types (String, bool, i64, usize) are not
+-- modeled as sigs. Fields that reference primitives use SigDecl as a
+-- generic placeholder in this model.
 
 -------------------------------------------------------------------------------
 -- Backend
 -------------------------------------------------------------------------------
 
 sig RustBackendConfig {
-  rustFeatures: set String
+  rustFeatures: set SigDecl
 }
 
 abstract sig TsTestRunner {}
@@ -139,15 +136,15 @@ sig TsBackendConfig {
 }
 
 sig TCField {
-  tcFieldName: one String,
-  tcSigName:   one String
+  tcFieldName: one SigDecl,
+  tcSigName:   one SigDecl
 }
 
 sig JvmContext {
-  jvmChildren:     set String,
-  jvmEnumParents:  set String,
-  jvmVariantNames: set String,
-  jvmStructMap:    set String
+  jvmChildren:     set SigDecl,
+  jvmEnumParents:  set SigDecl,
+  jvmVariantNames: set SigDecl,
+  jvmStructMap:    set SigDecl
 }
 
 -------------------------------------------------------------------------------
@@ -161,7 +158,7 @@ sig LoweringError extends CheckError {}
 sig ImplNotFound    extends CheckError {}
 
 sig CheckConfig {
-  implDir: one String
+  implDir: one SigDecl
 }
 
 abstract sig DiffItem {}
@@ -180,18 +177,18 @@ sig CheckResult {
 }
 
 sig ExtractedField {
-  exFieldName: one String,
-  exFieldMult: one String,
-  exFieldTarget: one String
+  exFieldName: one SigDecl,
+  exFieldMult: one SigDecl,
+  exFieldTarget: one SigDecl
 }
 
 sig ExtractedStruct {
-  exStructName:   one String,
+  exStructName:   one SigDecl,
   exStructFields: set ExtractedField
 }
 
 sig ExtractedFn {
-  exFnName: one String
+  exFnName: one SigDecl
 }
 
 sig ExtractedImpl {
@@ -215,22 +212,22 @@ one sig Set  extends MinedMultiplicity {}
 one sig Seq  extends MinedMultiplicity {}
 
 sig MinedField {
-  minedName:   one String,
+  minedName:   one SigDecl,
   minedMult:   one MinedMultiplicity,
-  minedTarget: one String
+  minedTarget: one SigDecl
 }
 
 sig MinedSig {
-  minedSigName:    one String,
+  minedSigName:    one SigDecl,
   minedFields:     set MinedField,
-  minedIsAbstract: lone String,
+  minedIsAbstract: lone SigDecl,
   minedParent:     lone MinedSig
 }
 
 sig MinedFactCandidate {
-  alloyText:     one String,
+  alloyText:     one SigDecl,
   confidence:    one Confidence,
-  sourcePattern: one String
+  sourcePattern: one SigDecl
 }
 
 sig MinedModel {
@@ -239,9 +236,9 @@ sig MinedModel {
 }
 
 sig MergeConflict {
-  conflictSig:   one String,
-  conflictField: one String,
-  description:   one String
+  conflictSig:   one SigDecl,
+  conflictField: one SigDecl,
+  description:   one SigDecl
 }
 
 sig MergeResult {
@@ -273,8 +270,8 @@ one sig TypeScript extends TargetLang {}
 abstract sig ConstraintInfo {}
 
 sig CardinalityBound extends ConstraintInfo {
-  boundSig:   one String,
-  boundField: one String
+  boundSig:   one SigDecl,
+  boundField: one SigDecl
 }
 
 abstract sig BoundKind {}
@@ -283,8 +280,8 @@ sig AtMost  extends BoundKind {}
 sig AtLeast extends BoundKind {}
 
 sig Presence extends ConstraintInfo {
-  presenceSig:   one String,
-  presenceField: one String
+  presenceSig:   one SigDecl,
+  presenceField: one SigDecl
 }
 
 abstract sig PresenceKind {}
@@ -292,33 +289,33 @@ one sig Required extends PresenceKind {}
 one sig Absent   extends PresenceKind {}
 
 sig Membership extends ConstraintInfo {
-  memberSig:   one String,
-  memberField: one String
+  memberSig:   one SigDecl,
+  memberField: one SigDecl
 }
 
 sig NoSelfRef extends ConstraintInfo {
-  nsrSig:   one String,
-  nsrField: one String
+  nsrSig:   one SigDecl,
+  nsrField: one SigDecl
 }
 
 sig Acyclic extends ConstraintInfo {
-  acyclicSig:   one String,
-  acyclicField: one String
+  acyclicSig:   one SigDecl,
+  acyclicField: one SigDecl
 }
 
 sig Named extends ConstraintInfo {
-  namedName:        one String,
-  namedDescription: one String
+  namedName:        one SigDecl,
+  namedDescription: one SigDecl
 }
 
 abstract sig BeanValidation {}
 sig Size extends BeanValidation {
-  sizeMin:  lone String,
-  sizeMax:  lone String,
-  sizeFact: one String
+  sizeMin:  lone SigDecl,
+  sizeMax:  lone SigDecl,
+  sizeFact: one SigDecl
 }
 sig MinMax extends BeanValidation {
-  mmFact: one String
+  mmFact: one SigDecl
 }
 
 -------------------------------------------------------------------------------
