@@ -13,7 +13,7 @@ pub fn extract(source: &str) -> MinedModel {
         let trimmed = line.trim();
 
         // export interface Foo { ... } → sig
-        if let Some(name) = parse_interface_decl(trimmed) {
+        if let Some((name, iface_parent)) = parse_interface_decl(trimmed) {
             // Self-closing interface on one line: "export interface Foo {}"
             let fields = if trimmed.contains('{') && trimmed.contains('}') {
                 vec![]
@@ -29,7 +29,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: real_fields,
                 is_abstract: false,
-                parent: None,
+                parent: iface_parent,
                 source_location: format!("line {}", line_num + 1),
             });
         }
@@ -85,13 +85,44 @@ pub fn extract(source: &str) -> MinedModel {
     MinedModel { sigs, fact_candidates }
 }
 
-fn parse_interface_decl(line: &str) -> Option<String> {
+/// Returns (name, first_parent) for an interface declaration.
+/// Handles `interface Foo`, `interface Foo<T>`, `interface Foo extends Bar`,
+/// and `interface Foo extends Bar, Baz` (takes first parent only).
+fn parse_interface_decl(line: &str) -> Option<(String, Option<String>)> {
     let rest = line.strip_prefix("export interface ")
         .or_else(|| line.strip_prefix("interface "))?;
+
+    // Extract name (up to '<', ' ', or '{')
     let name: String = rest.chars()
         .take_while(|c| c.is_alphanumeric() || *c == '_')
         .collect();
-    if name.is_empty() { None } else { Some(name) }
+    if name.is_empty() { return None; }
+
+    // Look for `extends` keyword after the name (skip generics <...>)
+    let after_name = &rest[name.len()..];
+    let after_generics = if after_name.starts_with('<') {
+        // Skip generic params: find matching '>'
+        let mut depth = 0usize;
+        let mut end = 0;
+        for (i, ch) in after_name.chars().enumerate() {
+            match ch { '<' => depth += 1, '>' => { depth -= 1; if depth == 0 { end = i + 1; break; } } _ => {} }
+        }
+        &after_name[end..]
+    } else {
+        after_name
+    };
+
+    let parent = if let Some(ext) = after_generics.trim_start().strip_prefix("extends ") {
+        // Take first parent (before ',', '<', or '{')
+        let first: String = ext.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if first.is_empty() { None } else { Some(first) }
+    } else {
+        None
+    };
+
+    Some((name, parent))
 }
 
 fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
@@ -116,19 +147,87 @@ fn collect_interface_fields(
 ) -> Vec<MinedField> {
     let mut fields = Vec::new();
     let mut depth = 1usize;
+    // Track inline object depth separately to avoid mis-counting type annotations.
+    // When depth==1 and we encounter a field line whose type part has unbalanced
+    // braces, we accumulate them here and skip those lines for field parsing.
+    let mut inline_depth: isize = 0;
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
-        // Capture depth BEFORE processing this line's braces.
-        // Only parse fields at the top level of the interface (depth == 1).
         let depth_before = depth;
-        for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+
+        // Single-line JSDoc /** ... */ or block comment content: skip brace counting entirely.
+        // These lines cannot be field declarations and their braces (e.g. `{ y: 10 }`)
+        // must not affect the interface depth.
+        if (trimmed.starts_with("/**") && trimmed.ends_with("*/"))
+            || trimmed.starts_with("* ")
+            || trimmed == "*"
+            || trimmed.starts_with("*/")
+        {
+            continue;
         }
+
+        if inline_depth > 0 {
+            // Consuming lines inside a multi-line inline object type.
+            for ch in trimmed.chars() {
+                match ch {
+                    '{' => inline_depth += 1,
+                    '}' => inline_depth -= 1,
+                    _ => {}
+                }
+            }
+            if inline_depth <= 0 {
+                inline_depth = 0;
+                // The closing '}' of the inline object is consumed.
+                // Depth of the outer interface is unchanged.
+            }
+            continue;
+        }
+
+        // Count braces, but be careful about inline object types.
+        // For a field line at depth==1 (e.g. `bounds?: { x?: number; };`),
+        // braces in the type annotation are balanced on the same line.
+        // For a multi-line inline object (open brace not closed on same line),
+        // we enter inline_depth mode.
+        if depth_before == 1 {
+            let colon_pos = trimmed.find(':');
+            if let Some(cp) = colon_pos {
+                if !trimmed.starts_with('}') {
+                    let before = &trimmed[..cp];
+                    let type_part = &trimmed[cp..];
+                    // Count pre-colon braces (e.g., the outer `}` only)
+                    for ch in before.chars() {
+                        match ch { '{' => depth += 1, '}' => { if depth > 0 { depth -= 1; } } _ => {} }
+                    }
+                    // Net brace count in the type part
+                    let open_t = type_part.chars().filter(|&c| c == '{').count() as isize;
+                    let close_t = type_part.chars().filter(|&c| c == '}').count() as isize;
+                    let net = open_t - close_t;
+                    if net > 0 {
+                        // Multi-line inline object: enter inline tracking mode
+                        inline_depth = net;
+                    }
+                    // Balanced or over-closed: no depth change for outer interface
+                } else {
+                    // Line starts with '}': closing the interface or a nested block
+                    for ch in trimmed.chars() {
+                        match ch { '{' => depth += 1, '}' => { if depth > 0 { depth -= 1; } } _ => {} }
+                    }
+                }
+            } else {
+                for ch in trimmed.chars() {
+                    match ch { '{' => depth += 1, '}' => { if depth > 0 { depth -= 1; } } _ => {} }
+                }
+            }
+        } else {
+            for ch in trimmed.chars() {
+                match ch { '{' => depth += 1, '}' => { if depth > 0 { depth -= 1; } } _ => {} }
+            }
+        }
+
         if depth == 0 { break; }
 
-        // Skip fields nested inside inline object types (e.g. bounds?: { x: ...; y: ...; })
-        if depth_before == 1 {
+        if depth_before == 1 && inline_depth == 0 {
             if let Some(field) = parse_ts_field(trimmed) {
                 fields.push(field);
             }
@@ -230,14 +329,23 @@ fn collect_block(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
 ) -> Vec<(usize, String)> {
     let mut body = Vec::new();
-    let mut depth = 1usize;
+    // depth starts at 0: we haven't seen the opening '{' yet.
+    // For single-line trigger (e.g. `function f() {`), the caller's line already
+    // contained the '{', so we start at depth=1 only when the trigger line had one.
+    // Here we conservatively start at 0 and increment on the first '{' we see.
+    let mut depth = 0usize;
+    let mut started = false;
 
     for (ln, line) in lines.by_ref() {
         let trimmed = line.trim();
         for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+            match ch {
+                '{' => { depth += 1; started = true; }
+                '}' => { if depth > 0 { depth -= 1; } }
+                _ => {}
+            }
         }
-        if depth == 0 { break; }
+        if started && depth == 0 { break; }
         body.push((ln, trimmed.to_string()));
     }
     body

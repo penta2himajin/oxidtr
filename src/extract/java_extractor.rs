@@ -313,11 +313,13 @@ fn collect_block(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
 ) -> Vec<(usize, String)> {
     let mut body = Vec::new();
+    // The opening '{' is on the trigger line (already consumed by the caller's loop),
+    // so we start at depth=1.
     let mut depth = 1usize;
     for (ln, line) in lines.by_ref() {
         let trimmed = line.trim();
         for ch in trimmed.chars() {
-            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+            match ch { '{' => depth += 1, '}' => { if depth > 0 { depth -= 1; } } _ => {} }
         }
         if depth == 0 { break; }
         body.push((ln, trimmed.to_string()));
