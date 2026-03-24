@@ -21,6 +21,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -33,6 +34,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: true,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
             for vs in variant_sigs {
                 sigs.push(vs);
@@ -111,7 +113,7 @@ fn parse_swift_property(line: &str) -> Option<MinedField> {
     };
 
     let (mult, target) = swift_type_to_mult(type_str);
-    Some(MinedField { name, mult, target })
+    Some(MinedField { name, mult, target, raw_union_type: None })
 }
 
 fn swift_type_to_mult(swift_type: &str) -> (MinedMultiplicity, String) {
@@ -187,6 +189,7 @@ fn collect_enum_cases(
                 is_abstract: false,
                 parent: Some(parent_name.to_string()),
                 source_location: format!("line {}", ln + 1),
+                intersection_of: vec![],
             });
         }
     }
@@ -211,7 +214,7 @@ fn extract_case_params(line: &str) -> Vec<MinedField> {
             if name.is_empty() { return None; }
             let type_str = p[colon + 1..].trim();
             let (mult, target) = swift_type_to_mult(type_str);
-            Some(MinedField { name, mult, target })
+            Some(MinedField { name, mult, target, raw_union_type: None })
         })
         .collect()
 }

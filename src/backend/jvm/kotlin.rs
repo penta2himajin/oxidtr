@@ -84,6 +84,13 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let disj_fields = analyze::disj_fields(ir);
 
     for s in &ir.structures {
+        // Intersection type → interface Foo : A, B, C
+        if !s.intersection_of.is_empty() {
+            let parents = s.intersection_of.join(", ");
+            writeln!(out, "interface {} : {}", s.name, parents).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         if ctx.is_variant(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
@@ -140,6 +147,14 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
         for (i, f) in s.fields.iter().enumerate() {
             let type_str = if let Some(vt) = &f.value_type {
                 format!("Map<{}, {}>", f.target, vt)
+            } else if let Some(_raw) = &f.raw_union_type {
+                // Union types → Any (Kotlin lacks field-level union types without sealed classes)
+                match f.mult {
+                    Multiplicity::Lone => "Any?".to_string(),
+                    Multiplicity::Set  => "Set<Any>".to_string(),
+                    Multiplicity::Seq  => "List<Any>".to_string(),
+                    Multiplicity::One  => "Any".to_string(),
+                }
             } else {
                 mult_to_kt_type(&f.target, &f.mult)
             };

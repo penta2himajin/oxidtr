@@ -31,12 +31,29 @@ impl std::error::Error for ParseError {}
 
 struct Parser<'a> {
     lexer: Lexer<'a>,
+    _pending_union_comment: Option<String>,
+    /// (sig_name, field_name) → raw union type string
+    union_annotations: std::collections::HashMap<(String, String), String>,
+    /// Track current sig name for annotation lookup
+    current_sig_name: String,
 }
 
 impl<'a> Parser<'a> {
-    fn new(input: &'a str) -> Self {
+    fn _new(input: &'a str) -> Self {
         Parser {
             lexer: Lexer::new(input),
+            _pending_union_comment: None,
+            union_annotations: std::collections::HashMap::new(),
+            current_sig_name: String::new(),
+        }
+    }
+
+    fn new_with_annotations(input: &'a str, annotations: std::collections::HashMap<(String, String), String>) -> Self {
+        Parser {
+            lexer: Lexer::new(input),
+            _pending_union_comment: None,
+            union_annotations: annotations,
+            current_sig_name: String::new(),
         }
     }
 
@@ -174,6 +191,7 @@ impl<'a> Parser<'a> {
 
     fn parse_sig_body(&mut self, is_abstract: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
         let name = self.expect_ident()?;
+        self.current_sig_name = name.clone(); // track for union annotation lookup
 
         let parent = if self.peek() == Token::Extends {
             self.next();
@@ -215,7 +233,15 @@ impl<'a> Parser<'a> {
         } else {
             None
         };
-        Ok(FieldDecl { name, mult, target, value_type })
+        // Look up `-- union: A | B` annotation for this field
+        let raw_union_type = self.consume_union_comment_for(&name);
+        Ok(FieldDecl { name, mult, target, value_type, raw_union_type })
+    }
+
+    /// Look up union annotation for the most recently parsed field name.
+    fn consume_union_comment_for(&mut self, field_name: &str) -> Option<String> {
+        let key = (self.current_sig_name.clone(), field_name.to_string());
+        self.union_annotations.get(&key).cloned()
     }
 
     fn parse_multiplicity(&mut self) -> Result<Multiplicity, ParseError> {
@@ -689,7 +715,48 @@ impl<'a> Parser<'a> {
     }
 }
 
+/// Pre-scan source for `-- union: TYPE` trailing field annotations.
+/// Returns a map of (sig_name, field_name) -> union_type_string.
+fn scan_union_annotations(input: &str) -> std::collections::HashMap<(String, String), String> {
+    let mut map = std::collections::HashMap::new();
+    let mut current_sig: Option<String> = None;
+
+    for line in input.lines() {
+        let trimmed = line.trim();
+
+        // Detect sig declaration: `sig Foo {` or `abstract sig Foo {`
+        let sig_line = trimmed.strip_prefix("abstract sig ")
+            .or_else(|| trimmed.strip_prefix("one sig "))
+            .or_else(|| trimmed.strip_prefix("sig "));
+        if let Some(rest) = sig_line {
+            let name: String = rest.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                current_sig = Some(name);
+            }
+        }
+        if trimmed == "}" { current_sig = None; continue; }
+
+        // Detect field with trailing `-- union: TYPE`
+        if let Some(sig) = &current_sig {
+            if let Some(union_idx) = trimmed.find("-- union:") {
+                let annotation = trimmed[union_idx + "-- union:".len()..].trim();
+                // Extract field name: first token before `:`
+                let field_name: String = trimmed.chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !field_name.is_empty() && !annotation.is_empty() {
+                    map.insert((sig.clone(), field_name), annotation.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
 pub fn parse(input: &str) -> Result<AlloyModel, ParseError> {
-    let mut parser = Parser::new(input);
+    let union_annotations = scan_union_annotations(input);
+    let mut parser = Parser::new_with_annotations(input, union_annotations);
     parser.parse_model()
 }

@@ -31,6 +31,15 @@ pub fn render(model: &MinedModel) -> String {
 }
 
 fn render_sig(out: &mut String, sig: &MinedSig) {
+    // Intersection type alias: render as a comment + empty sig
+    if !sig.intersection_of.is_empty() {
+        let components = sig.intersection_of.join(" & ");
+        writeln!(out, "-- intersection: {} = {}", sig.name, components).unwrap();
+        writeln!(out, "sig {} {{", sig.name).unwrap();
+        writeln!(out, "}}").unwrap();
+        return;
+    }
+
     if sig.is_abstract {
         write!(out, "abstract ").unwrap();
     }
@@ -47,7 +56,14 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
             MinedMultiplicity::Seq => "seq",
         };
         let comma = if i < sig.fields.len() - 1 { "," } else { "" };
-        writeln!(out, "  {}: {mult} {}{comma}", f.name, f.target).unwrap();
+        // Use raw_union_type as a comment annotation; target holds the first variant
+        // for Alloy compatibility (Alloy cannot express field-level union types)
+        if let Some(raw) = &f.raw_union_type {
+            let first_type = raw.split(" | ").next().unwrap_or(&f.target).trim();
+            writeln!(out, "  {}: {mult} {}{comma} -- union: {raw}", f.name, first_type).unwrap();
+        } else {
+            writeln!(out, "  {}: {mult} {}{comma}", f.name, f.target).unwrap();
+        }
     }
     writeln!(out, "}}").unwrap();
 }

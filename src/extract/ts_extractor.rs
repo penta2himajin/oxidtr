@@ -31,6 +31,19 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: iface_parent,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
+            });
+        }
+
+        // export type Foo = A & B & C → sig with intersection_of
+        if let Some((name, components)) = parse_type_intersection(trimmed) {
+            sigs.push(MinedSig {
+                name,
+                fields: vec![],
+                is_abstract: false,
+                parent: None,
+                source_location: format!("line {}", line_num + 1),
+                intersection_of: components,
             });
         }
 
@@ -46,6 +59,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: true,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
                 for v in &variants {
                     let vname = v.trim_matches('"').to_string();
@@ -55,6 +69,7 @@ pub fn extract(source: &str) -> MinedModel {
                         is_abstract: false,
                         parent: Some(name.clone()),
                         source_location: format!("line {}", line_num + 1),
+                        intersection_of: vec![],
                     });
                 }
             } else {
@@ -65,6 +80,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: true,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
                 // Set parent on existing sigs that match variant names
                 for v in &variants {
@@ -133,6 +149,9 @@ fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
     if name.is_empty() { return None; }
 
     let rhs = rest[eq_pos + 1..].trim().trim_end_matches(';').trim();
+    // Skip intersection types (handled by parse_type_intersection)
+    if rhs.contains("& ") && !rhs.contains('|') { return None; }
+
     let variants: Vec<String> = rhs.split('|')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
@@ -140,6 +159,29 @@ fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
     if variants.is_empty() { return None; }
 
     Some((name, variants))
+}
+
+/// Detect intersection type aliases: "export type Foo = A & B & C"
+/// Returns Some((name, components)) if this is an intersection type.
+fn parse_type_intersection(line: &str) -> Option<(String, Vec<String>)> {
+    let rest = line.strip_prefix("export type ")
+        .or_else(|| line.strip_prefix("type "))?;
+    let eq_pos = rest.find('=')?;
+    let name: String = rest[..eq_pos].trim()
+        .chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    if name.is_empty() { return None; }
+
+    let rhs = rest[eq_pos + 1..].trim().trim_end_matches(';').trim();
+    // Must contain & but not |
+    if !rhs.contains('&') || rhs.contains('|') { return None; }
+
+    let components: Vec<String> = rhs.split('&')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if components.len() < 2 { return None; }
+
+    Some((name, components))
 }
 
 fn collect_interface_fields(
@@ -274,11 +316,13 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
             name,
             mult: MinedMultiplicity::One,
             target: type_str.trim_matches('"').to_string(),
+            raw_union_type: None,
         });
     }
 
+    let raw_union = detect_union_type(type_str);
     let (mult, target) = ts_type_to_mult(type_str, optional);
-    Some(MinedField { name, mult, target })
+    Some(MinedField { name, mult, target, raw_union_type: raw_union })
 }
 
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {
@@ -319,6 +363,16 @@ fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String)
         return (MinedMultiplicity::Lone, t.to_string());
     }
     (MinedMultiplicity::One, t.to_string())
+}
+
+/// Detect field-level union types like "number | string".
+/// Returns Some(raw) if it is a non-null union, None otherwise.
+fn detect_union_type(ts_type: &str) -> Option<String> {
+    let t = ts_type.trim();
+    // Must contain " | " but not be a null-union (already handled as lone)
+    if !t.contains(" | ") { return None; }
+    if t.contains("null") { return None; }
+    Some(t.to_string())
 }
 
 fn strip_wrapper_ts<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {

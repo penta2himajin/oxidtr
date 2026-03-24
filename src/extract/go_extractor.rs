@@ -66,6 +66,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -79,6 +80,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: true,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
             }
         }
@@ -92,6 +94,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: true,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
                 for v in variants {
                     sigs.push(MinedSig {
@@ -100,6 +103,7 @@ pub fn extract(source: &str) -> MinedModel {
                         is_abstract: false,
                         parent: Some(name.clone()),
                         source_location: format!("line {}", line_num + 1),
+                        intersection_of: vec![],
                     });
                 }
             }
@@ -232,7 +236,7 @@ fn parse_go_field(line: &str) -> Option<MinedField> {
     let (mult, target) = go_type_to_mult(type_str);
     // Convert Go field name (PascalCase) to camelCase for Alloy
     let field_name = to_camel_case(name);
-    Some(MinedField { name: field_name, mult, target })
+    Some(MinedField { name: field_name, mult, target, raw_union_type: None })
 }
 
 fn go_type_to_mult(go_type: &str) -> (MinedMultiplicity, String) {

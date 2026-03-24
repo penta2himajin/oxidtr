@@ -68,6 +68,28 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
     files
 }
 
+
+/// Convert a raw union type string from TypeScript/other languages to Rust.
+/// e.g. "number | string" → "serde_json::Value" (opaque union)
+/// For simple numeric unions: use an enum if recognizable, otherwise serde_json::Value.
+fn rust_union_type(raw: &str, mult: &Multiplicity) -> String {
+    // Simple known mappings
+    let base = if raw == "number | string" || raw == "string | number" {
+        "serde_json::Value".to_string()
+    } else if raw.split(" | ").all(|s| s.trim() == "number" || s.trim() == "string" || s.trim() == "boolean") {
+        "serde_json::Value".to_string()
+    } else {
+        // Unknown union: use String as safe fallback
+        "String".to_string()
+    };
+    match mult {
+        Multiplicity::Lone => format!("Option<{base}>"),
+        Multiplicity::Set => format!("BTreeSet<{base}>"),
+        Multiplicity::Seq => format!("Vec<{base}>"),
+        Multiplicity::One => base,
+    }
+}
+
 fn generate_models_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> String {
     let use_serde = config.features.contains(&"serde".to_string());
     let mut out = generate_models_inner(ir, use_serde);
@@ -100,6 +122,19 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     let children: HashMap<String, Vec<String>> = {
         let mut map: HashMap<String, Vec<String>> = HashMap::new();
         for s in &ir.structures {
+        // Intersection type alias: type Foo = A & B & C → pub type Foo = A; // & B & C
+        if !s.intersection_of.is_empty() {
+            let first = &s.intersection_of[0];
+            let rest: Vec<&str> = s.intersection_of[1..].iter().map(|x| x.as_str()).collect();
+            if rest.is_empty() {
+                writeln!(out, "pub type {} = {};", s.name, first).unwrap();
+            } else {
+                writeln!(out, "// Intersection: {} = {}", s.name, s.intersection_of.join(" & ")).unwrap();
+                writeln!(out, "pub type {} = {}; // also includes: {}", s.name, first, rest.join(", ")).unwrap();
+            }
+            writeln!(out).unwrap();
+            continue;
+        }
             if let Some(parent) = &s.parent {
                 map.entry(parent.clone()).or_default().push(s.name.clone());
             }
@@ -190,6 +225,8 @@ fn generate_enum(
                         || self_ref_fields.contains(&(v.clone(), f.name.clone()));
                     let type_str = if let Some(vt) = &f.value_type {
                         format!("BTreeMap<{}, {}>", f.target, vt)
+                    } else if let Some(raw) = &f.raw_union_type {
+                        rust_union_type(raw, &f.mult)
                     } else {
                         multiplicity_to_type(&f.target, &f.mult, is_self_ref)
                     };
@@ -239,6 +276,8 @@ fn generate_struct(
             let is_self_ref = self_ref_fields.contains(&(s.name.clone(), f.name.clone()));
             let type_str = if let Some(vt) = &f.value_type {
                 format!("BTreeMap<{}, {}>", f.target, vt)
+            } else if let Some(raw) = &f.raw_union_type {
+                rust_union_type(raw, &f.mult)
             } else {
                 multiplicity_to_type(&f.target, &f.mult, is_self_ref)
             };
