@@ -6,7 +6,7 @@ use oxidtr::ir;
 use oxidtr::backend::{rust, typescript, schema};
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::backend::GeneratedFile;
-use oxidtr::mine::{schema_extractor, MinedMultiplicity};
+use oxidtr::extract::{schema_extractor, MinedMultiplicity};
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -19,15 +19,15 @@ fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
 }
 
 fn assert_sig_exists<'a>(
-    sigs: &'a [oxidtr::mine::MinedSig],
+    sigs: &'a [oxidtr::extract::MinedSig],
     name: &str,
-) -> &'a oxidtr::mine::MinedSig {
+) -> &'a oxidtr::extract::MinedSig {
     sigs.iter()
         .find(|s| s.name == name)
         .unwrap_or_else(|| panic!("expected sig '{name}' not found in mined model"))
 }
 
-fn assert_field(sig: &oxidtr::mine::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
+fn assert_field(sig: &oxidtr::extract::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
     let f = sig
         .fields
         .iter()

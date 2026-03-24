@@ -1,7 +1,7 @@
 /// Mine tests for new patterns: Map types, singletons, concrete annotations,
 /// boundary fixtures, and enriched output round-trips.
 
-use oxidtr::mine::{self, rust_extractor, ts_extractor, kotlin_extractor, java_extractor, MinedMultiplicity};
+use oxidtr::extract::{self, rust_extractor, ts_extractor, kotlin_extractor, java_extractor, MinedMultiplicity};
 use oxidtr::backend::{rust, typescript, GeneratedFile};
 use oxidtr::backend::typescript::TsTestRunner;
 use oxidtr::backend::jvm::{kotlin, java};
@@ -168,7 +168,7 @@ fn mine_directory_round_trip_rust_with_all_enrichments() {
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
     // Mine the whole directory
-    let mined = mine::run(out_dir.to_str().unwrap(), None).unwrap();
+    let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();
     assert!(mined.sigs.iter().any(|s| s.name == "SigDecl"), "should find SigDecl");
     assert!(mined.sigs.iter().any(|s| s.name == "OxidtrIR"), "should find OxidtrIR");
     assert!(mined.sigs.iter().any(|s| s.name == "Multiplicity"), "should find Multiplicity");
@@ -189,7 +189,7 @@ fn mine_directory_round_trip_ts_with_all_enrichments() {
     };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
-    let mined = mine::run(out_dir.to_str().unwrap(), None).unwrap();
+    let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();
     assert!(mined.sigs.iter().any(|s| s.name == "SigDecl"));
     assert!(mined.sigs.iter().any(|s| s.name == "OxidtrIR"));
 }

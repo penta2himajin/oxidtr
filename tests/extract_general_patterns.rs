@@ -1,7 +1,7 @@
 /// Mine tests for general patterns found in hand-written (non-oxidtr-generated) code.
 /// Organized by pattern category following TDD: tests written first, then implementation.
 
-use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, Confidence};
+use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, Confidence};
 
 // ── Category 1: Validation patterns ──────────────────────────────────────────
 

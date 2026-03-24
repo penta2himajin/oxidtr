@@ -4,7 +4,7 @@ pub mod differ;
 
 use crate::parser;
 use crate::ir;
-use crate::mine;
+use crate::extract;
 use differ::DiffItem;
 use impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedFn, ExtractedField};
 
@@ -65,23 +65,23 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
 
     // Auto-detect language by file presence
     let diffs = if impl_dir.join("models.ts").exists() {
-        let extracted = extract_mined(impl_dir, "models.ts", "operations.ts", mine::ts_extractor::extract)?;
+        let extracted = extract_mined(impl_dir, "models.ts", "operations.ts", extract::ts_extractor::extract)?;
         let validation_sources = collect_validation_sources_ts(impl_dir)?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("Models.kt").exists() {
-        let extracted = extract_mined(impl_dir, "Models.kt", "Operations.kt", mine::kotlin_extractor::extract)?;
+        let extracted = extract_mined(impl_dir, "Models.kt", "Operations.kt", extract::kotlin_extractor::extract)?;
         let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.kt")?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("Models.java").exists() {
-        let extracted = extract_mined(impl_dir, "Models.java", "Operations.java", mine::java_extractor::extract)?;
+        let extracted = extract_mined(impl_dir, "Models.java", "Operations.java", extract::java_extractor::extract)?;
         let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.java")?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("Models.swift").exists() {
-        let extracted = extract_mined(impl_dir, "Models.swift", "Operations.swift", mine::swift_extractor::extract)?;
+        let extracted = extract_mined(impl_dir, "Models.swift", "Operations.swift", extract::swift_extractor::extract)?;
         let validation_sources = collect_validation_sources_swift(impl_dir)?;
         differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.go").exists() {
-        let extracted = extract_mined(impl_dir, "models.go", "operations.go", mine::go_extractor::extract)?;
+        let extracted = extract_mined(impl_dir, "models.go", "operations.go", extract::go_extractor::extract)?;
         let validation_sources = collect_validation_sources_go(impl_dir)?;
         differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
@@ -89,7 +89,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
     } else {
         // Fallback: use mine to extract from any code in the directory
-        match mine::run(config.impl_dir.as_str(), None) {
+        match extract::run(config.impl_dir.as_str(), None) {
             Ok(mined) => {
                 let extracted = mined_to_extracted(&mined);
                 // Collect all source files as validation sources
@@ -98,7 +98,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
             }
             Err(_) => {
                 return Err(CheckError::ImplNotFound(
-                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, and general mine)".to_string()
+                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, and general extract)".to_string()
                 ));
             }
         }
@@ -183,14 +183,14 @@ fn collect_validation_sources_go(impl_dir: &Path) -> Result<Vec<String>, CheckEr
     Ok(sources)
 }
 
-/// Extract using a mine extractor function, then convert MinedModel → ExtractedImpl.
+/// Extract using an extractor function, then convert MinedModel → ExtractedImpl.
 fn extract_mined<F>(
     impl_dir: &Path,
     models_file: &str,
     ops_file: &str,
     extractor: F,
 ) -> Result<ExtractedImpl, CheckError>
-where F: Fn(&str) -> mine::MinedModel {
+where F: Fn(&str) -> extract::MinedModel {
     let models_src = std::fs::read_to_string(impl_dir.join(models_file))?;
     let ops_path = impl_dir.join(ops_file);
     let ops_src = if ops_path.exists() {
@@ -206,10 +206,10 @@ where F: Fn(&str) -> mine::MinedModel {
             name: s.name.clone(),
             fields: s.fields.iter().map(|f| {
                 let mult = match f.mult {
-                    mine::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
-                    mine::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
-                    mine::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
-                    mine::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
+                    extract::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
+                    extract::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
+                    extract::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    extract::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
                 };
                 ExtractedField {
                     name: f.name.clone(),
@@ -228,16 +228,16 @@ where F: Fn(&str) -> mine::MinedModel {
 
 /// Extract function names from operation files (language-agnostic patterns).
 /// Convert a MinedModel to ExtractedImpl for comparison with IR.
-fn mined_to_extracted(mined: &mine::MinedModel) -> ExtractedImpl {
+fn mined_to_extracted(mined: &extract::MinedModel) -> ExtractedImpl {
     let structs = mined.sigs.iter().map(|s| {
         ExtractedStruct {
             name: s.name.clone(),
             fields: s.fields.iter().map(|f| {
                 let mult = match f.mult {
-                    mine::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
-                    mine::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
-                    mine::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
-                    mine::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
+                    extract::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
+                    extract::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
+                    extract::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    extract::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
                 };
                 ExtractedField {
                     name: f.name.clone(),

@@ -2,7 +2,7 @@ use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::go;
 use oxidtr::backend::GeneratedFile;
-use oxidtr::mine::{go_extractor, MinedMultiplicity};
+use oxidtr::extract::{go_extractor, MinedMultiplicity};
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::backend::typescript::TsTestRunner;
@@ -13,12 +13,12 @@ fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
         .unwrap_or_else(|| panic!("file {path} not found"))
 }
 
-fn assert_sig_exists<'a>(sigs: &'a [oxidtr::mine::MinedSig], name: &str) -> &'a oxidtr::mine::MinedSig {
+fn assert_sig_exists<'a>(sigs: &'a [oxidtr::extract::MinedSig], name: &str) -> &'a oxidtr::extract::MinedSig {
     sigs.iter().find(|s| s.name == name)
         .unwrap_or_else(|| panic!("expected sig '{name}' not found"))
 }
 
-fn assert_field(sig: &oxidtr::mine::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
+fn assert_field(sig: &oxidtr::extract::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
     let f = sig.fields.iter().find(|f| f.name == name)
         .unwrap_or_else(|| panic!("field '{name}' not found in sig '{}'", sig.name));
     assert_eq!(f.mult, mult, "field {}.{name} multiplicity", sig.name);

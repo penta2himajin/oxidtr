@@ -34,8 +34,8 @@ mise exec rust -- cargo run -- generate models/oxidtr.als --target java --output
 mise exec rust -- cargo run -- generate models/oxidtr.als --target swift --output generated-swift
 mise exec rust -- cargo run -- generate models/oxidtr.als --target go --output generated-go
 mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated
-mise exec rust -- cargo run -- mine generated/
-mise exec rust -- cargo run -- mine src/ --lang rust
+mise exec rust -- cargo run -- extract generated/
+mise exec rust -- cargo run -- extract src/ --lang rust
 ```
 
 ## アーキテクチャ
@@ -64,7 +64,7 @@ src/
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
   check/            構造的整合性検証 (differ, impl_parser)
-  mine/             逆抽出 (rust/ts/kotlin/java/swift/schema extractors, renderer)
+  extract/          逆抽出 (rust/ts/kotlin/java/swift/schema extractors, renderer)
 ```
 
 ## 技術スタック
@@ -84,7 +84,7 @@ src/
 ## 開発ワークフロー
 
 - main直push方式（現状）
-- CIパス必須: `cargo test` + セルフホスト generate/check (全5言語) + mine round-trip
+- CIパス必須: `cargo test` + セルフホスト generate/check (全5言語) + extract round-trip
 - コミットは各ステップの動作確認後に行う
 - zero warnings ポリシー
 
@@ -105,8 +105,8 @@ oxidtr自身のドメインモデル `models/oxidtr.als` を使った検証:
 cargo run -- generate models/oxidtr.als --target rust --output generated
 cargo run -- check --model models/oxidtr.als --impl generated
 
-# mine round-trip
-cargo run -- mine generated/ -o /tmp/mined.als
+# extract round-trip
+cargo run -- extract generated/ -o /tmp/mined.als
 ```
 
 ### コミット規約
@@ -135,13 +135,13 @@ cargo run -- mine generated/ -o /tmp/mined.als
 
 | テストファイル | 対象 |
 |---|---|
-| `self_hosting` | パース・lower・生成・内容検査・mine sig coverage |
-| `self_host_guarantees` | fact→テスト変換・cross-testマーカー・mine/check整合性 |
+| `self_hosting` | パース・lower・生成・内容検査・extract sig coverage |
+| `self_host_guarantees` | fact→テスト変換・cross-testマーカー・extract/check整合性 |
 | `round_trip`, `round_trip_jvm`, `round_trip_swift`, `round_trip_go`, `round_trip_enriched` | ラウンドトリップ検証 |
 | `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
-| `mine_rust`, `mine_ts`, `mine_swift`, `mine_go` | mine抽出 (言語別) |
-| `mine_auto_detect`, `mine_multi_lang` | mine自動検出・multi-lang merge |
-| `mine_new_patterns`, `mine_general_patterns` | 一般コードパターン抽出 |
+| `extract_rust`, `extract_ts`, `extract_swift`, `extract_go` | extract抽出 (言語別) |
+| `extract_auto_detect`, `extract_multi_lang` | extract自動検出・multi-lang merge |
+| `extract_new_patterns`, `extract_general_patterns` | 一般コードパターン抽出 |
 
 ### 対象検証テスト (外部ツールチェイン依存)
 

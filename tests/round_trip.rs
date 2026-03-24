@@ -4,19 +4,19 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::{rust, typescript};
-use oxidtr::mine::{rust_extractor, ts_extractor, MinedMultiplicity};
+use oxidtr::extract::{rust_extractor, ts_extractor, MinedMultiplicity};
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::backend::typescript::TsTestRunner;
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn assert_sig_exists<'a>(sigs: &'a [oxidtr::mine::MinedSig], name: &str) -> &'a oxidtr::mine::MinedSig {
+fn assert_sig_exists<'a>(sigs: &'a [oxidtr::extract::MinedSig], name: &str) -> &'a oxidtr::extract::MinedSig {
     sigs.iter().find(|s| s.name == name)
         .unwrap_or_else(|| panic!("expected sig '{name}' not found in mined model"))
 }
 
-fn assert_field(sig: &oxidtr::mine::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
+fn assert_field(sig: &oxidtr::extract::MinedSig, name: &str, mult: MinedMultiplicity, target: &str) {
     let f = sig.fields.iter().find(|f| f.name == name)
         .unwrap_or_else(|| panic!("field '{name}' not found in sig '{}'", sig.name));
     assert_eq!(f.mult, mult, "field {}.{name} multiplicity", sig.name);
@@ -149,7 +149,7 @@ fn round_trip_rust_mine_renders_parseable_alloy() {
     let models_rs = files.iter().find(|f| f.path == "models.rs").unwrap();
 
     let mined = rust_extractor::extract(&models_rs.content);
-    let rendered = oxidtr::mine::renderer::render(&mined);
+    let rendered = oxidtr::extract::renderer::render(&mined);
 
     let reparsed = parser::parse(&rendered);
     assert!(reparsed.is_ok(), "mine → render → parse should succeed:\n{rendered}");
@@ -165,7 +165,7 @@ fn round_trip_ts_mine_renders_parseable_alloy() {
     let models_ts = files.iter().find(|f| f.path == "models.ts").unwrap();
 
     let mined = ts_extractor::extract(&models_ts.content);
-    let rendered = oxidtr::mine::renderer::render(&mined);
+    let rendered = oxidtr::extract::renderer::render(&mined);
 
     let reparsed = parser::parse(&rendered);
     assert!(reparsed.is_ok(), "mine → render → parse should succeed:\n{rendered}");

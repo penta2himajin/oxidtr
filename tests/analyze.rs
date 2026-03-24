@@ -278,7 +278,7 @@ pub struct User {
     pub name: String,
 }
 "#;
-    let mined = oxidtr::mine::rust_extractor::extract(src);
+    let mined = oxidtr::extract::rust_extractor::extract(src);
     assert_eq!(mined.sigs.len(), 2, "should only have Team and User sigs, not boundary/invalid");
 }
 

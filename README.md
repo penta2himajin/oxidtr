@@ -101,15 +101,15 @@ oxidtr check --model model.als --impl src/
 
 Detects: `MISSING_STRUCT`, `EXTRA_STRUCT`, `MISSING_FIELD`, `EXTRA_FIELD`, `MULTIPLICITY_MISMATCH`, `MISSING_FN`, `EXTRA_FN`. Non-zero exit on any diff — use as a CI gate.
 
-### `oxidtr mine`
+### `oxidtr extract`
 
 Extract Alloy model drafts from existing source code. Auto-detects language from file extension or directory contents.
 
 ```
-oxidtr mine generated/                    # directory → auto-detect, multi-lang merge
-oxidtr mine src/models.rs                 # single file → auto-detect from extension
-oxidtr mine src/ --lang rust              # explicit language override
-oxidtr mine src/ --conflict error         # fail on cross-language conflicts
+oxidtr extract generated/                    # directory → auto-detect, multi-lang merge
+oxidtr extract src/models.rs                 # single file → auto-detect from extension
+oxidtr extract src/ --lang rust              # explicit language override
+oxidtr extract src/ --conflict error         # fail on cross-language conflicts
 ```
 
 Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.swift` (Swift), `.go` (Go), `.json` (JSON Schema).
@@ -128,8 +128,8 @@ oxidtr's own domain is modeled in `models/oxidtr.als`. The full round-trip is ve
 
 ```
 oxidtr.als → generate (Rust/TS/Kotlin/Java/Swift/Go) → check → 0 diffs
-oxidtr.als → generate → mine → structural + expression match with original
-oxidtr.als → generate (all languages) → mine (multi-lang merge) → unified Alloy model
+oxidtr.als → generate → extract → structural + expression match with original
+oxidtr.als → generate (all languages) → extract (multi-lang merge) → unified Alloy model
 ```
 
 ## Development
@@ -138,7 +138,7 @@ oxidtr.als → generate (all languages) → mine (multi-lang merge) → unified 
 cargo test              # 395 tests
 cargo run -- generate models/oxidtr.als --target rust --output generated
 cargo run -- check --model models/oxidtr.als --impl generated
-cargo run -- mine generated/
+cargo run -- extract generated/
 ```
 
 ## Roadmap
@@ -150,14 +150,14 @@ cargo run -- mine generated/
 | 1 | Parser + IR + Rust backend (type generation) |
 | 2 | Expression translation + test generation + TC type inference + self-hosting |
 | 3 | check command + all 7 generate warnings |
-| 4 | TypeScript backend + mine (Rust/TS) + round-trip verification |
-| 5 | Kotlin/Java backends (shared JVM layer) + mine extractors |
-| 6 | Enrichment: fixtures, doc comments, JSON Schema, Bean Validation, schema mine |
+| 4 | TypeScript backend + extract (Rust/TS) + round-trip verification |
+| 5 | Kotlin/Java backends (shared JVM layer) + extract extractors |
+| 6 | Enrichment: fixtures, doc comments, JSON Schema, Bean Validation, schema extract |
 | 6+ | Full Alloy parser (integers, set ops, product, fun, multi-var quantifiers, disj) |
 | 6+ | Complete conversion: Set/Seq distinction, singletons, concrete values, maps, boundaries, @alloy lossless round-trip |
-| 6+ | Multi-language mine merge with conflict detection |
-| 7 | Swift backend (struct/enum, XCTest, allSatisfy/contains, mine extractor) |
-| 8 | Go backend (struct/iota/interface, testing, mine extractor) |
+| 6+ | Multi-language extract merge with conflict detection |
+| 7 | Swift backend (struct/enum, XCTest, allSatisfy/contains, extract extractor) |
+| 8 | Go backend (struct/iota/interface, testing, extract extractor) |
 
 ### Planned
 

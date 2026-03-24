@@ -433,7 +433,7 @@ fn java_product_field_to_map() {
 #[test]
 fn mine_kotlin_object_to_sig() {
     let src = "object Config\n";
-    let mined = oxidtr::mine::kotlin_extractor::extract(src);
+    let mined = oxidtr::extract::kotlin_extractor::extract(src);
     assert_eq!(mined.sigs.len(), 1, "should extract object as sig");
     assert_eq!(mined.sigs[0].name, "Config");
 }
@@ -441,7 +441,7 @@ fn mine_kotlin_object_to_sig() {
 #[test]
 fn mine_java_enum_instance() {
     let src = "public enum Config {\n    INSTANCE\n}\n";
-    let mined = oxidtr::mine::java_extractor::extract(src);
+    let mined = oxidtr::extract::java_extractor::extract(src);
     assert!(mined.sigs.iter().any(|s| s.name == "Config"),
         "should extract enum as sig: {:?}", mined.sigs);
 }
