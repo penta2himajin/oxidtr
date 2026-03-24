@@ -376,9 +376,55 @@ pub struct MinedModel {
     pub fact_candidates: Vec<MinedFactCandidate>,
 }
 
+/// Returns true if the name is a language primitive type that should not be
+/// added as a placeholder sig. Covers Rust, TypeScript, Kotlin, Java, Swift, and Go.
+pub fn is_language_primitive(name: &str) -> bool {
+    matches!(name,
+        // Rust
+        "String" | "str" | "bool" | "char"
+        | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "f32" | "f64" | "usize" | "isize"
+        // TypeScript
+        | "string" | "number" | "boolean" | "any" | "unknown"
+        | "never" | "void" | "null" | "undefined" | "object"
+        | "bigint"
+        // Kotlin / Java boxed
+        | "Int" | "Long" | "Short" | "Byte" | "Float" | "Double"
+        | "Boolean" | "Char" | "Unit" | "Nothing" | "Any"
+        | "Integer" | "Character"
+        // Java primitives (lowercase)
+        | "int" | "long" | "short" | "byte" | "float" | "double"
+        // Swift
+        | "Int8" | "Int16" | "Int32" | "Int64"
+        | "UInt" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+        | "Bool" | "Void" | "AnyObject" | "Never"
+        // Go
+        | "int8" | "int16" | "int32" | "int64"
+        | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
+        | "float32" | "float64" | "rune" | "error"
+        | "complex64" | "complex128"
+        // Go/TS shared (already covered above: any, bool, string, int, byte)
+    )
+}
+
+/// Returns true if the name looks like a generic type parameter.
+/// Matches single uppercase letters (T, S, K, V, ...) and all-uppercase 2-char names (IO, ID, ...).
+/// Mixed-case 2-char names (Go, Of, Io) are treated as user-defined types.
+pub fn is_type_parameter(name: &str) -> bool {
+    let len = name.len();
+    if len == 1 {
+        name.chars().next().map_or(false, |c| c.is_ascii_uppercase())
+    } else if len == 2 {
+        name.chars().all(|c| c.is_ascii_uppercase())
+    } else {
+        false
+    }
+}
+
 /// Add placeholder sigs for types referenced in fields but not defined as sigs.
 /// This ensures the mined .als output is self-contained valid Alloy.
-/// Only adds sigs for valid Alloy identifiers (no qualified paths, generics, or tuples).
+/// Filters out language primitives and generic type parameters.
 pub fn resolve_external_types(model: &mut MinedModel) {
     let defined: std::collections::HashSet<String> = model.sigs.iter()
         .map(|s| s.name.clone())
@@ -387,7 +433,11 @@ pub fn resolve_external_types(model: &mut MinedModel) {
     let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
     for sig in &model.sigs {
         for field in &sig.fields {
-            if !defined.contains(&field.target) && is_valid_sig_name(&field.target) {
+            if !defined.contains(&field.target)
+                && is_valid_sig_name(&field.target)
+                && !is_language_primitive(&field.target)
+                && !is_type_parameter(&field.target)
+            {
                 referenced.insert(field.target.clone());
             }
         }

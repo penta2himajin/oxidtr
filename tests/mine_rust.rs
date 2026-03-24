@@ -1,6 +1,6 @@
 use oxidtr::mine::rust_extractor;
 use oxidtr::mine::renderer;
-use oxidtr::mine::{MinedMultiplicity, Confidence, resolve_external_types};
+use oxidtr::mine::{MinedMultiplicity, Confidence, resolve_external_types, is_language_primitive, is_type_parameter};
 
 #[test]
 fn mine_rust_struct_to_sig() {
@@ -191,6 +191,7 @@ pub struct User {
     pub name: String,
     pub age: usize,
     pub group: Group,
+    pub config: AppConfig,
 }
 
 pub struct Group {
@@ -202,17 +203,20 @@ pub struct Group {
 
     let sig_names: Vec<&str> = mined.sigs.iter().map(|s| s.name.as_str()).collect();
 
-    // String and usize are referenced but not defined — should be added as placeholders
-    assert!(sig_names.contains(&"String"), "String should be added as placeholder sig");
-    assert!(sig_names.contains(&"usize"), "usize should be added as placeholder sig");
+    // String and usize are language primitives — should NOT be added
+    assert!(!sig_names.contains(&"String"), "String is a primitive, should not be added");
+    assert!(!sig_names.contains(&"usize"), "usize is a primitive, should not be added");
+
+    // AppConfig is a user-defined type not in this file — should be added as placeholder
+    assert!(sig_names.contains(&"AppConfig"), "AppConfig should be added as placeholder sig");
 
     // Group IS defined — should NOT be duplicated
     assert_eq!(sig_names.iter().filter(|&&n| n == "Group").count(), 1);
 
     // Placeholder sigs should have no fields and not be abstract
-    let string_sig = mined.sigs.iter().find(|s| s.name == "String").unwrap();
-    assert!(string_sig.fields.is_empty());
-    assert!(!string_sig.is_abstract);
+    let config_sig = mined.sigs.iter().find(|s| s.name == "AppConfig").unwrap();
+    assert!(config_sig.fields.is_empty());
+    assert!(!config_sig.is_abstract);
 }
 
 #[test]
@@ -231,18 +235,149 @@ pub struct Node {
 }
 
 #[test]
-fn rendered_als_is_self_contained_after_resolve() {
+fn rendered_als_excludes_primitives_after_resolve() {
     let src = r#"
 pub struct Config {
     pub name: String,
     pub count: usize,
+    pub owner: Owner,
 }
 "#;
     let mut mined = rust_extractor::extract(src);
     resolve_external_types(&mut mined);
     let rendered = renderer::render(&mined);
 
-    // The rendered .als should contain sig definitions for String and usize
-    assert!(rendered.contains("sig String {"), "rendered should define sig String");
-    assert!(rendered.contains("sig usize {"), "rendered should define sig usize");
+    // Primitives should NOT appear as sig definitions
+    assert!(!rendered.contains("sig String {"), "rendered should NOT define sig String");
+    assert!(!rendered.contains("sig usize {"), "rendered should NOT define sig usize");
+
+    // User-defined external types should still be added
+    assert!(rendered.contains("sig Owner {"), "rendered should define sig Owner");
+}
+
+#[test]
+fn is_language_primitive_covers_all_languages() {
+    // Rust primitives
+    assert!(is_language_primitive("String"));
+    assert!(is_language_primitive("bool"));
+    assert!(is_language_primitive("i32"));
+    assert!(is_language_primitive("u64"));
+    assert!(is_language_primitive("usize"));
+    assert!(is_language_primitive("isize"));
+    assert!(is_language_primitive("f64"));
+    assert!(is_language_primitive("char"));
+    assert!(is_language_primitive("str"));
+
+    // TypeScript primitives
+    assert!(is_language_primitive("string"));
+    assert!(is_language_primitive("number"));
+    assert!(is_language_primitive("boolean"));
+    assert!(is_language_primitive("any"));
+    assert!(is_language_primitive("unknown"));
+    assert!(is_language_primitive("never"));
+    assert!(is_language_primitive("void"));
+    assert!(is_language_primitive("null"));
+    assert!(is_language_primitive("undefined"));
+    assert!(is_language_primitive("object"));
+    assert!(is_language_primitive("bigint"));
+
+    // Kotlin/Java primitives
+    assert!(is_language_primitive("Int"));
+    assert!(is_language_primitive("Long"));
+    assert!(is_language_primitive("Short"));
+    assert!(is_language_primitive("Byte"));
+    assert!(is_language_primitive("Float"));
+    assert!(is_language_primitive("Double"));
+    assert!(is_language_primitive("Boolean"));
+    assert!(is_language_primitive("Unit"));
+    assert!(is_language_primitive("Nothing"));
+    assert!(is_language_primitive("Any"));
+    assert!(is_language_primitive("Integer"));
+    assert!(is_language_primitive("Character"));
+
+    // Swift primitives
+    assert!(is_language_primitive("Int8"));
+    assert!(is_language_primitive("UInt"));
+    assert!(is_language_primitive("Bool"));
+
+    // Go primitives
+    assert!(is_language_primitive("int"));
+    assert!(is_language_primitive("int64"));
+    assert!(is_language_primitive("uint"));
+    assert!(is_language_primitive("float32"));
+    assert!(is_language_primitive("float64"));
+    assert!(is_language_primitive("byte"));
+    assert!(is_language_primitive("rune"));
+    assert!(is_language_primitive("error"));
+    assert!(is_language_primitive("complex64"));
+    assert!(is_language_primitive("complex128"));
+
+    // User-defined types should NOT be primitives
+    assert!(!is_language_primitive("User"));
+    assert!(!is_language_primitive("AppConfig"));
+    assert!(!is_language_primitive("MyService"));
+}
+
+#[test]
+fn is_type_parameter_detects_generic_params() {
+    // Single uppercase letter — typical type parameters
+    assert!(is_type_parameter("T"));
+    assert!(is_type_parameter("S"));
+    assert!(is_type_parameter("U"));
+    assert!(is_type_parameter("K"));
+    assert!(is_type_parameter("V"));
+    assert!(is_type_parameter("E"));
+    assert!(is_type_parameter("R"));
+
+    // All-uppercase 2 chars — likely type parameters (IO, ID, etc.)
+    assert!(is_type_parameter("IO"));
+    assert!(is_type_parameter("ID"));
+
+    // Mixed case 2 chars — likely user-defined types, NOT type params
+    assert!(!is_type_parameter("Go"));
+    assert!(!is_type_parameter("Of"));
+    assert!(!is_type_parameter("Io"));
+
+    // Longer names — NOT type parameters
+    assert!(!is_type_parameter("User"));
+    assert!(!is_type_parameter("ABC"));
+    assert!(!is_type_parameter("Config"));
+
+    // Lowercase single letter — not a conventional type param
+    assert!(!is_type_parameter("t"));
+    assert!(!is_type_parameter("a"));
+}
+
+#[test]
+fn resolve_external_types_filters_type_parameters() {
+    // Simulate what happens when mine extracts from generic code:
+    // fields with target "T" or "S" should not become placeholder sigs
+    let mut model = oxidtr::mine::MinedModel {
+        sigs: vec![
+            oxidtr::mine::MinedSig {
+                name: "Container".to_string(),
+                fields: vec![
+                    oxidtr::mine::MinedField {
+                        name: "value".to_string(),
+                        target: "T".to_string(),
+                        mult: MinedMultiplicity::One,
+                    },
+                    oxidtr::mine::MinedField {
+                        name: "handler".to_string(),
+                        target: "Handler".to_string(),
+                        mult: MinedMultiplicity::One,
+                    },
+                ],
+                is_abstract: false,
+                parent: None,
+                source_location: "test".to_string(),
+            },
+        ],
+        fact_candidates: vec![],
+    };
+    resolve_external_types(&mut model);
+
+    let sig_names: Vec<&str> = model.sigs.iter().map(|s| s.name.as_str()).collect();
+    assert!(!sig_names.contains(&"T"), "T is a type parameter, should not be added");
+    assert!(sig_names.contains(&"Handler"), "Handler should be added as placeholder");
 }
