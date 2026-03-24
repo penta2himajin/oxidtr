@@ -320,6 +320,12 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
         });
     }
 
+    // Skip callback/function types: `(args) => ReturnType`
+    // These are not data fields — they are method signatures embedded as properties
+    if is_callback_type(type_str) {
+        return None;
+    }
+
     let raw_union = detect_union_type(type_str);
     let (mult, target) = ts_type_to_mult(type_str, optional);
     Some(MinedField { name, mult, target, raw_union_type: raw_union })
@@ -372,7 +378,25 @@ fn detect_union_type(ts_type: &str) -> Option<String> {
     // Must contain " | " but not be a null-union (already handled as lone)
     if !t.contains(" | ") { return None; }
     if t.contains("null") { return None; }
+    // Skip callback types that happen to contain "|" inside parameter lists
+    if is_callback_type(t) { return None; }
     Some(t.to_string())
+}
+
+/// Detect callback/function type signatures: `(args) => ReturnType`
+/// Also handles union of callback + other: `string | (item: S) => T`
+fn is_callback_type(ts_type: &str) -> bool {
+    let t = ts_type.trim();
+    // Direct callback: starts with ( and contains =>
+    if t.starts_with('(') && t.contains("=>") { return true; }
+    // Union containing a callback: any variant starts with (
+    if t.contains(" | ") {
+        for part in t.split(" | ") {
+            let p = part.trim();
+            if p.starts_with('(') && p.contains("=>") { return true; }
+        }
+    }
+    false
 }
 
 fn strip_wrapper_ts<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {

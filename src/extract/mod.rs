@@ -290,9 +290,35 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
         let content = std::fs::read_to_string(file)
             .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let mined = extract_with_lang(&content, lang)?;
-        merged.sigs.extend(mined.sigs);
+        // Dedup: merge same-name sigs (supplement missing fields, prefer more complete)
+        for sig in mined.sigs {
+            if let Some(existing) = merged.sigs.iter_mut().find(|s| s.name == sig.name) {
+                // Supplement missing fields from the new source
+                for f in &sig.fields {
+                    if !existing.fields.iter().any(|ef| ef.name == f.name) {
+                        existing.fields.push(f.clone());
+                    }
+                }
+                // Prefer abstract if either says abstract
+                if sig.is_abstract { existing.is_abstract = true; }
+                // Prefer parent if either provides one
+                if existing.parent.is_none() && sig.parent.is_some() {
+                    existing.parent = sig.parent.clone();
+                }
+                // Prefer intersection_of if either provides one
+                if existing.intersection_of.is_empty() && !sig.intersection_of.is_empty() {
+                    existing.intersection_of = sig.intersection_of.clone();
+                }
+            } else {
+                merged.sigs.push(sig);
+            }
+        }
         merged.fact_candidates.extend(mined.fact_candidates);
     }
+
+    // Dedup fact candidates
+    merged.fact_candidates.sort_by(|a, b| a.alloy_text.cmp(&b.alloy_text));
+    merged.fact_candidates.dedup_by(|a, b| a.alloy_text == b.alloy_text);
 
     Ok(merged)
 }
