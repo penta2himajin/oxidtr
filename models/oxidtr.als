@@ -14,6 +14,7 @@ one sig Seq  extends Multiplicity {}
 
 sig FieldDecl {
   fname:  one SigDecl,
+  isVar:  lone FieldDecl, -- Alloy 6: mutable field marker (self-ref = true)
   mult:   one Multiplicity,
   target: one SigDecl
 }
@@ -158,6 +159,10 @@ fact NoSelfAbstract {
   no s: SigDecl | s in s.isAbstract
 }
 
+fact NoSelfRefIsVar {
+  no f: FieldDecl | f in f.isVar
+}
+
 fact FieldOwnershipBidirectional {
   all f: FieldDecl | all s: SigDecl | f in s.fields implies f.fname = s
 }
@@ -194,6 +199,7 @@ sig StructureNode {
 }
 
 sig IRField {
+  irIsVar:  lone IRField, -- Alloy 6: mutable field marker
   irMult:   one Multiplicity,
   irTarget: one StructureNode
 }
@@ -304,6 +310,10 @@ fact IRFieldTargetRelatedToFields {
 
 fact IRFieldOwnership {
   all f: IRField | some sn: StructureNode | f in sn.irFields
+}
+
+fact NoSelfRefIrIsVar {
+  no f: IRField | f in f.irIsVar
 }
 
 fact UniqueStructurePerSig {

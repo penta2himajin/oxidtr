@@ -92,6 +92,7 @@ fn collect_struct_fields(
 }
 
 fn parse_swift_property(line: &str) -> Option<MinedField> {
+    let is_var = line.starts_with("var ");
     let rest = line.strip_prefix("let ")
         .or_else(|| line.strip_prefix("var "))?;
     let colon = rest.find(':')?;
@@ -113,7 +114,7 @@ fn parse_swift_property(line: &str) -> Option<MinedField> {
     };
 
     let (mult, target) = swift_type_to_mult(type_str);
-    Some(MinedField { name, mult, target, raw_union_type: None })
+    Some(MinedField { name, is_var, mult, target, raw_union_type: None })
 }
 
 fn swift_type_to_mult(swift_type: &str) -> (MinedMultiplicity, String) {
@@ -214,7 +215,7 @@ fn extract_case_params(line: &str) -> Vec<MinedField> {
             if name.is_empty() { return None; }
             let type_str = p[colon + 1..].trim();
             let (mult, target) = swift_type_to_mult(type_str);
-            Some(MinedField { name, mult, target, raw_union_type: None })
+            Some(MinedField { name, is_var: false, mult, target, raw_union_type: None })
         })
         .collect()
 }

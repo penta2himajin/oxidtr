@@ -196,6 +196,9 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         annotations.push("/* Consider using Set<T> for uniqueness (disj constraint) */".to_string());
                     }
                 }
+                if f.is_var {
+                    annotations.push("/* @alloy: var */".to_string());
+                }
                 let annotation_str = if annotations.is_empty() {
                     String::new()
                 } else {
@@ -472,6 +475,25 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     // Invariant tests — inline constraint expressions
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
+
+        // Alloy 6: temporal facts with prime → generate transition test
+        if analyze::expr_contains_prime(&constraint.expr) {
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
+
+            writeln!(out, "    /** @temporal Transition constraint: {fact_name} */").unwrap();
+            writeln!(out, "    /** Verifies state-transition invariant (prime = next-state). */").unwrap();
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    void transition_{}() {{", fact_name).unwrap();
+            for (pname, tname) in &params {
+                writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+            }
+            writeln!(out, "        assertTrue({body});").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 

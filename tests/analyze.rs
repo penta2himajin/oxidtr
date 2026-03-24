@@ -539,6 +539,57 @@ fn ts_disj_suggest_set_comment() {
 }
 
 #[test]
+fn describe_temporal_unary_uses_operator_name() {
+    let model = parser::parse(
+        "sig S { var x: one S }\nfact Inv { always all s: S | s.x = s.x }"
+    ).unwrap();
+    let desc = analyze::describe_expr(&model.facts[0].body);
+    assert!(desc.contains("always"), "expected 'always' in description, got: {desc}");
+    assert!(!desc.ends_with("'"), "should not end with prime, got: {desc}");
+}
+
+#[test]
+fn describe_temporal_eventually() {
+    let model = parser::parse(
+        "sig S { var x: one S }\nfact Reach { eventually all s: S | s.x = s.x }"
+    ).unwrap();
+    let desc = analyze::describe_expr(&model.facts[0].body);
+    assert!(desc.contains("eventually"), "expected 'eventually' in description, got: {desc}");
+}
+
+#[test]
+fn describe_prime_expr() {
+    let model = parser::parse(
+        "sig S { var x: one S }\nfact F { all s: S | s.x' = s.x }"
+    ).unwrap();
+    let desc = analyze::describe_expr(&model.facts[0].body);
+    assert!(desc.contains("'"), "expected prime in description, got: {desc}");
+}
+
+#[test]
+fn analyze_always_unwraps_inner_constraint() {
+    // `always all s: S | not s in s.next` should still detect NoSelfRef
+    let infos = analyze_from(
+        "sig S { var next: lone S }\nfact NoSelf { always all s: S | not s in s.next }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::NoSelfRef { sig_name, field_name }
+        if sig_name == "S" && field_name == "next"
+    )), "should detect NoSelfRef under always wrapper: {infos:?}");
+}
+
+#[test]
+fn analyze_eventually_produces_named_constraint() {
+    let infos = analyze_from(
+        "sig S { var x: one S }\nfact Reach { eventually all s: S | s.x = s.x }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Named { name, description }
+        if name == "Reach" && description.contains("eventually")
+    )), "should produce Named constraint with 'eventually' in description: {infos:?}");
+}
+
+#[test]
 fn schema_disj_seq_already_has_unique_items() {
     // Verify existing behavior: disj on seq field → uniqueItems: true in schema
     let model = parser::parse(

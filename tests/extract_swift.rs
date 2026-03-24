@@ -132,3 +132,21 @@ fn swift_reverse_translate_basic() {
         Some("x in items".to_string()),
     );
 }
+
+// ── Alloy 6: var field extraction ───────────────────────────────────────────
+
+#[test]
+fn mine_swift_var_field_from_keyword() {
+    let src = r#"
+struct Account: Equatable {
+    var balance: Int
+    let name: String
+}
+"#;
+    let mined = swift_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (uses 'var' keyword)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var (uses 'let')");
+}

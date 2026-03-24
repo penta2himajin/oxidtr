@@ -228,14 +228,15 @@ fn parse_kt_param(param: &str) -> Option<MinedField> {
     // Strip @Annotation(...) patterns (e.g., @Size(min = 0, max = 0))
     let cleaned = strip_annotations(&cleaned);
     let param = cleaned.trim();
-    // "val name: Type" or "val name: Type?"
+    // "val name: Type" or "var name: Type?"
+    let is_var = param.starts_with("var ");
     let rest = param.strip_prefix("val ").or_else(|| param.strip_prefix("var "))?;
     let colon = rest.find(':')?;
     let name = rest[..colon].trim().to_string();
     if name.is_empty() { return None; }
     let type_str = rest[colon + 1..].trim();
     let (mult, target) = kt_type_to_mult(type_str);
-    Some(MinedField { name, mult, target, raw_union_type: None })
+    Some(MinedField { name, is_var, mult, target, raw_union_type: None })
 }
 
 fn strip_annotations(s: &str) -> String {

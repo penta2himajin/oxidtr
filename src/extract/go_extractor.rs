@@ -200,6 +200,7 @@ fn collect_go_struct_fields(
 ) -> Vec<MinedField> {
     let mut fields = Vec::new();
     let mut depth = 1usize;
+    let mut prev_line_has_var = false;
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
@@ -209,8 +210,16 @@ fn collect_go_struct_fields(
         if depth == 0 { break; }
 
         // "FieldName Type" — Go struct field
-        if let Some(field) = parse_go_field(trimmed) {
+        if let Some(mut field) = parse_go_field(trimmed) {
+            if prev_line_has_var {
+                field.is_var = true;
+            }
             fields.push(field);
+            prev_line_has_var = false;
+        } else if trimmed.contains("@alloy: var") {
+            prev_line_has_var = true;
+        } else {
+            prev_line_has_var = false;
         }
     }
 
@@ -236,7 +245,7 @@ fn parse_go_field(line: &str) -> Option<MinedField> {
     let (mult, target) = go_type_to_mult(type_str);
     // Convert Go field name (PascalCase) to camelCase for Alloy
     let field_name = to_camel_case(name);
-    Some(MinedField { name: field_name, mult, target, raw_union_type: None })
+    Some(MinedField { name: field_name, is_var: false, mult, target, raw_union_type: None })
 }
 
 fn go_type_to_mult(go_type: &str) -> (MinedMultiplicity, String) {

@@ -377,7 +377,6 @@ sig TransformProps extends BaseProps {}
 sig DisplayProps extends BaseProps {}
 "#;
     // Manually construct IR with intersection_of
-    use oxidtr::ir::nodes::StructureNode;
     use oxidtr::parser::ast::SigMultiplicity;
     let model4 = oxidtr::parser::parse(als).expect("parse");
     let mut ir = oxidtr::ir::lower(&model4).expect("lower");
@@ -394,4 +393,23 @@ sig DisplayProps extends BaseProps {}
     let models = files.iter().find(|f| f.path == "models.ts").expect("models.ts");
     assert!(models.content.contains("export type AllProps = TransformProps & DisplayProps"),
         "AllProps should be generated as intersection type alias, got:\n{}", models.content);
+}
+
+// ── Alloy 6: var field extraction ───────────────────────────────────────────
+
+#[test]
+fn mine_ts_var_field_from_annotation() {
+    let src = r#"
+export interface Account {
+  // @alloy: var
+  balance: number;
+  name: string;
+}
+"#;
+    let mined = oxidtr::extract::ts_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (has @alloy: var annotation)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var");
 }

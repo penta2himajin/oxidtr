@@ -123,12 +123,12 @@ cargo run -- extract generated/ -o /tmp/mined.als
 |---|---|
 | `parser_sig`, `parser_expr` | Alloyパーサー |
 | `lowering` | AST→IR変換 |
-| `expr_translator` | 式変換 (Rust) |
+| `expr_translator` | 式変換 (Rust, prime/temporal含む) |
 | `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go` | 各言語コード生成 |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
-| `check` | 構造的整合性検証 |
-| `analyze`, `enrich` | 制約分析・enrichment |
+| `check` | 構造的整合性検証 (var field差分検出含む) |
+| `analyze`, `enrich` | 制約分析・enrichment (temporal constraint分類含む) |
 | `guarantee_differentiation` | 言語間テスト生成差異化 |
 
 ### セルフホスト検証 (`cargo test` で常に実行、外部依存なし)
@@ -161,7 +161,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Phase 8: Go backend ✅ (完了)
 - Phase 9-10: C# / Lean backends
 - Phase 11: Alloy 6 時相パーサー ✅ (完了: var field, prime operator, temporal unary operators)
-- Phase 12-13: Alloy 6 時相コード生成 (var/always/eventually → backend emit)
+- Phase 12-13: Alloy 6 時相コード生成 ✅ (完了: prime式変換, temporal invariant/transition validators, var field check差分検出)
 - explore: Alloyインスタンス異常パターン検出
 - cover: カバレッジ×fact直交テスト生成
 
@@ -184,8 +184,14 @@ cargo run -- extract generated/ -o /tmp/mined.als
 **パーサー拡張済み・活用余地あり:**
 - `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。solidionのドメインモデルでimpliesパターンの記述が可能に
 
+**Alloy 6 時相式（実装済み）:**
+- Prime (`x'`): 全バックエンドで `next_x` パラメータ付き遷移関数として変換
+- TemporalInvariant (`always`): invariant validator関数を生成（全6言語）
+- TemporalTransition (`eventually`/`after`/`before`): transition validator関数を生成（全6言語）
+- var field: check差分でis_var不整合を検出 (VarMismatch)
+
 **未到達の領域:**
-- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: Alloy 6時相拡張のパーサーは実装済み、コード生成への接続が残課題
+- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: 時相コード生成の基盤は完了、より高度な状態遷移ロジックへの拡張が残課題
 - Lean backend: fact本体式を定理として完全変換する最終目標。「制約を実行時に検証する」から「制約を証明する」への移行
 
 ## Alloyモデルへのフィードバック

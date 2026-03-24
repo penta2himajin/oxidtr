@@ -189,6 +189,7 @@ fn collect_interface_fields(
 ) -> Vec<MinedField> {
     let mut fields = Vec::new();
     let mut depth = 1usize;
+    let mut prev_line_has_var = false;
     // Track inline object depth separately to avoid mis-counting type annotations.
     // When depth==1 and we encounter a field line whose type part has unbalanced
     // braces, we accumulate them here and skip those lines for field parsing.
@@ -270,8 +271,16 @@ fn collect_interface_fields(
         if depth == 0 { break; }
 
         if depth_before == 1 && inline_depth == 0 {
-            if let Some(field) = parse_ts_field(trimmed) {
+            if trimmed.contains("@alloy: var") {
+                prev_line_has_var = true;
+            } else if let Some(mut field) = parse_ts_field(trimmed) {
+                if prev_line_has_var {
+                    field.is_var = true;
+                }
                 fields.push(field);
+                prev_line_has_var = false;
+            } else {
+                prev_line_has_var = false;
             }
         }
     }
@@ -314,6 +323,7 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     if type_str.starts_with('"') && type_str.ends_with('"') && !type_str.contains(" | ") {
         return Some(MinedField {
             name,
+            is_var: false,
             mult: MinedMultiplicity::One,
             target: type_str.trim_matches('"').to_string(),
             raw_union_type: None,
@@ -328,7 +338,7 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
 
     let raw_union = detect_union_type(type_str);
     let (mult, target) = ts_type_to_mult(type_str, optional);
-    Some(MinedField { name, mult, target, raw_union_type: raw_union })
+    Some(MinedField { name, is_var: false, mult, target, raw_union_type: raw_union })
 }
 
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {

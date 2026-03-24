@@ -379,6 +379,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
         if let Some(target) = extract_ref_from(body) {
             return Some(MinedField {
                 name: name.to_string(),
+                is_var: false,
                 mult: MinedMultiplicity::Lone,
                 target,
                 raw_union_type: None,
@@ -398,6 +399,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
                 };
                 return Some(MinedField {
                     name: name.to_string(),
+                    is_var: false,
                     mult,
                     target,
                     raw_union_type: None,
@@ -410,6 +412,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
     if let Some(target) = extract_ref_from(body) {
         return Some(MinedField {
             name: name.to_string(),
+            is_var: false,
             mult: MinedMultiplicity::One,
             target,
             raw_union_type: None,

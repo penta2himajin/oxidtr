@@ -201,9 +201,19 @@ fn translate_inner(
             }
         }
 
-        // TODO: Alloy 6 temporal — translate inner as-is for now
-        Expr::Prime(inner) => format!("/* next-state */ {}", ti(inner, false)),
-        Expr::TemporalUnary { expr: inner, .. } => format!("/* temporal */ {}", ti(inner, false)),
+        // Alloy 6: prime operator — next-state reference
+        Expr::Prime(inner) => {
+            match inner.as_ref() {
+                Expr::FieldAccess { base, field } => {
+                    let base_str = ti(base, false);
+                    format!("{base_str}.Next{}", capitalize(field))
+                }
+                Expr::VarRef(name) => format!("next{}", capitalize(name)),
+                _ => format!("{}.Next()", ti(inner, false)),
+            }
+        }
+        // Alloy 6: temporal unary operators — translate inner expression
+        Expr::TemporalUnary { expr: inner, .. } => ti(inner, false),
     };
 
     if parens_if_complex && needs_parens(expr) {

@@ -8,6 +8,7 @@ pub struct ExtractedField {
     pub name: String,
     pub mult: Multiplicity,
     pub target: String,
+    pub is_var: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,14 +77,22 @@ fn parse_type_decl(line: &str, prefix: &str) -> Option<String> {
 fn collect_fields(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -> Vec<ExtractedField> {
     let mut fields = Vec::new();
     let mut depth = 1usize;
+    let mut pending_var = false;
     for line in lines.by_ref() {
         let trimmed = line.trim();
         for ch in trimmed.chars() {
             match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
         }
         if depth == 0 { break; }
-        if let Some(field) = parse_field_line(trimmed) {
+        // Detect @alloy: var annotation on comment lines
+        if trimmed.contains("@alloy: var") {
+            pending_var = true;
+            continue;
+        }
+        if let Some(mut field) = parse_field_line(trimmed) {
+            field.is_var = pending_var;
             fields.push(field);
+            pending_var = false;
         }
     }
     fields
@@ -163,7 +172,7 @@ fn parse_variant_field_line(line: &str) -> Option<ExtractedField> {
     let type_str = trimmed[colon + 1..].trim().to_string();
     if type_str.is_empty() { return None; }
     let (mult, target) = type_to_mult(&type_str);
-    Some(ExtractedField { name, mult, target })
+    Some(ExtractedField { name, mult, target, is_var: false })
 }
 
 fn parse_field_line(line: &str) -> Option<ExtractedField> {
@@ -174,7 +183,7 @@ fn parse_field_line(line: &str) -> Option<ExtractedField> {
     let type_str = rest[colon + 1..].trim().trim_end_matches(',').trim().to_string();
     if type_str.is_empty() { return None; }
     let (mult, target) = type_to_mult(&type_str);
-    Some(ExtractedField { name, mult, target })
+    Some(ExtractedField { name, mult, target, is_var: false })
 }
 
 fn extract_fn_name(line: &str) -> Option<String> {

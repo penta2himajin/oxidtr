@@ -445,3 +445,51 @@ fn mine_java_enum_instance() {
     assert!(mined.sigs.iter().any(|s| s.name == "Config"),
         "should extract enum as sig: {:?}", mined.sigs);
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn kt_var_field_uses_var_keyword() {
+    let files = generate_kt(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "Models.kt");
+    assert!(models.contains("var balance:"),
+        "var field should use 'var' instead of 'val' in Kotlin:\n{models}");
+    assert!(!models.contains("val balance:"),
+        "var field should NOT use 'val' in Kotlin:\n{models}");
+}
+
+#[test]
+fn java_var_field_annotated() {
+    let files = generate_java(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "Models.java");
+    assert!(models.contains("@alloy: var"),
+        "var field should have @alloy: var annotation in Java:\n{models}");
+}
+
+// ── Alloy 6: var field extraction ───────────────────────────────────────────
+
+#[test]
+fn mine_kt_var_field_from_keyword() {
+    let src = "data class Account(\n    var balance: Int,\n    val name: String\n)";
+    let mined = oxidtr::extract::kotlin_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (uses 'var' keyword)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var (uses 'val')");
+}
+
+#[test]
+fn mine_java_var_field_from_annotation() {
+    let src = "record Account(/* @alloy: var */ int balance, String name) {}";
+    let mined = oxidtr::extract::java_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (has @alloy: var annotation)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var");
+}

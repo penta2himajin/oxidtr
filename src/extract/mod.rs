@@ -375,6 +375,7 @@ pub enum MinedMultiplicity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MinedField {
     pub name: String,
+    pub is_var: bool, // Alloy 6: mutable field
     pub mult: MinedMultiplicity,
     pub target: String,
     /// Raw union type string preserved from source (e.g. "number | string").

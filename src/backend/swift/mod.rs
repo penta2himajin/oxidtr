@@ -182,7 +182,8 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
                 }
             }
 
-            writeln!(out, "    let {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
+            let let_or_var = if f.is_var { "var" } else { "let" };
+            writeln!(out, "    {let_or_var} {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();
     }
@@ -396,6 +397,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+
+        // Alloy 6: temporal facts with prime → generate transition test
+        if analyze::expr_contains_prime(&constraint.expr) {
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+
+            writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
+            writeln!(out, "    /// Verifies state-transition invariant (prime = next-state).").unwrap();
+            writeln!(out, "    func test_transition_{}() {{", fact_name).unwrap();
+            for (pname, tname) in &params {
+                writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
+            }
+            writeln!(out, "        XCTAssertTrue({body})").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
