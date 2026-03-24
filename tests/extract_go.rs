@@ -140,3 +140,22 @@ fn go_reverse_translate_basic() {
         Some("x in items".to_string()),
     );
 }
+
+// ── Alloy 6: var field extraction ───────────────────────────────────────────
+
+#[test]
+fn mine_go_var_field_from_annotation() {
+    let src = r#"
+type Account struct {
+	// @alloy: var
+	Balance Int
+	Name    String
+}
+"#;
+    let mined = go_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "Balance should be var (has @alloy: var annotation)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "Name should not be var");
+}

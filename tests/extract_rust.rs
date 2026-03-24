@@ -363,12 +363,14 @@ fn resolve_external_types_filters_type_parameters() {
                 fields: vec![
                     oxidtr::extract::MinedField {
                         name: "value".to_string(),
+                        is_var: false,
                         target: "T".to_string(),
                         mult: MinedMultiplicity::One,
                         raw_union_type: None,
                     },
                     oxidtr::extract::MinedField {
                         name: "handler".to_string(),
+                        is_var: false,
                         target: "Handler".to_string(),
                         mult: MinedMultiplicity::One,
                         raw_union_type: None,
@@ -387,4 +389,40 @@ fn resolve_external_types_filters_type_parameters() {
     let sig_names: Vec<&str> = model.sigs.iter().map(|s| s.name.as_str()).collect();
     assert!(!sig_names.contains(&"T"), "T is a type parameter, should not be added");
     assert!(sig_names.contains(&"Handler"), "Handler should be added as placeholder");
+}
+
+// ── Alloy 6: var field extraction ───────────────────────────────────────────
+
+#[test]
+fn mine_rust_var_field_from_annotation() {
+    let src = r#"
+pub struct Account {
+    /// @alloy: var
+    pub balance: i32,
+    pub name: String,
+}
+"#;
+    let mined = rust_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (has @alloy: var annotation)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var");
+}
+
+#[test]
+fn mine_rust_var_field_renders_with_var() {
+    let src = r#"
+pub struct Account {
+    /// @alloy: var
+    pub balance: i32,
+    pub name: String,
+}
+"#;
+    let mined = rust_extractor::extract(src);
+    let rendered = renderer::render(&mined);
+    assert!(rendered.contains("var balance:"),
+        "rendered should contain 'var balance:':\n{rendered}");
+    assert!(!rendered.contains("var name:"),
+        "name should not have var prefix:\n{rendered}");
 }

@@ -58,11 +58,12 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
         let comma = if i < sig.fields.len() - 1 { "," } else { "" };
         // Use raw_union_type as a comment annotation; target holds the first variant
         // for Alloy compatibility (Alloy cannot express field-level union types)
+        let var_prefix = if f.is_var { "var " } else { "" };
         if let Some(raw) = &f.raw_union_type {
             let first_type = raw.split(" | ").next().unwrap_or(&f.target).trim();
-            writeln!(out, "  {}: {mult} {}{comma} -- union: {raw}", f.name, first_type).unwrap();
+            writeln!(out, "  {var_prefix}{}: {mult} {}{comma} -- union: {raw}", f.name, first_type).unwrap();
         } else {
-            writeln!(out, "  {}: {mult} {}{comma}", f.name, f.target).unwrap();
+            writeln!(out, "  {var_prefix}{}: {mult} {}{comma}", f.name, f.target).unwrap();
         }
     }
     writeln!(out, "}}").unwrap();

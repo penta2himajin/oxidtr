@@ -167,6 +167,7 @@ fn parse_enum(line: &str) -> Option<String> {
 }
 
 fn parse_java_param(param: &str) -> Option<MinedField> {
+    let is_var = param.contains("@alloy: var");
     // Strip @Annotation(...) patterns but preserve block comments (e.g., /* @Nullable */)
     let cleaned = strip_java_annotations(param);
     let param = cleaned.trim();
@@ -180,7 +181,7 @@ fn parse_java_param(param: &str) -> Option<MinedField> {
     // Reconstruct type (everything before the last word)
     let type_str = parts[..parts.len() - 1].join(" ");
     let (mult, target) = java_type_to_mult(&type_str);
-    Some(MinedField { name, mult, target, raw_union_type: None })
+    Some(MinedField { name, is_var, mult, target, raw_union_type: None })
 }
 
 fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
