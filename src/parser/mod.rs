@@ -222,6 +222,13 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_field(&mut self) -> Result<FieldDecl, ParseError> {
+        // Alloy 6: optional `var` keyword for mutable fields
+        let is_var = if self.peek() == Token::Var {
+            self.next();
+            true
+        } else {
+            false
+        };
         let name = self.expect_ident()?;
         self.expect(&Token::Colon)?;
         let mult = self.parse_multiplicity()?;
@@ -235,7 +242,7 @@ impl<'a> Parser<'a> {
         };
         // Look up `-- union: A | B` annotation for this field
         let raw_union_type = self.consume_union_comment_for(&name);
-        Ok(FieldDecl { name, mult, target, value_type, raw_union_type })
+        Ok(FieldDecl { name, is_var, mult, target, value_type, raw_union_type })
     }
 
     /// Look up union annotation for the most recently parsed field name.
@@ -664,10 +671,19 @@ impl<'a> Parser<'a> {
                 expr = Expr::TransitiveClosure(Box::new(expr));
             } else {
                 let field = self.expect_ident()?;
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
-                    field,
-                };
+                // Alloy 6: `s.field'` — prime on field access
+                if let Some(base_field) = field.strip_suffix('\'') {
+                    expr = Expr::FieldAccess {
+                        base: Box::new(expr),
+                        field: base_field.to_string(),
+                    };
+                    expr = Expr::Prime(Box::new(expr));
+                } else {
+                    expr = Expr::FieldAccess {
+                        base: Box::new(expr),
+                        field,
+                    };
+                }
             }
         }
         Ok(expr)
@@ -677,6 +693,10 @@ impl<'a> Parser<'a> {
         match self.peek() {
             Token::Ident(_) => {
                 let name = self.expect_ident()?;
+                // Alloy 6: prime operator — `x'` is lexed as Ident("x'")
+                if let Some(base) = name.strip_suffix('\'') {
+                    return Ok(Expr::Prime(Box::new(Expr::VarRef(base.to_string()))));
+                }
                 Ok(Expr::VarRef(name))
             }
             Token::Int(_) => {

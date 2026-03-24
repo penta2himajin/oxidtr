@@ -48,6 +48,7 @@ sig MultFormula extends Expr {
   mfKind: one QuantKind,
   mfExpr: one Expr
 }
+sig Prime extends Expr { primeInner: one Expr }
 
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}

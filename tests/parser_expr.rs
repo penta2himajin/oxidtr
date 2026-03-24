@@ -545,3 +545,69 @@ fn parse_multi_binding_with_disj() {
         other => panic!("expected Quantifier, got {other:?}"),
     }
 }
+
+// ── Alloy 6: prime operator tests ──────────────────────────────────────────────
+
+#[test]
+fn parse_prime_expr() {
+    let input = r#"
+        sig S { var x: set S }
+        fact { all s: S | s.x' = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { op: CompareOp::Eq, left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::Prime(_)),
+                        "expected Prime, got {:?}", left);
+                }
+                other => panic!("expected Comparison(Eq), got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_prime_on_var_ref() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { all s: S | x' = x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::Prime(_)),
+                        "expected Prime, got {:?}", left);
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_prime_in_field_access_chain() {
+    // s.connections' — prime on the final field access
+    let input = r#"
+        sig S { var connections: set S }
+        fact { all s: S | s.connections' = s.connections }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    assert!(matches!(left.as_ref(), Expr::Prime(_)),
+                        "expected Prime, got {:?}", left);
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}

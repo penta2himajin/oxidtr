@@ -11,6 +11,7 @@ pub enum Multiplicity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldDecl {
     pub name: String,
+    pub is_var: bool, // Alloy 6: `var` field (mutable across states)
     pub mult: Multiplicity,
     pub target: String, // refers to sig name (key type for maps)
     pub value_type: Option<String>, // Some(B) when declared as `A -> B` (map type)
@@ -116,6 +117,8 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    /// Alloy 6: prime operator — next-state reference (`expr'`)
+    Prime(Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

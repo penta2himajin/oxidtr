@@ -73,6 +73,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(left, ir, out);
             collect_tc_fields(right, ir, out);
         }
+        Expr::Prime(inner) => collect_tc_fields(inner, ir, out),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -108,6 +109,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         Expr::FieldAccess { base, .. } => {
             collect_params(base, sig_names, params);
         }
+        Expr::Prime(inner) => collect_params(inner, sig_names, params),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -210,6 +212,11 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
                 QuantKind::No => format!("{inner}.is_none()"),
                 _ => inner,
             }
+        }
+
+        // TODO: Alloy 6 temporal — translate inner as-is for now
+        Expr::Prime(inner) => {
+            format!("/* next-state */ {}", translate_inner(inner, false, sig_names))
         }
     };
 
@@ -494,6 +501,11 @@ fn translate_inner_ir(
                 QuantKind::No => format!("{inner}.is_none()"),
                 _ => inner,
             }
+        }
+
+        // TODO: Alloy 6 temporal — translate inner as-is for now
+        Expr::Prime(inner) => {
+            format!("/* next-state */ {}", ti(inner, false))
         }
     };
 

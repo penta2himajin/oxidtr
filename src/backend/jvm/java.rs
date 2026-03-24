@@ -585,6 +585,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::Quantifier { bindings, body, .. } => {
             bindings.iter().any(|b| expr_uses_tc(&b.domain)) || expr_uses_tc(body)
         }
+        Expr::Prime(inner) => expr_uses_tc(inner),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

@@ -31,6 +31,7 @@ one sig In       extends Token {}
 one sig Check    extends Token {}
 one sig Run      extends Token {}
 one sig Disj     extends Token {}
+one sig Var      extends Token {}
 one sig LBrace   extends Token {}
 one sig RBrace   extends Token {}
 one sig LBracket extends Token {}

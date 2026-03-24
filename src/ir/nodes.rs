@@ -6,6 +6,7 @@ use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IRField {
     pub name: String,
+    pub is_var: bool, // Alloy 6: mutable field
     pub mult: Multiplicity,
     pub target: String, // refers to StructureNode name (key type for maps)
     pub value_type: Option<String>, // Some(B) for map fields (A -> B)

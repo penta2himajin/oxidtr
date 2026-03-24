@@ -26,6 +26,7 @@ pub enum Token {
     Check,
     Run,
     Disj,
+    Var, // Alloy 6: mutable field
     // Symbols
     LBrace,
     RBrace,
@@ -243,6 +244,7 @@ impl<'a> Lexer<'a> {
                 "check" => Token::Check,
                 "run" => Token::Run,
                 "disj" => Token::Disj,
+                "var" => Token::Var,
                 _ => Token::Ident(ident),
             };
         }
