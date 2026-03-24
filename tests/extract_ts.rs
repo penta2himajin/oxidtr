@@ -172,3 +172,146 @@ sig Role {}
     assert_eq!(roles_field.mult, MinedMultiplicity::Set);
     assert_eq!(roles_field.target, "Role");
 }
+
+// --- Tests for parse_interface_decl: extends parent extraction ---
+
+#[test]
+fn mine_ts_interface_extends_parent() {
+    let src = r#"
+export interface Child extends Parent {
+  name: string;
+}
+export interface Parent {}
+"#;
+    let mined = ts_extractor::extract(src);
+    let child = mined.sigs.iter().find(|s| s.name == "Child").unwrap();
+    assert_eq!(child.parent.as_deref(), Some("Parent"));
+    assert_eq!(child.fields.len(), 1);
+}
+
+#[test]
+fn mine_ts_interface_extends_with_generics() {
+    let src = r#"
+export interface Container<T> extends Base {
+  items: T[];
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let container = mined.sigs.iter().find(|s| s.name == "Container").unwrap();
+    assert_eq!(container.parent.as_deref(), Some("Base"));
+}
+
+#[test]
+fn mine_ts_interface_extends_multiple_takes_first() {
+    let src = r#"
+export interface Combo extends Alpha, Beta {
+  value: number;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let combo = mined.sigs.iter().find(|s| s.name == "Combo").unwrap();
+    assert_eq!(combo.parent.as_deref(), Some("Alpha"));
+}
+
+#[test]
+fn mine_ts_interface_no_extends_has_no_parent() {
+    let src = r#"
+export interface Plain {
+  x: number;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let plain = mined.sigs.iter().find(|s| s.name == "Plain").unwrap();
+    assert!(plain.parent.is_none());
+}
+
+// --- Tests for collect_interface_fields: inline object types ---
+
+#[test]
+fn mine_ts_interface_with_inline_object_field() {
+    // Inline object type on one line: braces should not confuse depth tracking
+    let src = r#"
+export interface Widget {
+  name: string;
+  bounds: { x: number; y: number; };
+  color: string;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let widget = mined.sigs.iter().find(|s| s.name == "Widget").unwrap();
+    // Should have 3 fields: name, bounds, color
+    assert_eq!(widget.fields.len(), 3, "fields: {:?}", widget.fields.iter().map(|f| &f.name).collect::<Vec<_>>());
+}
+
+#[test]
+fn mine_ts_interface_with_multiline_inline_object() {
+    // Multi-line inline object: the '{' on the field line is not closed on the same line
+    let src = r#"
+export interface Config {
+  name: string;
+  options: {
+    debug: boolean;
+    verbose: boolean;
+  };
+  version: number;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let config = mined.sigs.iter().find(|s| s.name == "Config").unwrap();
+    // Should have 3 fields: name, options, version (inline object lines skipped)
+    let field_names: Vec<&str> = config.fields.iter().map(|f| f.name.as_str()).collect();
+    assert!(field_names.contains(&"name"), "missing 'name' in {field_names:?}");
+    assert!(field_names.contains(&"version"), "missing 'version' in {field_names:?}");
+}
+
+#[test]
+fn mine_ts_interface_with_jsdoc_braces() {
+    // JSDoc comments with braces should not affect depth
+    let src = r#"
+export interface Widget {
+  /** default value is { x: 0, y: 0 } */
+  position: string;
+  name: string;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    let widget = mined.sigs.iter().find(|s| s.name == "Widget").unwrap();
+    assert_eq!(widget.fields.len(), 2, "fields: {:?}", widget.fields.iter().map(|f| &f.name).collect::<Vec<_>>());
+}
+
+// --- Tests for TS collect_block: depth=0 start with started flag ---
+
+#[test]
+fn mine_ts_function_body_with_nested_braces() {
+    // Function with nested braces should still be collected correctly
+    let src = r#"
+export function validate(x: User): boolean {
+  if (x.name.length === 0) {
+    throw new Error("empty");
+  }
+  return true;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    // Should extract a fact candidate from the throw
+    assert!(!mined.fact_candidates.is_empty(), "should extract facts from function body");
+}
+
+#[test]
+fn mine_ts_function_with_brace_on_next_line() {
+    // Function where '{' is on the next line (collect_block starts at depth=0)
+    let src = r#"
+export function check(x: User): boolean
+{
+  if (x.name.includes("admin")) {
+    return true;
+  }
+  return false;
+}
+"#;
+    let mined = ts_extractor::extract(src);
+    // Should extract includes fact candidate
+    assert!(mined.fact_candidates.iter().any(|f|
+        f.source_pattern.contains("includes")
+    ), "should extract .includes() fact from function body");
+}

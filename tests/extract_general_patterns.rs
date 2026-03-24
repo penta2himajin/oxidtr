@@ -1,7 +1,7 @@
 /// Mine tests for general patterns found in hand-written (non-oxidtr-generated) code.
 /// Organized by pattern category following TDD: tests written first, then implementation.
 
-use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, Confidence};
+use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor, swift_extractor, Confidence};
 
 // ── Category 1: Validation patterns ──────────────────────────────────────────
 
@@ -587,4 +587,52 @@ fn ts_map_chain() {
         ".map() should produce field mapping candidate: {:?}",
         mined.fact_candidates
     );
+}
+
+// ── collect_block depth underflow protection ────────────────────────────────
+
+#[test]
+fn java_collect_block_extra_closing_brace_no_panic() {
+    // Source with an extra '}' that could cause depth underflow.
+    // The record body has an extra '}' in a string literal.
+    let src = r#"
+public record Foo(String name) {
+    public Foo {
+        if (name.contains("}")) {
+            throw new IllegalArgumentException("bad");
+        }
+    }
+}
+"#;
+    // Should not panic; just extract whatever it can
+    let mined = java_extractor::extract(src);
+    assert!(!mined.sigs.is_empty(), "should extract Foo record");
+}
+
+#[test]
+fn kotlin_collect_block_extra_closing_brace_no_panic() {
+    let src = r#"
+data class Foo(val name: String) {
+    init {
+        require(!name.contains("}")) { "bad" }
+    }
+}
+"#;
+    let mined = kotlin_extractor::extract(src);
+    assert!(!mined.sigs.is_empty(), "should extract Foo data class");
+}
+
+#[test]
+fn swift_collect_block_extra_closing_brace_no_panic() {
+    let src = r#"
+struct Foo {
+    let name: String
+    init(name: String) {
+        precondition(!name.contains("}"))
+        self.name = name
+    }
+}
+"#;
+    let mined = swift_extractor::extract(src);
+    assert!(!mined.sigs.is_empty(), "should extract Foo struct");
 }
