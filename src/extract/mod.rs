@@ -455,6 +455,44 @@ pub fn is_type_parameter(name: &str) -> bool {
     }
 }
 
+/// Extract @temporal annotations from generated test code.
+/// Works across all languages by looking for `@temporal` in comment lines.
+pub fn extract_temporal_annotations(source: &str, facts: &mut Vec<MinedFactCandidate>) {
+    for (i, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        // Strip common comment prefixes: /// // /** * -- #
+        let content = trimmed
+            .strip_prefix("///")
+            .or_else(|| trimmed.strip_prefix("//"))
+            .or_else(|| trimmed.strip_prefix("/**"))
+            .or_else(|| trimmed.strip_prefix("*"))
+            .or_else(|| trimmed.strip_prefix("--"))
+            .unwrap_or(trimmed)
+            .trim();
+
+        if let Some(rest) = content.strip_prefix("@temporal ") {
+            let loc = format!("line {}", i + 1);
+            if let Some(name) = rest.strip_prefix("Transition constraint: ") {
+                let name = name.trim().trim_end_matches("*/").trim();
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("always all s | s.field' = ... -- {name}"),
+                    confidence: Confidence::High,
+                    source_location: loc,
+                    source_pattern: format!("@temporal Transition constraint: {name}"),
+                });
+            } else if let Some(name) = rest.strip_prefix("Invariant constraint: ") {
+                let name = name.trim().trim_end_matches("*/").trim();
+                facts.push(MinedFactCandidate {
+                    alloy_text: format!("always all s | ... -- {name}"),
+                    confidence: Confidence::High,
+                    source_location: loc,
+                    source_pattern: format!("@temporal Invariant constraint: {name}"),
+                });
+            }
+        }
+    }
+}
+
 /// Add placeholder sigs for types referenced in fields but not defined as sigs.
 /// This ensures the mined .als output is self-contained valid Alloy.
 /// Filters out language primitives and generic type parameters.

@@ -540,3 +540,33 @@ fn translate_eventually_unwraps_inner() {
     let result = translate(&expr);
     assert!(!result.contains("/* temporal */"), "should not use comment placeholder, got: {result}");
 }
+
+#[test]
+fn translate_until_translates_both_sides() {
+    use oxidtr::parser::ast::{Expr, TemporalBinaryOp};
+    let left = eq(field(var("s"), "x"), field(var("s"), "y"));
+    let right = eq(field(var("s"), "a"), field(var("s"), "b"));
+    let expr = Expr::TemporalBinary {
+        op: TemporalBinaryOp::Until,
+        left: Box::new(left),
+        right: Box::new(right),
+    };
+    let result = translate(&expr);
+    assert!(result.contains("s.x == s.y"), "should contain left side, got: {result}");
+    assert!(result.contains("s.a == s.b"), "should contain right side, got: {result}");
+    assert!(result.contains("&&"), "should combine with &&, got: {result}");
+}
+
+#[test]
+fn translate_since_translates_both_sides() {
+    use oxidtr::parser::ast::{Expr, TemporalBinaryOp};
+    let left = eq(field(var("s"), "x"), field(var("s"), "y"));
+    let right = eq(field(var("s"), "a"), field(var("s"), "b"));
+    let expr = Expr::TemporalBinary {
+        op: TemporalBinaryOp::Since,
+        left: Box::new(left),
+        right: Box::new(right),
+    };
+    let result = translate(&expr);
+    assert!(result.contains("&&"), "should combine with &&, got: {result}");
+}

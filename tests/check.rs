@@ -4,8 +4,8 @@
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::check::impl_parser::{self, ExtractedField};
 use oxidtr::check::differ::{self, DiffItem};
-use oxidtr::ir::nodes::{OxidtrIR, StructureNode, IRField, OperationNode};
-use oxidtr::parser::ast::{Multiplicity, SigMultiplicity};
+use oxidtr::ir::nodes::{OxidtrIR, StructureNode, ConstraintNode, IRField, OperationNode};
+use oxidtr::parser::ast::{self, Multiplicity, SigMultiplicity, Expr};
 
 // ── impl_parser: type_to_mult ─────────────────────────────────────────────────
 
@@ -428,4 +428,94 @@ fn differ_detects_var_mismatch() {
         DiffItem::VarMismatch { struct_name, field_name, .. }
         if struct_name == "Account" && field_name == "balance"
     )), "should detect var mismatch when model has var but impl doesn't: {diffs:?}");
+}
+
+// ── Alloy 6: temporal constraint checking ──────────────────────────────────
+
+#[test]
+fn check_detects_missing_transition_test() {
+    // A fact with prime operator should require a transition_ test
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("StateUpdate".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Always,
+                expr: Box::new(Expr::Quantifier {
+                    kind: ast::QuantKind::All,
+                    bindings: vec![ast::QuantBinding {
+                        vars: vec!["s".to_string()],
+                        domain: Expr::VarRef("S".to_string()),
+                        disj: false,
+                    }],
+                    body: Box::new(Expr::Comparison {
+                        op: ast::CompareOp::Eq,
+                        left: Box::new(Expr::Prime(Box::new(Expr::FieldAccess {
+                            base: Box::new(Expr::VarRef("s".to_string())),
+                            field: "x".to_string(),
+                        }))),
+                        right: Box::new(Expr::FieldAccess {
+                            base: Box::new(Expr::VarRef("s".to_string())),
+                            field: "x".to_string(),
+                        }),
+                    }),
+                }),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    // Source has the fact name but NOT the transition_ prefixed test
+    let sources = vec!["fn test_state_update() { /* StateUpdate */ }".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingTemporalTest { fact_name, expected_kind }
+        if fact_name == "StateUpdate" && expected_kind == "transition"
+    )), "should detect missing transition test: {diffs:?}");
+}
+
+#[test]
+fn check_passes_when_transition_test_present() {
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("StateUpdate".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Always,
+                expr: Box::new(Expr::Prime(Box::new(Expr::VarRef("x".to_string())))),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    let sources = vec!["fn transition_state_update() { /* StateUpdate */ }".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
+        "should not report missing temporal test: {diffs:?}");
+}
+
+#[test]
+fn check_detects_missing_invariant_test_for_temporal_without_prime() {
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("AlwaysPositive".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Always,
+                expr: Box::new(Expr::Comparison {
+                    op: ast::CompareOp::Gte,
+                    left: Box::new(Expr::VarRef("x".to_string())),
+                    right: Box::new(Expr::IntLiteral(0)),
+                }),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    let sources = vec!["fn test_always_positive() { /* AlwaysPositive */ }".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingTemporalTest { fact_name, expected_kind }
+        if fact_name == "AlwaysPositive" && expected_kind == "invariant"
+    )), "should detect missing invariant test: {diffs:?}");
 }

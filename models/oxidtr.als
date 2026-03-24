@@ -63,6 +63,18 @@ one sig Historically extends TemporalUnaryOp {}
 one sig Once         extends TemporalUnaryOp {}
 one sig Before       extends TemporalUnaryOp {}
 
+sig TemporalBinary extends Expr {
+  tbOp: one TemporalBinaryOp,
+  tbLeft: one Expr,
+  tbRight: one Expr
+}
+
+abstract sig TemporalBinaryOp {}
+one sig Until     extends TemporalBinaryOp {}
+one sig Since     extends TemporalBinaryOp {}
+one sig Release   extends TemporalBinaryOp {}
+one sig Triggered extends TemporalBinaryOp {}
+
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}
 one sig Eq    extends CompareOp {}

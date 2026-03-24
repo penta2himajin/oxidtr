@@ -173,6 +173,7 @@ sig MissingFn              extends DiffItem {}
 sig ExtraFn                extends DiffItem {}
 sig MissingValidation      extends DiffItem {}
 sig ExtraValidation        extends DiffItem {}
+sig MissingTemporalTest    extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem

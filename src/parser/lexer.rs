@@ -34,6 +34,11 @@ pub enum Token {
     Historically,
     Once,
     Before,
+    // Alloy 6: temporal binary keywords
+    Until,
+    Since,
+    Release,
+    Triggered,
     // Symbols
     LBrace,
     RBrace,
@@ -258,6 +263,10 @@ impl<'a> Lexer<'a> {
                 "historically" => Token::Historically,
                 "once" => Token::Once,
                 "before" => Token::Before,
+                "until" => Token::Until,
+                "since" => Token::Since,
+                "release" => Token::Release,
+                "triggered" => Token::Triggered,
                 _ => Token::Ident(ident),
             };
         }

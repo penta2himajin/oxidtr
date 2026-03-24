@@ -53,6 +53,10 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
         Expr::MultFormula { expr: inner, .. } => collect_tc_fields(inner, ir, out),
         Expr::Prime(inner) => collect_tc_fields(inner, ir, out),
         Expr::TemporalUnary { expr: inner, .. } => collect_tc_fields(inner, ir, out),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_tc_fields(left, ir, out);
+            collect_tc_fields(right, ir, out);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -92,6 +96,10 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         Expr::MultFormula { expr: inner, .. } => collect_params(inner, sig_names, params),
         Expr::Prime(inner) => collect_params(inner, sig_names, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_params(left, sig_names, params);
+            collect_params(right, sig_names, params);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -214,6 +222,12 @@ fn translate_inner(
         }
         // Alloy 6: temporal unary operators — translate inner expression
         Expr::TemporalUnary { expr: inner, .. } => ti(inner, false),
+        // Alloy 6: temporal binary operators — translate both sides
+        Expr::TemporalBinary { left, right, .. } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            format!("{l} && {r}")
+        }
     };
 
     if parens_if_complex && needs_parens(expr) {

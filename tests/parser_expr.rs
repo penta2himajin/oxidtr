@@ -718,3 +718,80 @@ fn parse_nested_temporal() {
         other => panic!("expected Always(Eventually(...)), got {other:?}"),
     }
 }
+
+// ── Alloy 6: temporal binary operator tests ─────────────────────────────────────
+
+#[test]
+fn parse_until_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalBinary { op, .. } => {
+            assert_eq!(*op, TemporalBinaryOp::Until);
+        }
+        other => panic!("expected TemporalBinary(Until), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_since_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { (all s: S | s.x = s.x) since (all s: S | s.x = s.x) }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalBinary { op, .. } => {
+            assert_eq!(*op, TemporalBinaryOp::Since);
+        }
+        other => panic!("expected TemporalBinary(Since), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_release_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { (all s: S | s.x = s.x) release (all s: S | s.x = s.x) }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalBinary { op, .. } => {
+            assert_eq!(*op, TemporalBinaryOp::Release);
+        }
+        other => panic!("expected TemporalBinary(Release), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_triggered_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { (all s: S | s.x = s.x) triggered (all s: S | s.x = s.x) }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalBinary { op, .. } => {
+            assert_eq!(*op, TemporalBinaryOp::Triggered);
+        }
+        other => panic!("expected TemporalBinary(Triggered), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_nested_always_until() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { always ((all s: S | s.x = s.x) until (all s: S | s.x = s.x)) }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op: TemporalUnaryOp::Always, expr } => {
+            assert!(matches!(expr.as_ref(), Expr::TemporalBinary { op: TemporalBinaryOp::Until, .. }));
+        }
+        other => panic!("expected Always(Until(...)), got {other:?}"),
+    }
+}

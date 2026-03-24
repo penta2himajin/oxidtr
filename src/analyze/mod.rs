@@ -117,13 +117,16 @@ pub fn expr_contains_prime(expr: &Expr) -> bool {
             expr_contains_prime(left) || expr_contains_prime(right)
         }
         Expr::MultFormula { expr: inner, .. } => expr_contains_prime(inner),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_contains_prime(left) || expr_contains_prime(right)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
 
 /// Returns true if the expression is wrapped in a temporal operator.
 pub fn expr_is_temporal(expr: &Expr) -> bool {
-    matches!(expr, Expr::TemporalUnary { .. })
+    matches!(expr, Expr::TemporalUnary { .. } | Expr::TemporalBinary { .. })
 }
 
 /// Analyze all constraints in the IR and return structured info.
@@ -238,6 +241,15 @@ pub fn describe_expr(expr: &Expr) -> String {
             };
             format!("{op_name} {}", describe_expr(inner))
         }
+        Expr::TemporalBinary { op, left, right } => {
+            let op_name = match op {
+                TemporalBinaryOp::Until => "until",
+                TemporalBinaryOp::Since => "since",
+                TemporalBinaryOp::Release => "release",
+                TemporalBinaryOp::Triggered => "triggered",
+            };
+            format!("{} {op_name} {}", describe_expr(left), describe_expr(right))
+        }
     }
 }
 
@@ -307,6 +319,11 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
         // Alloy 6: temporal operators — unwrap and analyze inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
             results.extend(analyze_expr(inner, ""));
+        }
+        // Alloy 6: binary temporal operators — analyze both sides
+        Expr::TemporalBinary { left, right, .. } => {
+            results.extend(analyze_expr(left, ""));
+            results.extend(analyze_expr(right, ""));
         }
         _ => {}
     }
@@ -613,6 +630,11 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
         Expr::IntLiteral(_) => expr.clone(),
         Expr::Prime(inner) => Expr::Prime(Box::new(substitute_var(inner, var, sig_name))),
         Expr::TemporalUnary { expr: inner, .. } => substitute_var(inner, var, sig_name),
+        Expr::TemporalBinary { op, left, right } => Expr::TemporalBinary {
+            op: *op,
+            left: Box::new(substitute_var(left, var, sig_name)),
+            right: Box::new(substitute_var(right, var, sig_name)),
+        },
     }
 }
 
@@ -670,6 +692,10 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
         Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
         Expr::Prime(inner) => collect_disj_fields(inner, results),
         Expr::TemporalUnary { expr: inner, .. } => collect_disj_fields(inner, results),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_disj_fields(left, results);
+            collect_disj_fields(right, results);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -728,6 +754,9 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
         }
         Expr::Prime(inner) => expr_only_refs_params(inner, param_names),
         Expr::TemporalUnary { expr: inner, .. } => expr_only_refs_params(inner, param_names),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_only_refs_params(left, param_names) && expr_only_refs_params(right, param_names)
+        }
     }
 }
 
@@ -800,6 +829,15 @@ pub fn alloy_repr(expr: &Expr) -> String {
         }
         Expr::Prime(inner) => format!("{}'", alloy_repr(inner)),
         Expr::TemporalUnary { expr: inner, .. } => format!("{}'", alloy_repr(inner)),
+        Expr::TemporalBinary { op, left, right } => {
+            let op_name = match op {
+                TemporalBinaryOp::Until => "until",
+                TemporalBinaryOp::Since => "since",
+                TemporalBinaryOp::Release => "release",
+                TemporalBinaryOp::Triggered => "triggered",
+            };
+            format!("{} {op_name} {}", alloy_repr(left), alloy_repr(right))
+        }
     }
 }
 
@@ -935,5 +973,8 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
         Expr::FieldAccess { base, .. } => expr_references_sig(base, sig_name),
         Expr::Prime(inner) => expr_references_sig(inner, sig_name),
         Expr::TemporalUnary { expr: inner, .. } => expr_references_sig(inner, sig_name),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_references_sig(left, sig_name) || expr_references_sig(right, sig_name)
+        }
     }
 }
