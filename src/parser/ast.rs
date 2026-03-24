@@ -119,6 +119,21 @@ pub enum Expr {
     },
     /// Alloy 6: prime operator — next-state reference (`expr'`)
     Prime(Box<Expr>),
+    /// Alloy 6: temporal unary operator (always/eventually/after/historically/once/before)
+    TemporalUnary {
+        op: TemporalUnaryOp,
+        expr: Box<Expr>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalUnaryOp {
+    Always,
+    Eventually,
+    After,
+    Historically,
+    Once,
+    Before,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

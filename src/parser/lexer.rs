@@ -27,6 +27,13 @@ pub enum Token {
     Run,
     Disj,
     Var, // Alloy 6: mutable field
+    // Alloy 6: temporal keywords
+    Always,
+    Eventually,
+    After,
+    Historically,
+    Once,
+    Before,
     // Symbols
     LBrace,
     RBrace,
@@ -245,6 +252,12 @@ impl<'a> Lexer<'a> {
                 "run" => Token::Run,
                 "disj" => Token::Disj,
                 "var" => Token::Var,
+                "always" => Token::Always,
+                "eventually" => Token::Eventually,
+                "after" => Token::After,
+                "historically" => Token::Historically,
+                "once" => Token::Once,
+                "before" => Token::Before,
                 _ => Token::Ident(ident),
             };
         }

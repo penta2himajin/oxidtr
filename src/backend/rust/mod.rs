@@ -456,6 +456,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
             bindings.iter().any(|b| expr_uses_tc(&b.domain)) || expr_uses_tc(body)
         }
         Expr::Prime(inner) => expr_uses_tc(inner),
+        Expr::TemporalUnary { expr: inner, .. } => expr_uses_tc(inner),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -1007,6 +1008,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         Expr::MultFormula { expr: inner, .. } => expr_has_comparison(inner),
         Expr::FieldAccess { base, .. } => expr_has_comparison(base),
         Expr::Prime(inner) => expr_has_comparison(inner),
+        Expr::TemporalUnary { expr: inner, .. } => expr_has_comparison(inner),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

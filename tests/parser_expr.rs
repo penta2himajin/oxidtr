@@ -611,3 +611,110 @@ fn parse_prime_in_field_access_chain() {
         other => panic!("expected Quantifier, got {other:?}"),
     }
 }
+
+// ── Alloy 6: temporal unary operator tests ─────────────────────────────────────
+
+#[test]
+fn parse_always_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { always all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::Always);
+        }
+        other => panic!("expected TemporalUnary(Always), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_eventually_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { eventually all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::Eventually);
+        }
+        other => panic!("expected TemporalUnary(Eventually), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_after_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { after all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::After);
+        }
+        other => panic!("expected TemporalUnary(After), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_historically_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { historically all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::Historically);
+        }
+        other => panic!("expected TemporalUnary(Historically), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_once_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { once all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::Once);
+        }
+        other => panic!("expected TemporalUnary(Once), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_before_formula() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { before all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op, .. } => {
+            assert_eq!(*op, TemporalUnaryOp::Before);
+        }
+        other => panic!("expected TemporalUnary(Before), got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_nested_temporal() {
+    let input = r#"
+        sig S { var x: one S }
+        fact { always eventually all s: S | s.x = s.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::TemporalUnary { op: TemporalUnaryOp::Always, expr } => {
+            assert!(matches!(expr.as_ref(), Expr::TemporalUnary { op: TemporalUnaryOp::Eventually, .. }));
+        }
+        other => panic!("expected Always(Eventually(...)), got {other:?}"),
+    }
+}

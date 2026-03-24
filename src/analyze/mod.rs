@@ -192,6 +192,7 @@ pub fn describe_expr(expr: &Expr) -> String {
             format!("{q} {}", describe_expr(expr))
         }
         Expr::Prime(inner) => format!("{}'", describe_expr(inner)),
+        Expr::TemporalUnary { expr: inner, .. } => format!("{}'", describe_expr(inner)),
     }
 }
 
@@ -562,6 +563,7 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
         },
         Expr::IntLiteral(_) => expr.clone(),
         Expr::Prime(inner) => Expr::Prime(Box::new(substitute_var(inner, var, sig_name))),
+        Expr::TemporalUnary { expr: inner, .. } => substitute_var(inner, var, sig_name),
     }
 }
 
@@ -618,6 +620,7 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
         Expr::MultFormula { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
         Expr::Prime(inner) => collect_disj_fields(inner, results),
+        Expr::TemporalUnary { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -675,6 +678,7 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
                 && expr_only_refs_params(body, &extended_params)
         }
         Expr::Prime(inner) => expr_only_refs_params(inner, param_names),
+        Expr::TemporalUnary { expr: inner, .. } => expr_only_refs_params(inner, param_names),
     }
 }
 
@@ -746,6 +750,7 @@ pub fn alloy_repr(expr: &Expr) -> String {
             format!("{q} {}", alloy_repr(expr))
         }
         Expr::Prime(inner) => format!("{}'", alloy_repr(inner)),
+        Expr::TemporalUnary { expr: inner, .. } => format!("{}'", alloy_repr(inner)),
     }
 }
 
@@ -880,5 +885,6 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
         }
         Expr::FieldAccess { base, .. } => expr_references_sig(base, sig_name),
         Expr::Prime(inner) => expr_references_sig(inner, sig_name),
+        Expr::TemporalUnary { expr: inner, .. } => expr_references_sig(inner, sig_name),
     }
 }

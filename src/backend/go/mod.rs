@@ -731,6 +731,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         }
         Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
         Expr::Prime(inner) => expr_uses_tc(inner),
+        Expr::TemporalUnary { expr: inner, .. } => expr_uses_tc(inner),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

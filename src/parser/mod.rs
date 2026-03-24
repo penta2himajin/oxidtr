@@ -403,13 +403,28 @@ impl<'a> Parser<'a> {
         Ok(left)
     }
 
-    /// `not` binds less tightly than comparison in Alloy.
+    /// `not` and temporal unary operators bind less tightly than comparison in Alloy.
     /// `not a = b` means `not(a = b)`.
     fn parse_not(&mut self) -> Result<Expr, ParseError> {
         if self.peek() == Token::Not {
             self.next();
             let inner = self.parse_not()?;
             return Ok(Expr::Not(Box::new(inner)));
+        }
+        // Alloy 6: temporal unary operators
+        let temporal_op = match self.peek() {
+            Token::Always => Some(ast::TemporalUnaryOp::Always),
+            Token::Eventually => Some(ast::TemporalUnaryOp::Eventually),
+            Token::After => Some(ast::TemporalUnaryOp::After),
+            Token::Historically => Some(ast::TemporalUnaryOp::Historically),
+            Token::Once => Some(ast::TemporalUnaryOp::Once),
+            Token::Before => Some(ast::TemporalUnaryOp::Before),
+            _ => None,
+        };
+        if let Some(op) = temporal_op {
+            self.next();
+            let inner = self.parse_not()?;
+            return Ok(Expr::TemporalUnary { op, expr: Box::new(inner) });
         }
         self.parse_comparison()
     }

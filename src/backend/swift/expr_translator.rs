@@ -52,6 +52,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(right, ir, out);
         }
         Expr::Prime(inner) => collect_tc_fields(inner, ir, out),
+        Expr::TemporalUnary { expr: inner, .. } => collect_tc_fields(inner, ir, out),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -92,6 +93,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         }
         Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
         Expr::Prime(inner) => collect_params(inner, sig_names, params),
+        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -204,6 +206,9 @@ fn translate_inner(
         // TODO: Alloy 6 temporal — translate inner as-is for now
         Expr::Prime(inner) => {
             format!("/* next-state */ {}", ti(inner, false))
+        }
+        Expr::TemporalUnary { expr: inner, .. } => {
+            format!("/* temporal */ {}", ti(inner, false))
         }
     };
 
