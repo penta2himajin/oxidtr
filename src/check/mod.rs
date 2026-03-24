@@ -215,6 +215,7 @@ where F: Fn(&str) -> extract::MinedModel {
                     name: f.name.clone(),
                     mult,
                     target: f.target.clone(),
+                    is_var: f.is_var,
                 }
             }).collect(),
             is_enum: s.is_abstract,
@@ -243,6 +244,7 @@ fn mined_to_extracted(mined: &extract::MinedModel) -> ExtractedImpl {
                     name: f.name.clone(),
                     mult,
                     target: f.target.clone(),
+                    is_var: f.is_var,
                 }
             }).collect(),
             is_enum: s.is_abstract,

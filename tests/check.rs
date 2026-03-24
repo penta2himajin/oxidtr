@@ -168,6 +168,7 @@ fn differ_no_diff_when_in_sync() {
                 name: "name".into(),
                 mult: Multiplicity::One,
                 target: "String".into(),
+                is_var: false,
             }],
         }],
         fns: vec![],
@@ -236,7 +237,7 @@ fn differ_extra_field() {
         structs: vec![ExtractedStruct {
             name: "User".into(),
             is_enum: false,
-            fields: vec![ExtractedField { name: "phantom".into(), mult: Multiplicity::One, target: "String".into() }],
+            fields: vec![ExtractedField { name: "phantom".into(), mult: Multiplicity::One, target: "String".into(), is_var: false }],
         }],
         fns: vec![],
     };
@@ -266,7 +267,7 @@ fn differ_multiplicity_mismatch() {
         structs: vec![ExtractedStruct {
             name: "User".into(),
             is_enum: false,
-            fields: vec![ExtractedField { name: "manager".into(), mult: Multiplicity::One, target: "User".into() }],
+            fields: vec![ExtractedField { name: "manager".into(), mult: Multiplicity::One, target: "User".into(), is_var: false }],
         }],
         fns: vec![],
     };
@@ -376,4 +377,55 @@ fn check_run_missing_models_rs_is_error() {
         &CheckConfig { impl_dir: impl_dir.to_str().unwrap().to_string() },
     );
     assert!(matches!(err, Err(check::CheckError::ImplNotFound(_))));
+}
+
+// ── Alloy 6: var field consistency ──────────────────────────────────────────
+
+#[test]
+fn parse_impl_detects_var_annotation() {
+    let models_src = r#"
+pub struct Account {
+    /// @alloy: var
+    pub balance: i64,
+    pub name: String,
+}
+"#;
+    let result = impl_parser::parse_impl(models_src, "");
+    let account = &result.structs[0];
+    let balance = account.fields.iter().find(|f| f.name == "balance").unwrap();
+    assert!(balance.is_var, "balance field should be detected as var");
+    let name = account.fields.iter().find(|f| f.name == "name").unwrap();
+    assert!(!name.is_var, "name field should not be var");
+}
+
+#[test]
+fn differ_detects_var_mismatch() {
+    let ir = OxidtrIR {
+        structures: vec![StructureNode {
+            name: "Account".to_string(),
+            is_enum: false,
+            sig_multiplicity: SigMultiplicity::Default,
+            parent: None,
+            fields: vec![IRField {
+                name: "balance".to_string(),
+                is_var: true,
+                mult: Multiplicity::One,
+                target: "Int".to_string(),
+                value_type: None,
+                raw_union_type: None,
+            }],
+            intersection_of: vec![],
+        }],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![],
+    };
+    let extracted = impl_parser::parse_impl(
+        "pub struct Account {\n    pub balance: i64,\n}", ""
+    );
+    let diffs = differ::diff(&ir, &extracted);
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::VarMismatch { struct_name, field_name, .. }
+        if struct_name == "Account" && field_name == "balance"
+    )), "should detect var mismatch when model has var but impl doesn't: {diffs:?}");
 }

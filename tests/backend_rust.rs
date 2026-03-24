@@ -464,3 +464,27 @@ fn rust_var_field_annotated() {
     assert!(models.contains("@alloy: var"),
         "var field should have @alloy: var annotation:\n{models}");
 }
+
+#[test]
+fn rust_temporal_always_fact_generates_invariant_test() {
+    let files = generate_from(r#"
+        sig Counter { var value: one Int }
+        fact AlwaysPositive { always all c: Counter | c.value = c.value }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(tests.contains("invariant_always_positive"),
+        "should generate invariant test for always fact:\n{tests}");
+}
+
+#[test]
+fn rust_temporal_prime_fact_generates_transition_test() {
+    let files = generate_from(r#"
+        sig Counter { var value: one Int }
+        fact MonotonicallyIncreasing { always all c: Counter | c.value' = c.value }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(tests.contains("transition_monotonically_increasing"),
+        "should generate transition test for prime-containing fact:\n{tests}");
+    assert!(tests.contains("next_value"),
+        "transition test should reference next-state field:\n{tests}");
+}

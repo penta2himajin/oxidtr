@@ -502,3 +502,41 @@ fn translate_disj_adds_inequality_guard() {
     assert!(result.contains("if x != y"));
     assert!(result.contains("else { true }"));
 }
+
+// ── Alloy 6 temporal expression translation ──────────────────────────────────
+
+#[test]
+fn translate_prime_on_field_access() {
+    // s.x' → next_x (reference to next-state value)
+    use oxidtr::parser::ast::Expr;
+    let expr = Expr::Prime(Box::new(field(var("s"), "x")));
+    let result = translate(&expr);
+    assert!(!result.contains("/* next-state */"), "should not use comment placeholder, got: {result}");
+    assert!(result.contains("next_"), "should reference next-state field, got: {result}");
+}
+
+#[test]
+fn translate_always_unwraps_inner() {
+    // always (s.x == s.y) → just translate inner expression
+    use oxidtr::parser::ast::{Expr, TemporalUnaryOp};
+    let inner = eq(field(var("s"), "x"), field(var("s"), "y"));
+    let expr = Expr::TemporalUnary {
+        op: TemporalUnaryOp::Always,
+        expr: Box::new(inner),
+    };
+    let result = translate(&expr);
+    assert!(!result.contains("/* temporal */"), "should not use comment placeholder, got: {result}");
+    assert!(result.contains("s.x"), "should contain inner expression, got: {result}");
+}
+
+#[test]
+fn translate_eventually_unwraps_inner() {
+    use oxidtr::parser::ast::{Expr, TemporalUnaryOp};
+    let inner = eq(field(var("s"), "x"), field(var("s"), "y"));
+    let expr = Expr::TemporalUnary {
+        op: TemporalUnaryOp::Eventually,
+        expr: Box::new(inner),
+    };
+    let result = translate(&expr);
+    assert!(!result.contains("/* temporal */"), "should not use comment placeholder, got: {result}");
+}

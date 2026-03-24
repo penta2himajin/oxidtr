@@ -216,12 +216,20 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
             }
         }
 
-        // TODO: Alloy 6 temporal — translate inner as-is for now
+        // Alloy 6: prime operator — next-state reference
         Expr::Prime(inner) => {
-            format!("/* next-state */ {}", translate_inner(inner, false, sig_names))
+            match inner.as_ref() {
+                Expr::FieldAccess { base, field } => {
+                    let base_str = translate_inner(base, false, sig_names);
+                    format!("{base_str}.next_{field}")
+                }
+                Expr::VarRef(name) => format!("next_{name}"),
+                _ => format!("{}.next()", translate_inner(inner, false, sig_names)),
+            }
         }
+        // Alloy 6: temporal unary operators — translate inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
-            format!("/* temporal */ {}", translate_inner(inner, false, sig_names))
+            translate_inner(inner, false, sig_names)
         }
     };
 
@@ -508,12 +516,20 @@ fn translate_inner_ir(
             }
         }
 
-        // TODO: Alloy 6 temporal — translate inner as-is for now
+        // Alloy 6: prime operator — next-state reference
         Expr::Prime(inner) => {
-            format!("/* next-state */ {}", ti(inner, false))
+            match inner.as_ref() {
+                Expr::FieldAccess { base, field } => {
+                    let base_str = ti(base, false);
+                    format!("{base_str}.next_{field}")
+                }
+                Expr::VarRef(name) => format!("next_{name}"),
+                _ => format!("{}.next()", ti(inner, false)),
+            }
         }
+        // Alloy 6: temporal unary operators — translate inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
-            format!("/* temporal */ {}", ti(inner, false))
+            ti(inner, false)
         }
     };
 

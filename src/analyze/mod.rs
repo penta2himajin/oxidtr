@@ -91,6 +91,41 @@ pub enum PresenceKind {
     Absent,   // no
 }
 
+/// Returns true if the expression contains a prime operator (next-state reference).
+pub fn expr_contains_prime(expr: &Expr) -> bool {
+    match expr {
+        Expr::Prime(_) => true,
+        Expr::TemporalUnary { expr: inner, .. } => expr_contains_prime(inner),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_contains_prime(&b.domain))
+                || expr_contains_prime(body)
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            expr_contains_prime(left) || expr_contains_prime(right)
+        }
+        Expr::Comparison { left, right, .. } => {
+            expr_contains_prime(left) || expr_contains_prime(right)
+        }
+        Expr::Not(inner) => expr_contains_prime(inner),
+        Expr::FieldAccess { base, .. } => expr_contains_prime(base),
+        Expr::Cardinality(inner) => expr_contains_prime(inner),
+        Expr::TransitiveClosure(inner) => expr_contains_prime(inner),
+        Expr::SetOp { left, right, .. } => {
+            expr_contains_prime(left) || expr_contains_prime(right)
+        }
+        Expr::Product { left, right } => {
+            expr_contains_prime(left) || expr_contains_prime(right)
+        }
+        Expr::MultFormula { expr: inner, .. } => expr_contains_prime(inner),
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Returns true if the expression is wrapped in a temporal operator.
+pub fn expr_is_temporal(expr: &Expr) -> bool {
+    matches!(expr, Expr::TemporalUnary { .. })
+}
+
 /// Analyze all constraints in the IR and return structured info.
 pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
@@ -192,7 +227,17 @@ pub fn describe_expr(expr: &Expr) -> String {
             format!("{q} {}", describe_expr(expr))
         }
         Expr::Prime(inner) => format!("{}'", describe_expr(inner)),
-        Expr::TemporalUnary { expr: inner, .. } => format!("{}'", describe_expr(inner)),
+        Expr::TemporalUnary { op, expr: inner } => {
+            let op_name = match op {
+                TemporalUnaryOp::Always => "always",
+                TemporalUnaryOp::Eventually => "eventually",
+                TemporalUnaryOp::After => "after",
+                TemporalUnaryOp::Historically => "historically",
+                TemporalUnaryOp::Once => "once",
+                TemporalUnaryOp::Before => "before",
+            };
+            format!("{op_name} {}", describe_expr(inner))
+        }
     }
 }
 
@@ -258,6 +303,10 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                     right: r,
                 });
             }
+        }
+        // Alloy 6: temporal operators — unwrap and analyze inner expression
+        Expr::TemporalUnary { expr: inner, .. } => {
+            results.extend(analyze_expr(inner, ""));
         }
         _ => {}
     }

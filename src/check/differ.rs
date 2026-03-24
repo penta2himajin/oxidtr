@@ -31,6 +31,12 @@ pub enum DiffItem {
         expected:    Multiplicity,
         actual:      Multiplicity,
     },
+    VarMismatch {
+        struct_name: String,
+        field_name:  String,
+        expected_var: bool,
+        actual_var:   bool,
+    },
     MissingFn { name: String },
     ExtraFn   { name: String },
     MissingValidation { fact_name: String },
@@ -51,6 +57,12 @@ impl std::fmt::Display for DiffItem {
             DiffItem::MultiplicityMismatch { struct_name, field_name, expected, actual } =>
                 write!(f, "[MULTIPLICITY_MISMATCH] {struct_name}.{field_name}: \
                     expected {expected:?}, got {actual:?}"),
+            DiffItem::VarMismatch { struct_name, field_name, expected_var, actual_var } => {
+                let expected = if *expected_var { "var" } else { "non-var" };
+                let actual = if *actual_var { "var" } else { "non-var" };
+                write!(f, "[VAR_MISMATCH] {struct_name}.{field_name}: \
+                    expected {expected}, got {actual}")
+            }
             DiffItem::MissingFn { name } =>
                 write!(f, "[MISSING_FN] {name}: pred in model but not in impl"),
             DiffItem::ExtraFn { name } =>
@@ -177,6 +189,14 @@ where F: Fn(&str) -> String {
                         field_name:  ir_field.name.clone(),
                         expected:    ir_field.mult.clone(),
                         actual:      impl_field.mult.clone(),
+                    });
+                }
+                Some(impl_field) if impl_field.is_var != ir_field.is_var => {
+                    diffs.push(DiffItem::VarMismatch {
+                        struct_name: ir_struct.name.clone(),
+                        field_name:  ir_field.name.clone(),
+                        expected_var: ir_field.is_var,
+                        actual_var:   impl_field.is_var,
                     });
                 }
                 _ => {}

@@ -168,6 +168,7 @@ sig ExtraStruct            extends DiffItem {}
 sig MissingField           extends DiffItem {}
 sig ExtraField             extends DiffItem {}
 sig MultiplicityMismatch   extends DiffItem {}
+sig VarMismatch            extends DiffItem {}
 sig MissingFn              extends DiffItem {}
 sig ExtraFn                extends DiffItem {}
 sig MissingValidation      extends DiffItem {}

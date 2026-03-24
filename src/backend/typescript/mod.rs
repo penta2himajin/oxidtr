@@ -463,6 +463,28 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+        // Alloy 6: temporal facts with prime → generate transition test
+        if analyze::expr_contains_prime(&constraint.expr) {
+            let test_name = format!("transition {fact_name}");
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+
+            writeln!(out, "  /** @temporal Transition constraint: {fact_name} */").unwrap();
+            writeln!(out, "  /** Verifies state-transition invariant (prime = next-state). */").unwrap();
+            writeln!(out, "  it('{}', () => {{", test_name).unwrap();
+            for (pname, tname) in &params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
+                } else {
+                    writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
+                }
+            }
+            writeln!(out, "    expect({body}).toBe(true);").unwrap();
+            writeln!(out, "  }});").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
         let test_name = format!("invariant {fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);

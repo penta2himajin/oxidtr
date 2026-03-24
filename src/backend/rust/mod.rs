@@ -529,6 +529,34 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+
+        // Alloy 6: temporal facts with prime → generate transition test
+        if analyze::expr_contains_prime(&constraint.expr) {
+            let test_name = format!("transition_{}", to_snake_case(&fact_name));
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+                continue;
+            }
+            let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+
+            writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
+            writeln!(out, "    /// Verifies state-transition invariant (prime = next-state).").unwrap();
+            writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    fn {test_name}() {{").unwrap();
+            for (pname, tname) in &params {
+                if has_fixture.contains(tname) {
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
+            }
+            writeln!(out, "        assert!({body});").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
         let test_name = format!("invariant_{}", to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         // Skip tests that reference enum variants (not standalone types in Rust)
