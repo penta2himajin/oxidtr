@@ -220,6 +220,9 @@ pub fn extract(source: &str) -> MinedModel {
         }
     }
 
+    // Pass 3: Extract temporal constraint annotations (@temporal markers)
+    extract_temporal_annotations(source, &mut fact_candidates);
+
     MinedModel { sigs, fact_candidates }
 }
 
@@ -896,4 +899,9 @@ fn extract_contains_fact(line: &str) -> String {
     } else {
         "-- contains check (review)".to_string()
     }
+}
+
+/// Extract @temporal annotations — delegates to shared implementation.
+fn extract_temporal_annotations(source: &str, facts: &mut Vec<MinedFactCandidate>) {
+    super::extract_temporal_annotations(source, facts);
 }

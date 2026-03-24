@@ -460,6 +460,9 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         }
         Expr::Prime(inner) => expr_uses_tc(inner),
         Expr::TemporalUnary { expr: inner, .. } => expr_uses_tc(inner),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_uses_tc(left) || expr_uses_tc(right)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -1040,6 +1043,9 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         Expr::FieldAccess { base, .. } => expr_has_comparison(base),
         Expr::Prime(inner) => expr_has_comparison(inner),
         Expr::TemporalUnary { expr: inner, .. } => expr_has_comparison(inner),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_has_comparison(left) || expr_has_comparison(right)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

@@ -75,6 +75,10 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
         }
         Expr::Prime(inner) => collect_tc_fields(inner, ir, out),
         Expr::TemporalUnary { expr: inner, .. } => collect_tc_fields(inner, ir, out),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_tc_fields(left, ir, out);
+            collect_tc_fields(right, ir, out);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -112,6 +116,10 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         }
         Expr::Prime(inner) => collect_params(inner, sig_names, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_params(left, sig_names, params);
+            collect_params(right, sig_names, params);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -230,6 +238,12 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
         // Alloy 6: temporal unary operators — translate inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
             translate_inner(inner, false, sig_names)
+        }
+        // Alloy 6: temporal binary operators — translate both sides
+        Expr::TemporalBinary { left, right, .. } => {
+            let l = translate_inner(left, false, sig_names);
+            let r = translate_inner(right, false, sig_names);
+            format!("{l} && {r}")
         }
     };
 
@@ -530,6 +544,12 @@ fn translate_inner_ir(
         // Alloy 6: temporal unary operators — translate inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
             ti(inner, false)
+        }
+        // Alloy 6: temporal binary operators — translate both sides
+        Expr::TemporalBinary { left, right, .. } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            format!("{l} && {r}")
         }
     };
 

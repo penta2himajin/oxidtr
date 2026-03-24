@@ -124,6 +124,12 @@ pub enum Expr {
         op: TemporalUnaryOp,
         expr: Box<Expr>,
     },
+    /// Alloy 6: temporal binary operator (until/since/release/triggered)
+    TemporalBinary {
+        op: TemporalBinaryOp,
+        left: Box<Expr>,
+        right: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +140,14 @@ pub enum TemporalUnaryOp {
     Historically,
     Once,
     Before,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalBinaryOp {
+    Until,
+    Since,
+    Release,
+    Triggered,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

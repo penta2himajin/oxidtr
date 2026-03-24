@@ -400,6 +400,23 @@ impl<'a> Parser<'a> {
                 right: Box::new(right),
             });
         }
+        // Alloy 6: binary temporal operators
+        let temporal_bin_op = match self.peek() {
+            Token::Until => Some(ast::TemporalBinaryOp::Until),
+            Token::Since => Some(ast::TemporalBinaryOp::Since),
+            Token::Release => Some(ast::TemporalBinaryOp::Release),
+            Token::Triggered => Some(ast::TemporalBinaryOp::Triggered),
+            _ => None,
+        };
+        if let Some(op) = temporal_bin_op {
+            self.next();
+            let right = self.parse_not()?;
+            return Ok(Expr::TemporalBinary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            });
+        }
         Ok(left)
     }
 

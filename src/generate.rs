@@ -424,6 +424,10 @@ fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> 
         Expr::FieldAccess { base, .. } => expr_references_sig_name(base, sig_name),
         Expr::Prime(inner) => expr_references_sig_name(inner, sig_name),
         Expr::TemporalUnary { expr: inner, .. } => expr_references_sig_name(inner, sig_name),
+        Expr::TemporalBinary { left, right, .. } => {
+            expr_references_sig_name(left, sig_name)
+                || expr_references_sig_name(right, sig_name)
+        }
         Expr::IntLiteral(_) => false,
     }
 }
@@ -457,6 +461,10 @@ fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, fiel
         }
         Expr::Prime(inner) => constraint_references_field(inner, _sig, field),
         Expr::TemporalUnary { expr: inner, .. } => constraint_references_field(inner, _sig, field),
+        Expr::TemporalBinary { left, right, .. } => {
+            constraint_references_field(left, _sig, field)
+                || constraint_references_field(right, _sig, field)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -509,6 +517,10 @@ fn collect_tc_fields(expr: &crate::parser::ast::Expr, out: &mut std::collections
         Expr::FieldAccess { base, .. } => collect_tc_fields(base, out),
         Expr::Prime(inner) => collect_tc_fields(inner, out),
         Expr::TemporalUnary { expr: inner, .. } => collect_tc_fields(inner, out),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_tc_fields(left, out);
+            collect_tc_fields(right, out);
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -555,6 +567,10 @@ fn constraint_references_field_non_tc(expr: &crate::parser::ast::Expr, field: &s
         }
         Expr::Prime(inner) => constraint_references_field_non_tc(inner, field),
         Expr::TemporalUnary { expr: inner, .. } => constraint_references_field_non_tc(inner, field),
+        Expr::TemporalBinary { left, right, .. } => {
+            constraint_references_field_non_tc(left, field)
+                || constraint_references_field_non_tc(right, field)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

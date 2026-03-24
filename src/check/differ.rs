@@ -2,6 +2,7 @@
 
 use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
+use crate::analyze;
 use super::impl_parser::{ExtractedImpl, ExtractedStruct};
 
 fn to_snake_case(s: &str) -> String {
@@ -41,6 +42,10 @@ pub enum DiffItem {
     ExtraFn   { name: String },
     MissingValidation { fact_name: String },
     ExtraValidation   { name: String },
+    MissingTemporalTest {
+        fact_name: String,
+        expected_kind: String, // "transition" or "invariant"
+    },
 }
 
 impl std::fmt::Display for DiffItem {
@@ -71,6 +76,8 @@ impl std::fmt::Display for DiffItem {
                 write!(f, "[MISSING_VALIDATION] {fact_name}: fact in model but no validation in impl"),
             DiffItem::ExtraValidation { name } =>
                 write!(f, "[EXTRA_VALIDATION] {name}: validation in impl but no fact in model"),
+            DiffItem::MissingTemporalTest { fact_name, expected_kind } =>
+                write!(f, "[MISSING_TEMPORAL_TEST] {fact_name}: expected {expected_kind} test in impl"),
         }
     }
 }
@@ -137,7 +144,40 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
 
         let found = combined.contains(&search_name);
         if !found {
-            diffs.push(DiffItem::MissingValidation { fact_name });
+            diffs.push(DiffItem::MissingValidation { fact_name: fact_name.clone() });
+            continue; // no point checking temporal subtype if basic validation is missing
+        }
+
+        // Temporal constraint classification: verify correct test type exists
+        let has_prime = analyze::expr_contains_prime(&constraint.expr);
+        let is_temporal = analyze::expr_is_temporal(&constraint.expr);
+
+        if has_prime {
+            // Facts with prime should have a transition test
+            let transition_name = if use_snake_case {
+                format!("transition_{}", to_snake_case(&fact_name))
+            } else {
+                format!("transition_{fact_name}")
+            };
+            if !combined.contains(&transition_name) {
+                diffs.push(DiffItem::MissingTemporalTest {
+                    fact_name: fact_name.clone(),
+                    expected_kind: "transition".to_string(),
+                });
+            }
+        } else if is_temporal {
+            // Temporal facts without prime should have an invariant test
+            let invariant_name = if use_snake_case {
+                format!("invariant_{}", to_snake_case(&fact_name))
+            } else {
+                format!("invariant_{fact_name}")
+            };
+            if !combined.contains(&invariant_name) {
+                diffs.push(DiffItem::MissingTemporalTest {
+                    fact_name,
+                    expected_kind: "invariant".to_string(),
+                });
+            }
         }
     }
 

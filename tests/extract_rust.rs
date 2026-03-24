@@ -426,3 +426,52 @@ pub struct Account {
     assert!(!rendered.contains("var name:"),
         "name should not have var prefix:\n{rendered}");
 }
+
+// ── Alloy 6: temporal annotation extraction ─────────────────────────────────
+
+#[test]
+fn mine_rust_temporal_transition_annotation() {
+    let src = r#"
+pub struct S {
+    pub x: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    /// @temporal Transition constraint: StateUpdate
+    /// Verifies state-transition invariant (prime = next-state).
+    #[test]
+    fn transition_state_update() {
+        // test body
+    }
+}
+"#;
+    let mined = rust_extractor::extract(src);
+    assert!(mined.fact_candidates.iter().any(|f|
+        f.source_pattern.contains("@temporal Transition constraint: StateUpdate")),
+        "should extract @temporal Transition annotation: {:?}",
+        mined.fact_candidates.iter().map(|f| &f.source_pattern).collect::<Vec<_>>());
+}
+
+#[test]
+fn mine_rust_temporal_invariant_annotation() {
+    let src = r#"
+pub struct S {
+    pub x: i32,
+}
+
+#[cfg(test)]
+mod tests {
+    /// @temporal Invariant constraint: AlwaysPositive
+    #[test]
+    fn invariant_always_positive() {
+        // test body
+    }
+}
+"#;
+    let mined = rust_extractor::extract(src);
+    assert!(mined.fact_candidates.iter().any(|f|
+        f.source_pattern.contains("@temporal Invariant constraint: AlwaysPositive")),
+        "should extract @temporal Invariant annotation: {:?}",
+        mined.fact_candidates.iter().map(|f| &f.source_pattern).collect::<Vec<_>>());
+}

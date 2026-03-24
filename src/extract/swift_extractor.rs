@@ -49,6 +49,9 @@ pub fn extract(source: &str) -> MinedModel {
         }
     }
 
+    // Extract @temporal annotations from generated tests
+    super::extract_temporal_annotations(source, &mut fact_candidates);
+
     MinedModel { sigs, fact_candidates }
 }
 
