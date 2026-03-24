@@ -104,6 +104,26 @@ jobs:
           grep -q '.every(' generated-ts/tests.ts
           grep -q '.allSatisfy' generated-swift/Tests.swift
 
+      # Combined self-extract: src/ + generated → full model coverage
+      - name: Verify combined extract covers all model sigs
+        run: |
+          mkdir -p /tmp/oxidtr-combined
+          cp -r src/* /tmp/oxidtr-combined/
+          cp generated/*.rs /tmp/oxidtr-combined/
+          cargo run -- extract /tmp/oxidtr-combined --lang rust -o /tmp/combined-extract.als
+          # Count unique sigs in both models
+          DOMAIN=$(grep -cE '^sig |^abstract sig |^one sig ' models/oxidtr-domain.als)
+          INTERNAL=$(grep -cE '^sig |^abstract sig |^one sig ' models/oxidtr-internal.als)
+          EXTRACTED=$(grep -cE '^sig |^abstract sig ' /tmp/combined-extract.als)
+          echo "domain: $DOMAIN, internal: $INTERNAL, extracted: $EXTRACTED"
+          # Every sig in domain model must be in extracted
+          DOMAIN_MISSING=$(comm -23 <(grep -E '^sig |^abstract sig |^one sig ' models/oxidtr-domain.als | sed 's/[{].*//' | sed 's/ extends.*//' | awk '{print $NF}' | sort -u) <(grep -E '^sig |^abstract sig ' /tmp/combined-extract.als | sed 's/[{].*//' | sed 's/ extends.*//' | awk '{print $NF}' | sort -u) | wc -l)
+          INTERNAL_MISSING=$(comm -23 <(grep -E '^sig |^abstract sig |^one sig ' models/oxidtr-internal.als | sed 's/[{].*//' | sed 's/ extends.*//' | awk '{print $NF}' | sort -u) <(grep -E '^sig |^abstract sig ' /tmp/combined-extract.als | sed 's/[{].*//' | sed 's/ extends.*//' | awk '{print $NF}' | sort -u) | wc -l)
+          echo "domain missing: $DOMAIN_MISSING, internal missing: $INTERNAL_MISSING"
+          test "$DOMAIN_MISSING" -eq 0 || { echo "FAIL: domain model has $DOMAIN_MISSING sigs not in extract"; exit 1; }
+          test "$INTERNAL_MISSING" -eq 0 || { echo "FAIL: internal model has $INTERNAL_MISSING sigs not in extract"; exit 1; }
+          echo "✓ Combined extract covers all model sigs (domain + internal)"
+
       # Verify cross-tests are marked as skipped/ignored
       - name: Verify cross-test markers
         run: |
