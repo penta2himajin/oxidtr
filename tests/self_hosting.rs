@@ -1,7 +1,7 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::rust;
-use oxidtr::mine;
+use oxidtr::extract;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -79,7 +79,7 @@ fn self_hosting_mine_sig_coverage_100_percent() {
         .collect();
 
     // Mine oxidtr's own source
-    let mined = mine::run("src/", Some("rust")).expect("mine src/ failed");
+    let mined = extract::run("src/", Some("rust")).expect("mine src/ failed");
 
     let mut missing: Vec<&str> = Vec::new();
     for sig in &mined.sigs {

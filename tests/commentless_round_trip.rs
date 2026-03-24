@@ -4,7 +4,7 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::{rust, typescript, jvm};
-use oxidtr::mine::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor};
+use oxidtr::extract::{rust_extractor, ts_extractor, kotlin_extractor, java_extractor};
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 

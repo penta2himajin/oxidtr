@@ -1,6 +1,6 @@
-use oxidtr::mine::rust_extractor;
-use oxidtr::mine::renderer;
-use oxidtr::mine::{MinedMultiplicity, Confidence, resolve_external_types, is_language_primitive, is_type_parameter};
+use oxidtr::extract::rust_extractor;
+use oxidtr::extract::renderer;
+use oxidtr::extract::{MinedMultiplicity, Confidence, resolve_external_types, is_language_primitive, is_type_parameter};
 
 #[test]
 fn mine_rust_struct_to_sig() {
@@ -352,17 +352,17 @@ fn is_type_parameter_detects_generic_params() {
 fn resolve_external_types_filters_type_parameters() {
     // Simulate what happens when mine extracts from generic code:
     // fields with target "T" or "S" should not become placeholder sigs
-    let mut model = oxidtr::mine::MinedModel {
+    let mut model = oxidtr::extract::MinedModel {
         sigs: vec![
-            oxidtr::mine::MinedSig {
+            oxidtr::extract::MinedSig {
                 name: "Container".to_string(),
                 fields: vec![
-                    oxidtr::mine::MinedField {
+                    oxidtr::extract::MinedField {
                         name: "value".to_string(),
                         target: "T".to_string(),
                         mult: MinedMultiplicity::One,
                     },
-                    oxidtr::mine::MinedField {
+                    oxidtr::extract::MinedField {
                         name: "handler".to_string(),
                         target: "Handler".to_string(),
                         mult: MinedMultiplicity::One,

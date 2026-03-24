@@ -1,6 +1,6 @@
 /// Tests for multi-language mine merging.
 
-use oxidtr::mine;
+use oxidtr::extract;
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
 use oxidtr::backend::typescript::TsTestRunner;
 
@@ -28,7 +28,7 @@ fn multi_lang_merge_rust_and_schema() {
     std::fs::write(dir.join(&schema_file.path), &schema_file.content).unwrap();
 
     // Mine with no --lang → multi-lang merge
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     assert!(result.sources_used.len() >= 2,
         "should use multiple sources: {:?}", result.sources_used);
@@ -58,7 +58,7 @@ fn multi_lang_merge_ts_and_schema() {
     let schema_file = oxidtr::backend::schema::generate(&ir);
     std::fs::write(dir.join(&schema_file.path), &schema_file.content).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     assert!(result.sources_used.len() >= 2,
         "should use TS + schema: {:?}", result.sources_used);
@@ -90,7 +90,7 @@ export interface Group {}
 export interface Role {}
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     assert!(result.sources_used.len() == 2, "sources: {:?}", result.sources_used);
 
@@ -125,7 +125,7 @@ export interface Team {
 export interface User {}
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     // Should detect multiplicity conflict
     assert!(!result.conflicts.is_empty(),
@@ -156,7 +156,7 @@ export interface User {
 }
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     let user = result.model.sigs.iter().find(|s| s.name == "User").unwrap();
     // Should have all 3 fields: name (both), age (rust), email (ts)
@@ -198,7 +198,7 @@ pub struct User {
 }
 "##).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     assert!(result.sources_used.iter().any(|s| s.contains("rust")));
     assert!(result.sources_used.iter().any(|s| s.contains("schema")));
@@ -214,7 +214,7 @@ fn single_lang_override_skips_merge() {
     std::fs::write(dir.join("models.ts"), "export interface Bar {}").unwrap();
 
     // With --lang rust, only Rust files are mined
-    let result = mine::run_merge(dir.to_str().unwrap(), Some("rust")).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), Some("rust")).unwrap();
     assert_eq!(result.sources_used, vec!["rust"]);
     assert!(result.model.sigs.iter().any(|s| s.name == "Foo"));
     assert!(!result.model.sigs.iter().any(|s| s.name == "Bar"));
@@ -240,7 +240,7 @@ export function check(items: Item[]): void {
 export interface Item {}
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     // Fact candidates should be deduplicated
     let contains_facts: Vec<_> = result.model.fact_candidates.iter()
@@ -271,8 +271,8 @@ export interface User {
 export interface Group {}
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
-    let rendered = mine::renderer::render(&result.model);
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let rendered = extract::renderer::render(&result.model);
 
     // Merged model should be parseable as Alloy
     let parsed = oxidtr::parser::parse(&rendered);
@@ -302,7 +302,7 @@ export interface Team {
 export interface User {}
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
 
     // MergeResult should contain actionable conflict info
     assert!(!result.conflicts.is_empty());
@@ -341,7 +341,7 @@ data class Item(val placeholder: Unit = Unit)
 data class Owner(val placeholder: Unit = Unit)
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
     assert!(result.conflicts.is_empty(),
         "same structure across Rust+Kotlin should have no conflicts: {:?}", result.conflicts);
     assert!(result.sources_used.len() >= 2);
@@ -366,7 +366,7 @@ export interface Order {
 }
 "#).unwrap();
 
-    let result = mine::run_merge(dir.to_str().unwrap(), None).unwrap();
+    let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();
     assert!(result.conflicts.iter().any(|c|
         c.sig_name == "Order" && c.field_name == "status"
             && c.description.contains("target type")
