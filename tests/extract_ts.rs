@@ -377,7 +377,6 @@ sig TransformProps extends BaseProps {}
 sig DisplayProps extends BaseProps {}
 "#;
     // Manually construct IR with intersection_of
-    use oxidtr::ir::nodes::StructureNode;
     use oxidtr::parser::ast::SigMultiplicity;
     let model4 = oxidtr::parser::parse(als).expect("parse");
     let mut ir = oxidtr::ir::lower(&model4).expect("lower");

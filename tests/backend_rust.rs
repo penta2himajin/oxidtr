@@ -452,3 +452,15 @@ fn rust_doc_comments_preserved_on_structs() {
     assert!(models.contains("/// Invariant: HasRole"),
         "models.rs should still have doc comments:\n{models}");
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn rust_var_field_annotated() {
+    let files = generate_from(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("@alloy: var"),
+        "var field should have @alloy: var annotation:\n{models}");
+}

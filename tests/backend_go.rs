@@ -181,3 +181,15 @@ fn go_tests_import_testing() {
     let t = find_file(&files, "models_test.go");
     assert!(t.contains("import \"testing\""));
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn go_var_field_annotated() {
+    let files = generate_go(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let m = find_file(&files, "models.go");
+    assert!(m.contains("@alloy: var"),
+        "var field should have @alloy: var annotation in Go:\n{m}");
+}

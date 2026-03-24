@@ -182,7 +182,8 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
                 }
             }
 
-            writeln!(out, "    let {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
+            let let_or_var = if f.is_var { "var" } else { "let" };
+            writeln!(out, "    {let_or_var} {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();
     }

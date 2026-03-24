@@ -281,6 +281,9 @@ fn generate_struct(
             } else {
                 multiplicity_to_type(&f.target, &f.mult, is_self_ref)
             };
+            if f.is_var {
+                writeln!(out, "    /// @alloy: var").unwrap();
+            }
             writeln!(out, "    pub {}: {type_str},", f.name).unwrap();
         }
         writeln!(out, "}}").unwrap();

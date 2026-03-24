@@ -212,7 +212,8 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             for ann in &annotations {
                 writeln!(out, "    {ann}").unwrap();
             }
-            writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
+            let val_or_var = if f.is_var { "var" } else { "val" };
+            writeln!(out, "    {val_or_var} {}: {type_str}{comma}", f.name).unwrap();
         }
         // Sig-level constraint annotations (FieldOrdering → init block)
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);

@@ -181,6 +181,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
                 }
             }
 
+            if f.is_var {
+                writeln!(out, "\t// @alloy: var").unwrap();
+            }
             writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();

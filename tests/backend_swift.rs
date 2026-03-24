@@ -182,3 +182,17 @@ fn swift_tests_import_xctest() {
     assert!(t.contains("import XCTest"));
     assert!(t.contains("XCTestCase"));
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn swift_var_field_uses_var_keyword() {
+    let files = generate_swift(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("var balance:"),
+        "var field should use 'var' instead of 'let' in Swift:\n{m}");
+    assert!(!m.contains("let balance:"),
+        "var field should NOT use 'let' in Swift:\n{m}");
+}

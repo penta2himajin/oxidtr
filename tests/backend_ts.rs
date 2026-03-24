@@ -292,3 +292,15 @@ fn ts_helpers_file_for_tc() {
     assert!(helpers.contains("tcNext"),
         "helpers.ts should contain TC function:\n{helpers}");
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn ts_var_field_annotated() {
+    let files = generate_from(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(models.contains("@alloy: var"),
+        "var field should have @alloy: var annotation:\n{models}");
+}

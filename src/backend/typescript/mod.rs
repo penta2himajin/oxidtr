@@ -178,6 +178,9 @@ fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_f
             } else {
                 mult_to_ts_type(&f.target, &f.mult)
             };
+            if f.is_var {
+                writeln!(out, "  // @alloy: var").unwrap();
+            }
             writeln!(out, "  {}: {};", f.name, type_str).unwrap();
         }
         writeln!(out, "}}").unwrap();

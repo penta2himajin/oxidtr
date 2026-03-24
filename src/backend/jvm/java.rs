@@ -196,6 +196,9 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         annotations.push("/* Consider using Set<T> for uniqueness (disj constraint) */".to_string());
                     }
                 }
+                if f.is_var {
+                    annotations.push("/* @alloy: var */".to_string());
+                }
                 let annotation_str = if annotations.is_empty() {
                     String::new()
                 } else {

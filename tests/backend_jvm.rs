@@ -445,3 +445,27 @@ fn mine_java_enum_instance() {
     assert!(mined.sigs.iter().any(|s| s.name == "Config"),
         "should extract enum as sig: {:?}", mined.sigs);
 }
+
+// ── Alloy 6: var field ──────────────────────────────────────────────────────
+
+#[test]
+fn kt_var_field_uses_var_keyword() {
+    let files = generate_kt(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "Models.kt");
+    assert!(models.contains("var balance:"),
+        "var field should use 'var' instead of 'val' in Kotlin:\n{models}");
+    assert!(!models.contains("val balance:"),
+        "var field should NOT use 'val' in Kotlin:\n{models}");
+}
+
+#[test]
+fn java_var_field_annotated() {
+    let files = generate_java(r#"
+        sig Account { var balance: one Int }
+    "#);
+    let models = find_file(&files, "Models.java");
+    assert!(models.contains("@alloy: var"),
+        "var field should have @alloy: var annotation in Java:\n{models}");
+}
