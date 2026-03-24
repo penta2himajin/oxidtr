@@ -9,6 +9,10 @@ pub struct IRField {
     pub mult: Multiplicity,
     pub target: String, // refers to StructureNode name (key type for maps)
     pub value_type: Option<String>, // Some(B) for map fields (A -> B)
+    /// Raw union type string from source language (e.g. "number | string").
+    /// When present, backends use this for precise output instead of `target`.
+    /// Alloy cannot express field-level union types; `target` holds the first variant.
+    pub raw_union_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +22,9 @@ pub struct StructureNode {
     pub sig_multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<IRField>,
+    /// For type aliases that are intersections (e.g. `type Base = A & B & C`).
+    /// Backends render these as intersection/composition types rather than plain structs.
+    pub intersection_of: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -20,6 +20,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -38,6 +39,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: true,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -50,6 +52,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: true,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
             for v in variants {
                 sigs.push(MinedSig {
@@ -58,6 +61,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: false,
                     parent: Some(name.clone()),
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
             }
         }
@@ -176,7 +180,7 @@ fn parse_java_param(param: &str) -> Option<MinedField> {
     // Reconstruct type (everything before the last word)
     let type_str = parts[..parts.len() - 1].join(" ");
     let (mult, target) = java_type_to_mult(&type_str);
-    Some(MinedField { name, mult, target })
+    Some(MinedField { name, mult, target, raw_union_type: None })
 }
 
 fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {

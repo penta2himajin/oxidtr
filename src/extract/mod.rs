@@ -351,6 +351,8 @@ pub struct MinedField {
     pub name: String,
     pub mult: MinedMultiplicity,
     pub target: String,
+    /// Raw union type string preserved from source (e.g. "number | string").
+    pub raw_union_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +362,8 @@ pub struct MinedSig {
     pub is_abstract: bool,
     pub parent: Option<String>,
     pub source_location: String,
+    /// Components for intersection type aliases (e.g. ["A", "B", "C"] for `type T = A & B & C`).
+    pub intersection_of: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -452,6 +456,7 @@ pub fn resolve_external_types(model: &mut MinedModel) {
             is_abstract: false,
             parent: None,
             source_location: "external type".to_string(),
+            intersection_of: vec![],
         });
     }
 }

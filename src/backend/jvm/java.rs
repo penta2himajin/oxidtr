@@ -96,6 +96,13 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     writeln!(out).unwrap();
 
     for s in &ir.structures {
+        // Intersection type → interface Foo extends A, B, C
+        if !s.intersection_of.is_empty() {
+            let parents = s.intersection_of.join(", ");
+            writeln!(out, "public interface {} extends {} {{}}", s.name, parents).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         if ctx.is_variant(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
@@ -196,6 +203,14 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 };
                 let java_type = if let Some(vt) = &f.value_type {
                     format!("Map<{}, {}>", f.target, vt)
+                } else if let Some(_raw) = &f.raw_union_type {
+                    // Union types → Object
+                    match f.mult {
+                        Multiplicity::Lone => "@Nullable Object".to_string(),
+                        Multiplicity::Set  => "List<Object>".to_string(),
+                        Multiplicity::Seq  => "List<Object>".to_string(),
+                        Multiplicity::One  => "Object".to_string(),
+                    }
                 } else {
                     mult_to_java_type(&f.target, &f.mult)
                 };
@@ -273,6 +288,8 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
                         .map(|f| {
                             let t = if let Some(vt) = &f.value_type {
                                 format!("Map<{}, {}>", f.target, vt)
+                            } else if let Some(_raw) = &f.raw_union_type {
+                                "Object".to_string()
                             } else {
                                 mult_to_java_type(&f.target, &f.mult)
                             };

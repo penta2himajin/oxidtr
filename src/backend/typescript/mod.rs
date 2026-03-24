@@ -114,6 +114,22 @@ fn generate_models(ir: &OxidtrIR) -> String {
             continue;
         }
 
+        // Intersection type alias: type Foo = A & B & C
+        if !s.intersection_of.is_empty() {
+            let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+            if !constraint_names.is_empty() {
+                writeln!(out, "/**").unwrap();
+                for cn in &constraint_names {
+                    writeln!(out, " * @invariant {cn}").unwrap();
+                }
+                writeln!(out, " */").unwrap();
+            }
+            let components = s.intersection_of.join(" & ");
+            writeln!(out, "export type {} = {};", s.name, components).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
         // JSDoc from constraints
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
         if !constraint_names.is_empty() {
@@ -152,6 +168,13 @@ fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_f
             write_field_annotations_ts(out, ir, &s.name, f, disj_fields);
             let type_str = if let Some(vt) = &f.value_type {
                 format!("Map<{}, {}>", f.target, vt)
+            } else if let Some(raw) = &f.raw_union_type {
+                // Preserve raw union type (e.g. "number | string") from source language
+                if f.mult == Multiplicity::Lone {
+                    format!("{} | null", raw)
+                } else {
+                    raw.clone()
+                }
             } else {
                 mult_to_ts_type(&f.target, &f.mult)
             };
@@ -223,6 +246,12 @@ fn generate_union_type(
                 for f in fields {
                     let type_str = if let Some(vt) = &f.value_type {
                         format!("Map<{}, {}>", f.target, vt)
+                    } else if let Some(raw) = &f.raw_union_type {
+                        if f.mult == Multiplicity::Lone {
+                            format!("{} | null", raw)
+                        } else {
+                            raw.clone()
+                        }
                     } else {
                         mult_to_ts_type(&f.target, &f.mult)
                     };

@@ -315,3 +315,83 @@ export function check(x: User): boolean
         f.source_pattern.contains("includes")
     ), "should extract .includes() fact from function body");
 }
+
+#[test]
+fn ts_extract_union_field_type() {
+    use oxidtr::extract::ts_extractor;
+    let src = r#"
+export interface DisplayProps {
+  blendMode?: number | string;
+  tint?: number;
+}
+"#;
+    let model = ts_extractor::extract(src);
+    let sig = model.sigs.iter().find(|s| s.name == "DisplayProps").expect("DisplayProps not found");
+    let blend = sig.fields.iter().find(|f| f.name == "blendMode").expect("blendMode not found");
+    assert_eq!(blend.raw_union_type, Some("number | string".to_string()),
+        "blendMode should have raw_union_type preserved");
+    // tint has no union type
+    let tint = sig.fields.iter().find(|f| f.name == "tint").expect("tint not found");
+    assert_eq!(tint.raw_union_type, None, "tint should have no raw_union_type");
+}
+
+#[test]
+fn ts_extract_intersection_type_alias() {
+    use oxidtr::extract::ts_extractor;
+    let src = r#"
+export type BaseProps = TransformProps & DisplayProps & OriginProps;
+"#;
+    let model = ts_extractor::extract(src);
+    let sig = model.sigs.iter().find(|s| s.name == "BaseProps").expect("BaseProps not found");
+    assert_eq!(
+        sig.intersection_of,
+        vec!["TransformProps".to_string(), "DisplayProps".to_string(), "OriginProps".to_string()],
+        "BaseProps should have intersection_of set"
+    );
+}
+
+#[test]
+fn ts_generate_union_type_passthrough() {
+    let als = r#"
+sig DisplayProps {
+  blendMode: lone Num, -- union: number | string
+  tint: lone Num
+}
+sig Num {}
+"#;
+    let model = oxidtr::parser::parse(als).expect("parse");
+    let ir = oxidtr::ir::lower(&model).expect("lower");
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.ts").expect("models.ts");
+    assert!(models.content.contains("blendMode: number | string | null"),
+        "blendMode should use raw union type, got:\n{}", models.content);
+    assert!(models.content.contains("tint: Num | null"),
+        "tint without annotation should use sig type");
+}
+
+#[test]
+fn ts_generate_intersection_type_alias() {
+    let als = r#"
+abstract sig BaseProps {}
+sig TransformProps extends BaseProps {}
+sig DisplayProps extends BaseProps {}
+"#;
+    // Manually construct IR with intersection_of
+    use oxidtr::ir::nodes::StructureNode;
+    use oxidtr::parser::ast::SigMultiplicity;
+    let model4 = oxidtr::parser::parse(als).expect("parse");
+    let mut ir = oxidtr::ir::lower(&model4).expect("lower");
+    // Add a fake intersection node
+    ir.structures.push(oxidtr::ir::nodes::StructureNode {
+        name: "AllProps".to_string(),
+        is_enum: false,
+        sig_multiplicity: SigMultiplicity::Default,
+        parent: None,
+        fields: vec![],
+        intersection_of: vec!["TransformProps".to_string(), "DisplayProps".to_string()],
+    });
+    let files = oxidtr::backend::typescript::generate(&ir);
+    let models = files.iter().find(|f| f.path == "models.ts").expect("models.ts");
+    assert!(models.content.contains("export type AllProps = TransformProps & DisplayProps"),
+        "AllProps should be generated as intersection type alias, got:\n{}", models.content);
+}

@@ -154,8 +154,8 @@ fn differ_no_diff_when_in_sync() {
                 name: "name".into(),
                 mult: Multiplicity::One,
                 target: "String".into(),
-                value_type: None,
-            }],
+                value_type: None, raw_union_type: None }],
+            intersection_of: vec![],
         }],
         vec![],
     );
@@ -179,7 +179,7 @@ fn differ_no_diff_when_in_sync() {
 fn differ_missing_struct() {
     use oxidtr::check::impl_parser::ExtractedImpl;
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
@@ -208,7 +208,8 @@ fn differ_missing_field() {
             is_enum: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
-            fields: vec![IRField { name: "email".into(), mult: Multiplicity::One, target: "String".into(), value_type: None }],
+            fields: vec![IRField { name: "email".into(), mult: Multiplicity::One, target: "String".into(), value_type: None, raw_union_type: None }],
+            intersection_of: vec![],
         }],
         vec![],
     );
@@ -227,7 +228,7 @@ fn differ_missing_field() {
 fn differ_extra_field() {
     use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl {
@@ -254,7 +255,8 @@ fn differ_multiplicity_mismatch() {
             is_enum: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
-            fields: vec![IRField { name: "manager".into(), mult: Multiplicity::Lone, target: "User".into(), value_type: None }],
+            fields: vec![IRField { name: "manager".into(), mult: Multiplicity::Lone, target: "User".into(), value_type: None, raw_union_type: None }],
+            intersection_of: vec![],
         }],
         vec![],
     );

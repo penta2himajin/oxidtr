@@ -44,6 +44,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
             mult: f.mult.clone(),
             target: f.target.clone(),
             value_type: f.value_type.clone(),
+            raw_union_type: f.raw_union_type.clone(), // propagate from AST annotation
         })
         .collect();
 
@@ -53,6 +54,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
         sig_multiplicity: sig.multiplicity,
         parent: sig.parent.clone(),
         fields,
+        intersection_of: vec![], // set by extractors for type aliases
     }
 }
 

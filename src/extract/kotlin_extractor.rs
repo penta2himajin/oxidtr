@@ -27,6 +27,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
             // Check for extends (": Parent()")
             if let Some((_child, parent)) = parse_extends(&full_text) {
@@ -42,6 +43,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -53,6 +55,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: false,
                 parent: Some(parent),
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -64,6 +67,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: true,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
         }
 
@@ -76,6 +80,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_abstract: true,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
+                intersection_of: vec![],
             });
             for v in variants {
                 sigs.push(MinedSig {
@@ -84,6 +89,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: false,
                     parent: Some(name.clone()),
                     source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
                 });
             }
         }
@@ -229,7 +235,7 @@ fn parse_kt_param(param: &str) -> Option<MinedField> {
     if name.is_empty() { return None; }
     let type_str = rest[colon + 1..].trim();
     let (mult, target) = kt_type_to_mult(type_str);
-    Some(MinedField { name, mult, target })
+    Some(MinedField { name, mult, target, raw_union_type: None })
 }
 
 fn strip_annotations(s: &str) -> String {

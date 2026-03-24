@@ -30,6 +30,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_abstract: false,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
+                            intersection_of: vec![],
                         });
                         i += 1; // advance past this unit struct line
                     } else {
@@ -59,6 +60,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_abstract: false,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
+                            intersection_of: vec![],
                         });
                     }
                     continue;
@@ -104,7 +106,7 @@ pub fn extract(source: &str) -> MinedModel {
                                                             let type_str = part[colon + 1..].trim();
                                                             if !type_str.is_empty() {
                                                                 let (mult, target) = rust_type_to_mult(type_str);
-                                                                vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                                                vfields.push(MinedField { name: fname.to_string(), mult, target, raw_union_type: None });
                                                             }
                                                         }
                                                     }
@@ -125,7 +127,7 @@ pub fn extract(source: &str) -> MinedModel {
                                                             let type_str = vclean[colon + 1..].trim();
                                                             if !type_str.is_empty() {
                                                                 let (mult, target) = rust_type_to_mult(type_str);
-                                                                vfields.push(MinedField { name: fname.to_string(), mult, target });
+                                                                vfields.push(MinedField { name: fname.to_string(), mult, target, raw_union_type: None });
                                                             }
                                                         }
                                                     }
@@ -148,7 +150,7 @@ pub fn extract(source: &str) -> MinedModel {
                                                     let p = p.trim();
                                                     if p.is_empty() { return None; }
                                                     let (mult, target) = rust_type_to_mult(p);
-                                                    Some(MinedField { name: format!("field{fi}"), mult, target })
+                                                    Some(MinedField { name: format!("field{fi}"), mult, target, raw_union_type: None })
                                                 })
                                                 .collect();
                                             variants.push((vname, vfields));
@@ -169,6 +171,7 @@ pub fn extract(source: &str) -> MinedModel {
                         is_abstract: true,
                         parent: None,
                         source_location: format!("line {}", line_num + 1),
+                        intersection_of: vec![],
                     });
                     for (vname, vfields) in variants {
                         sigs.push(MinedSig {
@@ -177,6 +180,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_abstract: false,
                             parent: Some(name.clone()),
                             source_location: format!("line {}", line_num + 1),
+                            intersection_of: vec![],
                         });
                     }
                     continue;
@@ -226,7 +230,7 @@ fn parse_rust_field(line: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim().trim_end_matches(',').trim();
     if type_str.is_empty() { return None; }
     let (mult, target) = rust_type_to_mult(type_str);
-    Some(MinedField { name, mult, target })
+    Some(MinedField { name, mult, target, raw_union_type: None })
 }
 
 fn rust_type_to_mult(rust_type: &str) -> (MinedMultiplicity, String) {

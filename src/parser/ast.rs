@@ -14,6 +14,7 @@ pub struct FieldDecl {
     pub mult: Multiplicity,
     pub target: String, // refers to sig name (key type for maps)
     pub value_type: Option<String>, // Some(B) when declared as `A -> B` (map type)
+    pub raw_union_type: Option<String>, // From `-- union: A | B` comment annotation
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

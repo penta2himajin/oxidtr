@@ -94,6 +94,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
             is_abstract: true,
             parent: None,
             source_location: loc.clone(),
+            intersection_of: vec![],
         });
         for v in variants {
             sigs.push(MinedSig {
@@ -102,6 +103,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_abstract: false,
                 parent: Some(name.to_string()),
                 source_location: loc.clone(),
+                intersection_of: vec![],
             });
         }
     } else if body.contains("\"oneOf\"") && body.contains("\"discriminator\"") {
@@ -112,6 +114,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
             is_abstract: true,
             parent: None,
             source_location: loc.clone(),
+            intersection_of: vec![],
         });
         let variant_sigs = extract_discriminated_variants(name, body, &loc);
         sigs.extend(variant_sigs);
@@ -124,6 +127,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
             is_abstract: false,
             parent: None,
             source_location: loc,
+            intersection_of: vec![],
         });
     } else if body.contains("\"type\": \"string\"") {
         // Bare abstract sig (enum with no known variants)
@@ -133,6 +137,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
             is_abstract: true,
             parent: None,
             source_location: loc,
+            intersection_of: vec![],
         });
     }
 
@@ -244,6 +249,7 @@ fn extract_discriminated_variants(parent_name: &str, body: &str, loc: &str) -> V
             is_abstract: false,
             parent: Some(parent_name.to_string()),
             source_location: loc.to_string(),
+            intersection_of: vec![],
         });
     }
 
@@ -375,6 +381,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
                 name: name.to_string(),
                 mult: MinedMultiplicity::Lone,
                 target,
+                raw_union_type: None,
             });
         }
     }
@@ -393,6 +400,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
                     name: name.to_string(),
                     mult,
                     target,
+                    raw_union_type: None,
                 });
             }
         }
@@ -404,6 +412,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
             name: name.to_string(),
             mult: MinedMultiplicity::One,
             target,
+            raw_union_type: None,
         });
     }
 
