@@ -474,19 +474,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
 
-        // Alloy 6: temporal facts with prime → generate transition test
+        // Alloy 6: temporal facts with prime → generate scaffold test
+        // Prime references (x') require before/after state capture; emit scaffold.
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-            let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
+            let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /** @temporal Transition constraint: {fact_name} */").unwrap();
-            writeln!(out, "    /** Verifies state-transition invariant (prime = next-state). */").unwrap();
+            writeln!(out, "    /** Scaffold: prime (next-state) references require a before/after transition mechanism. */").unwrap();
             writeln!(out, "    @Test").unwrap();
             writeln!(out, "    fun `transition {fact_name}`() {{").unwrap();
+            writeln!(out, "        // TODO: apply transition, then assert post-condition").unwrap();
+            writeln!(out, "        // Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+                writeln!(out, "        // pre: capture {pname}: List<{tname}> before transition").unwrap();
+                writeln!(out, "        // post: assert condition on {pname} after transition").unwrap();
             }
-            writeln!(out, "        assertTrue({body})").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
             continue;
@@ -530,7 +533,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(ref kind) = temporal_kind {
             let note = match kind {
                 analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
-                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                    " — liveness property: cannot be fully verified at runtime; static test approximates via implies",
                 analyze::TemporalKind::Binary =>
                     " — binary temporal: requires trace-based verification",
                 _ => "",

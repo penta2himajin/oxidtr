@@ -462,12 +462,17 @@ fn kt_var_field_uses_var_keyword() {
 
 #[test]
 fn java_var_field_annotated() {
+    // Java records are immutable. Sigs with var fields should generate a class instead.
     let files = generate_java(r#"
         sig Account { var balance: one Int }
     "#);
     let models = find_file(&files, "Models.java");
-    assert!(models.contains("@alloy: var"),
-        "var field should have @alloy: var annotation in Java:\n{models}");
+    assert!(models.contains("class Account"),
+        "var field sig should generate class (not record) in Java:\n{models}");
+    assert!(models.contains("MUTABLE"),
+        "var field should be annotated as MUTABLE in Java:\n{models}");
+    assert!(!models.contains("record Account"),
+        "var field sig should NOT generate record in Java:\n{models}");
 }
 
 // ── Alloy 6: var field extraction ───────────────────────────────────────────

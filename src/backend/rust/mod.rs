@@ -252,7 +252,7 @@ fn generate_struct(
     // Singleton: one sig → unit struct + INSTANCE constant
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
         if s.is_var {
-            writeln!(out, "/// @alloy: var sig").unwrap();
+            writeln!(out, "/// MUTABLE SIG: instances of this sig change across state transitions").unwrap();
         }
         if use_serde {
             writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
@@ -265,7 +265,7 @@ fn generate_struct(
     }
 
     if s.is_var {
-        writeln!(out, "/// @alloy: var sig").unwrap();
+        writeln!(out, "/// MUTABLE SIG: instances of this sig change across state transitions").unwrap();
     }
     if use_serde {
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
@@ -288,7 +288,7 @@ fn generate_struct(
                 multiplicity_to_type(&f.target, &f.mult, is_self_ref)
             };
             if f.is_var {
-                writeln!(out, "    /// @alloy: var").unwrap();
+                writeln!(out, "    /// MUTABLE: this field changes across state transitions").unwrap();
             }
             writeln!(out, "    pub {}: {type_str},", f.name).unwrap();
         }
@@ -540,28 +540,27 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
 
-        // Alloy 6: temporal facts with prime → generate transition test
+        // Alloy 6: temporal facts with prime → generate scaffold test
+        // Prime references (x') require before/after state capture which cannot be
+        // expressed as a simple field access; emit a scaffold with TODO comments.
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("transition_{}", to_snake_case(&fact_name));
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
             if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
                 continue;
             }
-            let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+            let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
-            writeln!(out, "    /// Verifies state-transition invariant (prime = next-state).").unwrap();
+            writeln!(out, "    /// Scaffold: prime (next-state) references require a before/after transition mechanism.").unwrap();
             writeln!(out, "    #[test]").unwrap();
             writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "        // TODO: apply transition, then assert post-condition").unwrap();
+            writeln!(out, "        // Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                if has_fixture.contains(tname) {
-                    let snake = to_snake_case(tname);
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
-                } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
-                }
+                writeln!(out, "        // pre: capture {pname}: Vec<{tname}> before transition").unwrap();
+                writeln!(out, "        // post: assert condition on {pname} after transition").unwrap();
             }
-            writeln!(out, "        assert!({body});").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
             continue;
@@ -624,9 +623,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(kind) = temporal_kind {
             let annotation = match kind {
                 analyze::TemporalKind::Invariant => "@temporal Invariant: property must hold in all states",
-                analyze::TemporalKind::Liveness => "@temporal Liveness: cannot be fully tested statically; use trace checker for dynamic verification",
+                analyze::TemporalKind::Liveness => "@temporal Liveness property — cannot be fully verified at runtime; static test approximates via implies",
                 analyze::TemporalKind::PastInvariant => "@temporal PastInvariant: property must have held in all past states",
-                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: cannot be fully tested statically; use trace checker for dynamic verification",
+                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness property — cannot be fully verified at runtime; static test approximates via implies",
                 analyze::TemporalKind::Step => "@temporal Step: relates adjacent states",
                 analyze::TemporalKind::Binary => "@temporal Binary: temporal binary constraint",
             };

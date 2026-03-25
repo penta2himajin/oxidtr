@@ -461,8 +461,8 @@ fn rust_var_field_annotated() {
         sig Account { var balance: one Int }
     "#);
     let models = find_file(&files, "models.rs");
-    assert!(models.contains("@alloy: var"),
-        "var field should have @alloy: var annotation:\n{models}");
+    assert!(models.contains("MUTABLE"),
+        "var field should have MUTABLE annotation:\n{models}");
 }
 
 #[test]
@@ -485,8 +485,10 @@ fn rust_temporal_prime_fact_generates_transition_test() {
     let tests = find_file(&files, "tests.rs");
     assert!(tests.contains("transition_monotonically_increasing"),
         "should generate transition test for prime-containing fact:\n{tests}");
-    assert!(tests.contains("next_value"),
-        "transition test should reference next-state field:\n{tests}");
+    assert!(tests.contains("TODO: apply transition"),
+        "transition test should be a scaffold with TODO:\n{tests}");
+    assert!(!tests.contains("next_value"),
+        "transition test should NOT reference ghost field next_value:\n{tests}");
 }
 
 // ── Binary temporal static test ──────────────────────────────────────────────
