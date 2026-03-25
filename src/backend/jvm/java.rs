@@ -246,6 +246,15 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                     let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
                     constructor_checks.push(format!("// {desc}"));
                 }
+                analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                    let left_field = left.rsplit('.').next().unwrap_or(left);
+                    let right_field = right.rsplit('.').next().unwrap_or(right);
+                    constructor_checks.push(format!("if ({left_field}.stream().anyMatch({right_field}::contains)) throw new IllegalArgumentException(\"{left_field} and {right_field} must not overlap (disjoint constraint)\");"));
+                }
+                analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                    let cats = categories.join(", ");
+                    constructor_checks.push(format!("// exhaustive: must belong to one of [{cats}]"));
+                }
                 _ => {}
             }
         }
@@ -514,8 +523,32 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             _ => "invariant",
         };
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "    /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                analyze::TemporalKind::Binary =>
+                    " — binary temporal: requires trace-based verification",
+                _ => "",
+            };
+            writeln!(out, "    /** @temporal {:?} constraint: {fact_name}{note} */", kind).unwrap();
         }
+
+        // Binary temporal: static test cannot meaningfully assert the body
+        if temporal_kind == Some(analyze::TemporalKind::Binary) {
+            let op_label = if let Expr::TemporalBinary { op, .. } = &constraint.expr {
+                match op {
+                    TemporalBinaryOp::Until => "Until",
+                    TemporalBinaryOp::Since => "Since",
+                    TemporalBinaryOp::Release => "Release",
+                    TemporalBinaryOp::Triggered => "Triggered",
+                }
+            } else { "Binary" };
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();
+            writeln!(out, "        // binary temporal: requires trace-based verification; see check{op_label}{fact_name}").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        } else {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {
@@ -524,6 +557,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "        assertTrue({body});").unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
+        } // end non-binary temporal
 
         // Generate trace checker functions for temporal constraints
         if let Some(kind) = temporal_kind {

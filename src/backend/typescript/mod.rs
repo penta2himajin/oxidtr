@@ -184,10 +184,8 @@ fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_f
             } else {
                 mult_to_ts_type(&f.target, &f.mult)
             };
-            if f.is_var {
-                writeln!(out, "  // @alloy: var").unwrap();
-            }
-            writeln!(out, "  {}: {};", f.name, type_str).unwrap();
+            let readonly = if f.is_var { "" } else { "readonly " };
+            writeln!(out, "  {readonly}{}: {};", f.name, type_str).unwrap();
         }
         writeln!(out, "}}").unwrap();
     }
@@ -250,7 +248,7 @@ fn generate_union_type(
             let child = struct_map.get(v.as_str());
             let fields = child.map(|c| &c.fields).filter(|f| !f.is_empty());
             writeln!(out, "export interface {} {{", v).unwrap();
-            writeln!(out, "  kind: \"{}\";", v).unwrap();
+            writeln!(out, "  readonly kind: \"{}\";", v).unwrap();
             if let Some(fields) = fields {
                 for f in fields {
                     let type_str = if let Some(vt) = &f.value_type {
@@ -264,7 +262,8 @@ fn generate_union_type(
                     } else {
                         mult_to_ts_type(&f.target, &f.mult)
                     };
-                    writeln!(out, "  {}: {};", f.name, type_str).unwrap();
+                    let readonly = if f.is_var { "" } else { "readonly " };
+                    writeln!(out, "  {readonly}{}: {};", f.name, type_str).unwrap();
                 }
             }
             writeln!(out, "}}").unwrap();
@@ -508,8 +507,32 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         let ownership = super::detect_ownership_pattern(&constraint.expr, ir, ts_param_name);
 
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "  /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                analyze::TemporalKind::Binary =>
+                    " — binary temporal: requires trace-based verification",
+                _ => "",
+            };
+            writeln!(out, "  /** @temporal {:?} constraint: {fact_name}{note} */", kind).unwrap();
         }
+
+        // Binary temporal: static test cannot meaningfully assert the body
+        if temporal_kind == Some(analyze::TemporalKind::Binary) {
+            let op_label = if let Expr::TemporalBinary { op, .. } = &constraint.expr {
+                match op {
+                    TemporalBinaryOp::Until => "until",
+                    TemporalBinaryOp::Since => "since",
+                    TemporalBinaryOp::Release => "release",
+                    TemporalBinaryOp::Triggered => "triggered",
+                }
+            } else { "binary" };
+            let camel_name = to_camel_case(&fact_name);
+            writeln!(out, "  it('{}', () => {{", test_name).unwrap();
+            writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{camel_name}").unwrap();
+            writeln!(out, "  }});").unwrap();
+            writeln!(out).unwrap();
+        } else {
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
@@ -541,6 +564,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         writeln!(out, "    expect({body}).toBe(true);").unwrap();
         writeln!(out, "  }});").unwrap();
         writeln!(out).unwrap();
+        } // end non-binary temporal
 
         // Generate trace checker functions for temporal constraints
         if let Some(kind) = temporal_kind {
@@ -1026,9 +1050,15 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
 
-    // Only generate validators for concrete sigs with fields
+    // Generate validators for concrete sigs with fields or constraints
     let sigs_to_validate: Vec<&StructureNode> = ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .filter(|s| {
+            if variant_names.contains(&s.name) || s.is_enum { return false; }
+            if !s.fields.is_empty() { return true; }
+            // Also include sigs that have constraints (e.g., Exhaustive) even without fields
+            let constraints = analyze::constraints_for_sig(ir, &s.name);
+            !constraints.is_empty()
+        })
         .collect();
 
     if sigs_to_validate.is_empty() {
@@ -1137,11 +1167,22 @@ pub fn generate_validators(ir: &OxidtrIR) -> String {
                     writeln!(out, "  if ({cond}) errors.push(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
                 }
                 analyze::ConstraintInfo::Disjoint { left, right, .. } => {
-                    writeln!(out, "  // Disjoint: {left} and {right} must not overlap").unwrap();
+                    let left_field = left.rsplit('.').next().unwrap_or(left);
+                    let right_field = right.rsplit('.').next().unwrap_or(right);
+                    writeln!(out, "  {{ const leftSet = new Set({param_name}.{left_field}); if ({param_name}.{right_field}.some((e: unknown) => leftSet.has(e))) errors.push(\"{left_field} and {right_field} must not overlap (disjoint constraint)\"); }}").unwrap();
                 }
                 analyze::ConstraintInfo::Exhaustive { categories, .. } => {
                     let cats = categories.join(", ");
-                    writeln!(out, "  // Exhaustive: must belong to one of [{cats}]").unwrap();
+                    let checks: Vec<String> = categories.iter().map(|cat| {
+                        let parts: Vec<&str> = cat.split('.').collect();
+                        if parts.len() == 2 {
+                            format!("{}.{}.has({param_name})", parts[0], parts[1])
+                        } else {
+                            format!("{cat}.has({param_name})")
+                        }
+                    }).collect();
+                    let condition = checks.join(" || ");
+                    writeln!(out, "  if (!({condition})) errors.push(\"must belong to one of [{cats}]\");").unwrap();
                 }
                 _ => {} // Named, Membership — not directly translatable to simple validators
             }

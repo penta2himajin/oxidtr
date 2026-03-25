@@ -34,6 +34,7 @@ pub struct SigDecl {
     pub multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<FieldDecl>,
+    pub intersection_of: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

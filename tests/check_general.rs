@@ -156,8 +156,8 @@ data class User(
 )
 "#).unwrap();
 
-    std::fs::write(impl_dir.join("domain/Group.kt"), "data class Group(val placeholder: Unit = Unit)\n").unwrap();
-    std::fs::write(impl_dir.join("domain/Role.kt"), "data class Role(val placeholder: Unit = Unit)\n").unwrap();
+    std::fs::write(impl_dir.join("domain/Group.kt"), "object Group\n").unwrap();
+    std::fs::write(impl_dir.join("domain/Role.kt"), "object Role\n").unwrap();
 
     let config = CheckConfig { impl_dir: impl_dir.to_str().unwrap().to_string() };
     let result = check::run(model_path.to_str().unwrap(), &config).unwrap();

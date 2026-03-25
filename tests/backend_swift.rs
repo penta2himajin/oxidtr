@@ -196,3 +196,35 @@ fn swift_var_field_uses_var_keyword() {
     assert!(!m.contains("let balance:"),
         "var field should NOT use 'let' in Swift:\n{m}");
 }
+
+// ── Binary temporal static test ──────────────────────────────────────────────
+
+#[test]
+fn swift_binary_temporal_static_test_is_comment_only() {
+    let files = generate_swift(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let tests = find_file(&files, "Tests.swift");
+    assert!(tests.contains("test_temporal_WaitUntilDone"),
+        "should generate temporal test:\n{tests}");
+    assert!(tests.contains("binary temporal: requires trace-based verification"),
+        "should document trace-based verification:\n{tests}");
+}
+
+// ── Disjoint constraint validation ──────────────────────────────────────────
+
+#[test]
+fn swift_test_generates_disjoint_check() {
+    let files = generate_swift(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#);
+    let tests = find_file(&files, "Tests.swift");
+    assert!(tests.contains("morning"), "test should reference morning field:\n{tests}");
+    assert!(tests.contains("evening"), "test should reference evening field:\n{tests}");
+    // The disjoint fact translates through expr_translator using set intersection
+    assert!(tests.contains("isDisjoint") || tests.contains("intersection"),
+        "test should check disjoint using set operations:\n{tests}");
+}

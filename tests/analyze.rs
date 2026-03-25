@@ -707,6 +707,127 @@ fn describe_fun_app_with_receiver() {
     assert_eq!(desc, "c.count.plus[1]", "describe_expr should include receiver for FunApp");
 }
 
+// ── Disjoint constraint analysis ─────────────────────────────────────────────
+
+#[test]
+fn analyze_disjoint_constraint() {
+    let infos = analyze_from(
+        "sig Schedule { morning: set Task, evening: set Task }\nsig Task {}\nfact NoOverlap { no (Schedule.morning & Schedule.evening) }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Disjoint { sig_name, left, right }
+        if sig_name == "Schedule" && left.contains("morning") && right.contains("evening")
+    )), "expected Disjoint constraint, got: {:?}", infos);
+}
+
+// ── Exhaustive constraint analysis ────────────────────────────────────────────
+
+#[test]
+fn analyze_exhaustive_constraint() {
+    let infos = analyze_from(
+        "sig Item {}\nsig Category { items: set Item }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Exhaustive { sig_name, categories }
+        if sig_name == "Item" && categories.len() == 2
+    )), "expected Exhaustive constraint with 2 categories, got: {:?}", infos);
+}
+
+#[test]
+fn analyze_exhaustive_three_categories() {
+    let infos = analyze_from(
+        "sig Task {}\nsig Queue { tasks: set Task }\nsig High extends Queue {}\nsig Medium extends Queue {}\nsig Low extends Queue {}\nfact AllCovered { all t: Task | t in High.tasks or t in Medium.tasks or t in Low.tasks }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Exhaustive { sig_name, categories }
+        if sig_name == "Task" && categories.len() == 3
+    )), "expected Exhaustive constraint with 3 categories, got: {:?}", infos);
+}
+
+// ── Exhaustive code generation ───────────────────────────────────────────────
+
+#[test]
+fn ts_exhaustive_generates_validator_code() {
+    // Use a model where the sig with the exhaustive constraint has fields
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let content = oxidtr::backend::typescript::generate_validators(&ir_val);
+    assert!(!content.is_empty(), "should generate validators content");
+    // Should generate actual validation code, not just a comment
+    assert!(!content.contains("// Exhaustive:"),
+        "should generate code instead of comment for exhaustive:\n{content}");
+    assert!(content.contains("must belong to"),
+        "should generate exhaustive membership check:\n{content}");
+}
+
+#[test]
+fn rust_exhaustive_generates_tryfrom_check() {
+    // Use a model where the sig with the exhaustive constraint has fields and a fact
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::rust::generate(&ir_val);
+    // Exhaustive check is in newtypes.rs (TryFrom)
+    let newtypes = files.iter().find(|f| f.path == "newtypes.rs");
+    assert!(newtypes.is_some(), "should generate newtypes.rs for fact Cover");
+    let content = &newtypes.unwrap().content;
+    assert!(content.contains("must belong to"),
+        "Rust should generate exhaustive validation in newtypes:\n{}", content);
+}
+
+#[test]
+fn kotlin_exhaustive_generates_require_check() {
+    // Use a model where the sig with exhaustive constraint has fields for init block
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::kotlin::generate(&ir_val);
+    let models = files.iter().find(|f| f.path == "Models.kt").unwrap();
+    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
+        "Kotlin should generate exhaustive validation:\n{}", models.content);
+}
+
+#[test]
+fn java_exhaustive_generates_constructor_check() {
+    // Use a model where the sig with exhaustive constraint has fields for constructor
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::jvm::java::generate(&ir_val);
+    let models = files.iter().find(|f| f.path == "Models.java").unwrap();
+    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
+        "Java should generate exhaustive validation:\n{}", models.content);
+}
+
+#[test]
+fn swift_exhaustive_generates_doc_comment() {
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::swift::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("Models")).unwrap();
+    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
+        "Swift should generate exhaustive doc comment:\n{}", models.content);
+}
+
+#[test]
+fn go_exhaustive_generates_doc_comment() {
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::go::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("models")).unwrap();
+    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
+        "Go should generate exhaustive doc comment:\n{}", models.content);
+}
+
 #[test]
 fn temporal_kind_non_temporal_is_none() {
     let model = parser::parse(

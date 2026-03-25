@@ -138,6 +138,15 @@ fn generate_models(ir: &OxidtrIR, ctx: &GoContext) -> String {
             }
         }
 
+        // Exhaustive constraint doc comments
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        for c in &sig_constraints {
+            if let analyze::ConstraintInfo::Exhaustive { categories, .. } = c {
+                let cats = categories.join(", ");
+                writeln!(out, "// exhaustive: must belong to one of [{cats}]").unwrap();
+            }
+        }
+
         if s.is_enum {
             generate_enum(&mut out, s, ctx);
         } else {
@@ -488,8 +497,32 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             _ => "invariant",
         };
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "// @temporal {:?} constraint: {fact_name}", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                analyze::TemporalKind::Binary =>
+                    " — binary temporal: requires trace-based verification",
+                _ => "",
+            };
+            writeln!(out, "// @temporal {:?} constraint: {fact_name}{note}", kind).unwrap();
         }
+
+        // Binary temporal: static test cannot meaningfully assert the body
+        if temporal_kind == Some(analyze::TemporalKind::Binary) {
+            let op_label = if let Expr::TemporalBinary { op, .. } = &constraint.expr {
+                match op {
+                    TemporalBinaryOp::Until => "until",
+                    TemporalBinaryOp::Since => "since",
+                    TemporalBinaryOp::Release => "release",
+                    TemporalBinaryOp::Triggered => "triggered",
+                }
+            } else { "binary" };
+            let snake_name = to_snake_case(&fact_name);
+            writeln!(out, "func Test_{}_{}(t *testing.T) {{", test_prefix, fact_name).unwrap();
+            writeln!(out, "\t// binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        } else {
         writeln!(out, "func Test_{}_{}(t *testing.T) {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
@@ -499,6 +532,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "\t}}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+        } // end non-binary temporal
 
         // Generate trace checker functions for temporal constraints
         if let Some(kind) = temporal_kind {

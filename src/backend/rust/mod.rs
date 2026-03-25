@@ -624,14 +624,33 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(kind) = temporal_kind {
             let annotation = match kind {
                 analyze::TemporalKind::Invariant => "@temporal Invariant: property must hold in all states",
-                analyze::TemporalKind::Liveness => "@temporal Liveness: property must eventually hold (static approximation)",
+                analyze::TemporalKind::Liveness => "@temporal Liveness: cannot be fully tested statically; use trace checker for dynamic verification",
                 analyze::TemporalKind::PastInvariant => "@temporal PastInvariant: property must have held in all past states",
-                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: property must have held at some past state",
+                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: cannot be fully tested statically; use trace checker for dynamic verification",
                 analyze::TemporalKind::Step => "@temporal Step: relates adjacent states",
                 analyze::TemporalKind::Binary => "@temporal Binary: temporal binary constraint",
             };
             writeln!(out, "    /// {annotation}").unwrap();
         }
+
+        // Binary temporal: static test cannot meaningfully assert the body
+        // (e.g. `p until q` requires a trace, not a snapshot)
+        if temporal_kind == Some(analyze::TemporalKind::Binary) {
+            let op_label = if let Expr::TemporalBinary { op, .. } = &constraint.expr {
+                match op {
+                    TemporalBinaryOp::Until => "until",
+                    TemporalBinaryOp::Since => "since",
+                    TemporalBinaryOp::Release => "release",
+                    TemporalBinaryOp::Triggered => "triggered",
+                }
+            } else { "binary" };
+            let snake_name = to_snake_case(&fact_name);
+            writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "        // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        } else {
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.
         let ownership = detect_ownership_pattern(&constraint.expr, ir);
@@ -674,6 +693,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "        assert!({body});").unwrap();
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
+        } // end non-binary temporal
 
         // Generate trace checker functions for temporal constraints (⑤ liveness, ④ binary temporal)
         if let Some(kind) = temporal_kind {
@@ -927,21 +947,32 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
     let mut out = String::new();
 
-    // Collect (fact_name, sig_name) pairs where the fact has a Comparison in its expression
+    // Collect (fact_name, sig_name) pairs where the fact has a Comparison or Disjoint pattern
     let mut newtype_pairs: Vec<(String, String)> = Vec::new();
+    let all_constraints = analyze::analyze(ir);
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name {
             Some(name) => name.clone(),
             None => continue,
         };
         // Check if this constraint contains a Comparison
-        if !expr_has_comparison(&constraint.expr) {
+        if expr_has_comparison(&constraint.expr) {
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            for (_pname, tname) in &params {
+                newtype_pairs.push((fact_name.clone(), tname.clone()));
+            }
             continue;
         }
-        // Find which sigs this constraint references
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-        for (_pname, tname) in &params {
-            newtype_pairs.push((fact_name.clone(), tname.clone()));
+        // Check if this constraint contains a Disjoint pattern (no (A & B))
+        if expr_has_disjoint_pattern(&constraint.expr) {
+            // For Disjoint, extract sig name from the analyzed constraints
+            for c in &all_constraints {
+                if let analyze::ConstraintInfo::Disjoint { sig_name, .. } = c {
+                    if !sig_name.is_empty() {
+                        newtype_pairs.push((fact_name.clone(), sig_name.clone()));
+                    }
+                }
+            }
         }
     }
 
@@ -1143,6 +1174,35 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
+        // Disjoint checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Disjoint { sig_name: s, left, right } = c {
+                if s == sig_name {
+                    let left_field = left.rsplit('.').next().unwrap_or(left);
+                    let right_field = right.rsplit('.').next().unwrap_or(right);
+                    writeln!(out, "        {{").unwrap();
+                    writeln!(out, "            let left_set: std::collections::HashSet<_> = value.{left_field}.iter().collect();").unwrap();
+                    writeln!(out, "            if value.{right_field}.iter().any(|e| left_set.contains(e)) {{").unwrap();
+                    writeln!(out, "                return Err(\"{left_field} and {right_field} must not overlap (disjoint constraint)\");").unwrap();
+                    writeln!(out, "            }}").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+            }
+        }
+
+        // Exhaustive checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Exhaustive { sig_name: s, categories } = c {
+                if s == sig_name {
+                    let cats = categories.join(", ");
+                    writeln!(out, "        // Exhaustive: must belong to one of [{cats}]").unwrap();
+                    writeln!(out, "        // (cross-sig membership — checked at integration level)").unwrap();
+                    writeln!(out, "        // To enable: pass category collections and verify membership").unwrap();
+                    writeln!(out, "        // must belong to one of [{cats}]").unwrap();
+                }
+            }
+        }
+
         // Inline the constraint expression directly instead of calling invariant function
         // Bind param names with type annotations for closure inference
         // Only the param matching sig_name gets value.clone(); others get empty Vec
@@ -1195,6 +1255,18 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         }
         Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(false, |r| expr_has_comparison(r)) || args.iter().any(|a| expr_has_comparison(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Check if expression matches the Disjoint pattern: `no (A & B)`
+fn expr_has_disjoint_pattern(expr: &crate::parser::ast::Expr) -> bool {
+    use crate::parser::ast::{Expr, QuantKind, SetOpKind};
+    match expr {
+        Expr::MultFormula { kind: QuantKind::No, expr } => {
+            matches!(expr.as_ref(), Expr::SetOp { op: SetOpKind::Intersection, .. })
+        }
+        Expr::TemporalUnary { expr: inner, .. } => expr_has_disjoint_pattern(inner),
+        _ => false,
     }
 }
 

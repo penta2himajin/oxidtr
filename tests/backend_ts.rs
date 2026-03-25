@@ -296,13 +296,15 @@ fn ts_helpers_file_for_tc() {
 // ── Alloy 6: var field ──────────────────────────────────────────────────────
 
 #[test]
-fn ts_var_field_annotated() {
+fn ts_var_field_not_readonly() {
     let files = generate_from(r#"
-        sig Account { var balance: one Int }
+        sig Account { var balance: one Int, name: one String }
     "#);
     let models = find_file(&files, "models.ts");
-    assert!(models.contains("@alloy: var"),
-        "var field should have @alloy: var annotation:\n{models}");
+    assert!(!models.contains("readonly balance"),
+        "var field should NOT have readonly:\n{models}");
+    assert!(models.contains("readonly name"),
+        "non-var field should have readonly:\n{models}");
 }
 
 #[test]
@@ -316,4 +318,38 @@ fn ts_temporal_prime_fact_generates_transition_test() {
         "should generate transition test for prime-containing fact:\n{tests}");
     assert!(tests.contains("next_value"),
         "transition test should reference next-state field:\n{tests}");
+}
+
+// ── Binary temporal static test ──────────────────────────────────────────────
+
+#[test]
+fn ts_binary_temporal_static_test_is_comment_only() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let tests = find_file(&files, "tests.ts");
+    assert!(tests.contains("temporal WaitUntilDone"),
+        "should generate temporal test:\n{tests}");
+    assert!(tests.contains("binary temporal: requires trace-based verification"),
+        "should document trace-based verification:\n{tests}");
+}
+
+// ── Disjoint constraint validation ──────────────────────────────────────────
+
+#[test]
+fn ts_validator_generates_disjoint_check() {
+    let model = parser::parse(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let validators = typescript::generate_validators(&ir_val);
+    assert!(validators.contains("morning"), "validator should reference morning field:\n{validators}");
+    assert!(validators.contains("evening"), "validator should reference evening field:\n{validators}");
+    assert!(!validators.contains("// Disjoint"), "should generate actual code, not just a comment:\n{validators}");
+    // Should check for overlap/intersection
+    assert!(validators.contains("must not overlap"),
+        "validator should check disjoint constraint:\n{validators}");
 }

@@ -193,3 +193,35 @@ fn go_var_field_annotated() {
     assert!(m.contains("@alloy: var"),
         "var field should have @alloy: var annotation in Go:\n{m}");
 }
+
+// ── Binary temporal static test ──────────────────────────────────────────────
+
+#[test]
+fn go_binary_temporal_static_test_is_comment_only() {
+    let files = generate_go(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let t = find_file(&files, "models_test.go");
+    assert!(t.contains("Test_temporal_WaitUntilDone"),
+        "should generate temporal test:\n{t}");
+    assert!(t.contains("binary temporal: requires trace-based verification"),
+        "should document trace-based verification:\n{t}");
+}
+
+// ── Disjoint constraint validation ──────────────────────────────────────────
+
+#[test]
+fn go_test_generates_disjoint_check() {
+    let files = generate_go(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(tests.contains("Morning"), "test should reference Morning field (Go PascalCase):\n{tests}");
+    assert!(tests.contains("Evening"), "test should reference Evening field (Go PascalCase):\n{tests}");
+    // The disjoint fact translates through expr_translator using set intersection
+    assert!(tests.contains("NoOverlap"),
+        "test should generate a test for the disjoint fact:\n{tests}");
+}
