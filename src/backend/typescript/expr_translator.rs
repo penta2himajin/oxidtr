@@ -26,6 +26,67 @@ pub fn translate_trace_body(expr: &Expr, ir: &OxidtrIR) -> String {
     }
 }
 
+/// Translate a binary temporal operand (left or right side of until/since/etc.)
+/// in the context of specific bound variable names.
+/// Used in trace checker generation where lambdas must explicitly bind the quantifier vars.
+///
+/// Returns `(lambda_params, body_expr)` where `lambda_params` is the lambda argument
+/// list (e.g. `"s"` or `"s, t"`) and `body_expr` is the translated condition string.
+pub fn translate_trace_binary_side(
+    side: &Expr,
+    bound_vars: &[String],
+    ir: &OxidtrIR,
+) -> (String, String) {
+    let sig_names = collect_sig_names(ir);
+    let body_str = translate_inner(side, false, &sig_names, ir);
+
+    if bound_vars.is_empty() {
+        // No quantifier context — return as-is
+        ("_".to_string(), body_str)
+    } else {
+        // The lambda receives one snapshot per bound variable.
+        // For a single var, the trace element is M.Sig[]; for multiple, it's a tuple.
+        if bound_vars.len() == 1 {
+            (bound_vars[0].clone(), body_str)
+        } else {
+            (format!("[{}]", bound_vars.join(", ")), body_str)
+        }
+    }
+}
+
+/// Translate a binary temporal side expression into a one-step predicate string.
+/// For a trace of `M.T[][]`, each element is `M.T[]` (a snapshot).
+/// The returned string is a lambda body that takes a snapshot as its argument.
+pub fn translate_trace_binary_snapshot(
+    side: &Expr,
+    snapshot_var: &str,
+    bound_vars: &[String],
+    ir: &OxidtrIR,
+) -> String {
+    let sig_names = collect_sig_names(ir);
+    if bound_vars.len() == 1 {
+        // Strip enclosing quantifier if present and translate body without spread
+        let var = &bound_vars[0];
+        let body_str = match side {
+            Expr::Quantifier { body, .. } => translate_inner(body, false, &sig_names, ir),
+            _ => translate_inner(side, false, &sig_names, ir),
+        };
+        format!("{snapshot_var}.every({var} => {body_str})")
+    } else if bound_vars.len() > 1 {
+        let body_str = match side {
+            Expr::Quantifier { body, .. } => translate_inner(body, false, &sig_names, ir),
+            _ => translate_inner(side, false, &sig_names, ir),
+        };
+        let checks: Vec<String> = bound_vars.iter().enumerate()
+            .map(|(i, v)| format!("const {v} = {snapshot_var}[{i}];"))
+            .collect();
+        format!("(() => {{ {}; return {}; }})()", checks.join(" "), body_str)
+    } else {
+        // No bound vars — side might still contain a quantifier; use trace-style translation
+        translate_trace_body(side, ir)
+    }
+}
+
 /// Extract the collection parameters needed by an expression.
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
     let mut params = BTreeSet::new();

@@ -608,9 +608,9 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                     writeln!(out).unwrap();
                 }
                 analyze::TemporalKind::Binary => {
-                    if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
-                        let left_body = expr_translator::translate_trace_body(left, ir);
-                        let right_body = expr_translator::translate_trace_body(right, ir);
+                    if let Some((op, left, right, bound_vars)) =
+                        analyze::find_temporal_binary_with_bindings(&constraint.expr)
+                    {
                         let op_name = match op {
                             TemporalBinaryOp::Until => "until",
                             TemporalBinaryOp::Since => "since",
@@ -627,23 +627,27 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                         if params.len() == 1 {
                             let (pname, tname) = &params[0];
                             writeln!(out, "  function check_{op_name}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
+                            // Use snapshot-aware translation: each trace element is M.T[]
+                            let snap = pname.as_str();
+                            let left_pred = expr_translator::translate_trace_binary_snapshot(left, snap, &bound_vars, ir);
+                            let right_pred = expr_translator::translate_trace_binary_snapshot(right, snap, &bound_vars, ir);
                             match op {
                                 TemporalBinaryOp::Until => {
-                                    writeln!(out, "    const pos = trace.findIndex(({pname}) => {{ return {right_body}; }});").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every(({pname}) => {{ return {left_body}; }});").unwrap();
+                                    writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
+                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Since => {
                                     writeln!(out, "    let pos = -1;").unwrap();
-                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ const {pname} = trace[i]; if ({right_body}) {{ pos = i; break; }} }}").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every(({pname}) => {{ return {left_body}; }});").unwrap();
+                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap, &format!("trace[i]"))).unwrap();
+                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Release => {
-                                    writeln!(out, "    const pos = trace.findIndex(({pname}) => {{ return {left_body}; }});").unwrap();
-                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every(({pname}) => {{ return {right_body}; }}) : trace.every(({pname}) => {{ return {right_body}; }});").unwrap();
+                                    writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
+                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "    return trace.every(({pname}, i) => {{").unwrap();
-                                    writeln!(out, "      if ({right_body}) {{ return trace.slice(0, i + 1).some(({pname}) => {{ return {left_body}; }}); }} else {{ return true; }}").unwrap();
+                                    writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
+                                    writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
                                     writeln!(out, "    }});").unwrap();
                                 }
                             }
@@ -652,23 +656,26 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                             let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
                             let pnames = tuple_names.join(", ");
                             writeln!(out, "  function check_{op_name}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
+                            let snap = format!("[{pnames}]");
+                            let left_pred = expr_translator::translate_trace_binary_snapshot(left, &snap, &bound_vars, ir);
+                            let right_pred = expr_translator::translate_trace_binary_snapshot(right, &snap, &bound_vars, ir);
                             match op {
                                 TemporalBinaryOp::Until => {
-                                    writeln!(out, "    const pos = trace.findIndex(([{pnames}]) => {{ return {right_body}; }});").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every(([{pnames}]) => {{ return {left_body}; }});").unwrap();
+                                    writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
+                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Since => {
                                     writeln!(out, "    let pos = -1;").unwrap();
-                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ const [{pnames}] = trace[i]; if ({right_body}) {{ pos = i; break; }} }}").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every(([{pnames}]) => {{ return {left_body}; }});").unwrap();
+                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap.as_str(), "trace[i]")).unwrap();
+                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Release => {
-                                    writeln!(out, "    const pos = trace.findIndex(([{pnames}]) => {{ return {left_body}; }});").unwrap();
-                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every(([{pnames}]) => {{ return {right_body}; }}) : trace.every(([{pnames}]) => {{ return {right_body}; }});").unwrap();
+                                    writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
+                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
                                 }
                                 TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "    return trace.every(([{pnames}], i) => {{").unwrap();
-                                    writeln!(out, "      if ({right_body}) {{ return trace.slice(0, i + 1).some(([{pnames}]) => {{ return {left_body}; }}); }} else {{ return true; }}").unwrap();
+                                    writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
+                                    writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
                                     writeln!(out, "    }});").unwrap();
                                 }
                             }
