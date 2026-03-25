@@ -470,7 +470,19 @@ fn translate_inner_ir(
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
 
-        Expr::VarRef(name) => name.clone(),
+        Expr::VarRef(name) => {
+            // Bug 3 fix: enum variants (one sig Foo extends Bar) must be qualified
+            // as `Bar::Foo` in Rust. Detect by checking whether the name has a parent
+            // sig that is itself an enum (abstract sig … {}).
+            if let Some(s) = ir.structures.iter().find(|s| s.name == *name) {
+                if let Some(parent) = &s.parent {
+                    if ir.structures.iter().any(|p| p.name == *parent && p.is_enum) {
+                        return format!("{parent}::{name}");
+                    }
+                }
+            }
+            name.clone()
+        }
 
         Expr::FieldAccess { base, field } => {
             let base_str = ti(base, false);
@@ -505,16 +517,27 @@ fn translate_inner_ir(
                 CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
                 CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
                 CompareOp::In => {
+                    // Bug 2 fix: if the LEFT side is a `lone` field (Option<T>),
+                    // `set.contains(&Option<T>)` is a type error.
+                    // Generate: `base.field.as_ref().map_or(true, |s| set.contains(s))`
+                    // (lone = 0 or 1; None satisfies "activeState in states" vacuously)
+                    if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(l_field, ir) {
+                            let base_str = ti(l_base, false);
+                            let r = ti(right, false);
+                            return format!(
+                                "{base_str}.{l_field}.as_ref().map_or(true, |s| {r}.contains(s))"
+                            );
+                        }
+                    }
                     let l = ti(left, false);
-                    // Check if right side is a field access to a lone field
+                    // Check if RIGHT side is a field access to a lone field
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
                         if let Some((Multiplicity::Lone, is_self_ref)) = field_mult(field, ir) {
                             return if is_self_ref {
-                                // Option<Box<T>> — use as_deref()
                                 format!("{r_base}.{field}.as_deref() == Some(&{l})")
                             } else {
-                                // Option<T> — use as_ref()
                                 format!("{r_base}.{field}.as_ref() == Some(&{l})")
                             };
                         }

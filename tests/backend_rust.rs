@@ -526,3 +526,78 @@ fn rust_try_from_generates_disjoint_check() {
     assert!(newtypes.contains("must not overlap"),
         "TryFrom should check disjoint constraint:\n{newtypes}");
 }
+
+// ── Bug fixes ────────────────────────────────────────────────────────────────
+
+/// Bug: unit struct (no fields) was skipped in fixture generation — no default_foo() produced.
+/// A unit struct in Alloy is a sig with no fields. The fixture should produce
+/// `pub fn default_foo() -> Foo { Foo }`.
+#[test]
+fn rust_unit_struct_fixture_generated() {
+    let files = generate_from(r#"
+        sig Tag {}
+        sig Node { tag: one Tag }
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    assert!(fixtures.contains("pub fn default_tag() -> Tag"),
+        "fixtures.rs should contain default_tag():\n{fixtures}");
+    assert!(fixtures.contains("Tag"),
+        "default_tag() body should return Tag:\n{fixtures}");
+}
+
+/// Multiple unit structs should all get factory functions.
+#[test]
+fn rust_multiple_unit_structs_all_get_fixtures() {
+    let files = generate_from(r#"
+        sig Alpha {}
+        sig Beta {}
+        sig Gamma {}
+        sig Container { a: one Alpha, b: one Beta, c: one Gamma }
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    for name in &["alpha", "beta", "gamma"] {
+        assert!(fixtures.contains(&format!("pub fn default_{name}() -> ")),
+            "fixtures.rs should contain default_{name}():\n{fixtures}");
+    }
+}
+
+/// Bug: newtypes validator for a `lone` (Option) field used `contains(&field)`
+/// where field is `Option<T>`, causing a type mismatch.
+/// The generated validator should unwrap the Option before calling contains.
+#[test]
+fn rust_newtypes_lone_field_option_unwrapped_in_validator() {
+    let files = generate_from(r#"
+        sig SM { states: set State, activeState: lone State }
+        sig State {}
+        fact ActiveOwned { all sm: SM | sm.activeState in sm.states }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    // Must NOT contain the broken pattern `contains(&sm.active_state)` where active_state: Option
+    assert!(!newtypes.contains("contains(&value.activeState)"),
+        "validator must not pass Option<T> directly to contains:\n{newtypes}");
+    // Must contain the correct pattern: unwrap Option before contains check
+    assert!(
+        newtypes.contains("as_ref()") || newtypes.contains("map(") || newtypes.contains("unwrap_or"),
+        "validator must handle Option with as_ref/map/unwrap_or:\n{newtypes}");
+}
+
+/// Bug: newtypes validator for enum comparison used unqualified variant names
+/// (e.g. `PortKindOutput`) instead of `PortKind::PortKindOutput`.
+#[test]
+fn rust_newtypes_enum_variant_fully_qualified_in_validator() {
+    let files = generate_from(r#"
+        abstract sig PortKind {}
+        one sig PortKindInput  extends PortKind {}
+        one sig PortKindOutput extends PortKind {}
+        sig Port { portKind: one PortKind }
+        sig Conn { src: one Port, tgt: one Port }
+        fact ConnDir { all c: Conn | c.src.portKind = PortKindOutput and c.tgt.portKind = PortKindInput }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    // Variants must be qualified as PortKind::PortKindOutput, not bare PortKindOutput
+    assert!(!newtypes.contains("== PortKindOutput"),
+        "unqualified PortKindOutput found in validator:\n{newtypes}");
+    assert!(!newtypes.contains("== PortKindInput"),
+        "unqualified PortKindInput found in validator:\n{newtypes}");
+}
+
