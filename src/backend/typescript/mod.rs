@@ -154,11 +154,17 @@ fn generate_models(ir: &OxidtrIR) -> String {
 fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → interface + exported const
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "// @alloy: var sig").unwrap();
+        }
         writeln!(out, "export interface {} {{}}", s.name).unwrap();
         writeln!(out, "export const {}: {} = {{}};", s.name, s.name).unwrap();
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "// @alloy: var sig").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "export interface {} {{}}", s.name).unwrap();
     } else {

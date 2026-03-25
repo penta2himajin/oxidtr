@@ -153,12 +153,18 @@ fn generate_models(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
 fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &SwiftContext, disj_fields: &[(String, String)]) {
     // Singleton: one sig → static let
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "/// @alloy: var sig").unwrap();
+        }
         writeln!(out, "struct {} {{", s.name).unwrap();
         writeln!(out, "    static let shared = {}()", s.name).unwrap();
         writeln!(out, "}}").unwrap();
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "/// @alloy: var sig").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "struct {}: Equatable, Hashable {{", s.name).unwrap();
         writeln!(out, "}}").unwrap();

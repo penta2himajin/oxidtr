@@ -20,6 +20,7 @@ pub struct IRField {
 pub struct StructureNode {
     pub name: String,
     pub is_enum: bool,
+    pub is_var: bool, // Alloy 6: `var sig` (mutable atom set across states)
     pub sig_multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<IRField>,

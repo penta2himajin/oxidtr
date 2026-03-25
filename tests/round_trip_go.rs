@@ -71,8 +71,8 @@ fn round_trip_go_seq_field() {
     let mined = go_extractor::extract(models);
 
     let order = assert_sig_exists(&mined.sigs, "Order");
-    // Go slices map to Set in mine ([]T → set)
-    assert_field(order, "items", MinedMultiplicity::Set, "Item");
+    // Go slices with @alloy: seq annotation → Seq
+    assert_field(order, "items", MinedMultiplicity::Seq, "Item");
 }
 
 #[test]

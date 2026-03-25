@@ -38,6 +38,11 @@ pub enum DiffItem {
         expected_var: bool,
         actual_var:   bool,
     },
+    VarMismatchSig {
+        struct_name: String,
+        expected_var: bool,
+        actual_var: bool,
+    },
     MissingFn { name: String },
     ExtraFn   { name: String },
     MissingValidation { fact_name: String },
@@ -68,6 +73,11 @@ impl std::fmt::Display for DiffItem {
                 let actual = if *actual_var { "var" } else { "non-var" };
                 write!(f, "[VAR_MISMATCH] {struct_name}.{field_name}: \
                     expected {expected}, got {actual}")
+            }
+            DiffItem::VarMismatchSig { struct_name, expected_var, actual_var } => {
+                let expected = if *expected_var { "var sig" } else { "non-var sig" };
+                let actual = if *actual_var { "var sig" } else { "non-var sig" };
+                write!(f, "[VAR_MISMATCH_SIG] {struct_name}: expected {expected}, got {actual}")
             }
             DiffItem::MissingFn { name } =>
                 write!(f, "[MISSING_FN] {name}: pred in model but not in impl"),
@@ -250,6 +260,15 @@ where F: Fn(&str) -> String {
     // Field-level diff for structs present in both
     for ir_struct in &ir.structures {
         let Some(impl_struct) = impl_map.get(ir_struct.name.as_str()) else { continue };
+
+        // Check var sig mismatch
+        if ir_struct.is_var != impl_struct.is_var {
+            diffs.push(DiffItem::VarMismatchSig {
+                struct_name: ir_struct.name.clone(),
+                expected_var: ir_struct.is_var,
+                actual_var: impl_struct.is_var,
+            });
+        }
 
         let impl_field_map: std::collections::HashMap<&str, _> =
             impl_struct.fields.iter().map(|f| (f.name.as_str(), f)).collect();

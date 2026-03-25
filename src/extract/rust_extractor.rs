@@ -13,6 +13,7 @@ pub fn extract(source: &str) -> MinedModel {
         let mut depth: usize = 0;
         let all_lines: Vec<(usize, &str)> = source.lines().enumerate().collect();
         let mut i = 0;
+        let mut prev_line_has_var_sig = false;
         while i < all_lines.len() {
             let (line_num, line) = all_lines[i];
             let trimmed = line.trim();
@@ -20,6 +21,8 @@ pub fn extract(source: &str) -> MinedModel {
             // At top level (depth 0), check for struct/enum
             if depth == 0 {
                 if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
+                    let sig_is_var = prev_line_has_var_sig;
+                    prev_line_has_var_sig = false;
                     let is_unit = trimmed.ends_with(';')
                         || !trimmed.contains('{')
                         || (trimmed.contains('{') && trimmed.contains('}'));
@@ -28,6 +31,7 @@ pub fn extract(source: &str) -> MinedModel {
                             name,
                             fields: vec![],
                             is_abstract: false,
+                            is_var: sig_is_var,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
                             intersection_of: vec![],
@@ -67,6 +71,7 @@ pub fn extract(source: &str) -> MinedModel {
                             name,
                             fields,
                             is_abstract: false,
+                            is_var: sig_is_var,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
                             intersection_of: vec![],
@@ -76,6 +81,8 @@ pub fn extract(source: &str) -> MinedModel {
                 }
 
                 if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
+                    let sig_is_var = prev_line_has_var_sig;
+                    prev_line_has_var_sig = false;
                     // Collect enum variants
                     let mut variants: Vec<(String, Vec<MinedField>)> = Vec::new();
                     let mut block_depth = 1usize;
@@ -178,6 +185,7 @@ pub fn extract(source: &str) -> MinedModel {
                         name: name.clone(),
                         fields: vec![],
                         is_abstract: true,
+                        is_var: sig_is_var,
                         parent: None,
                         source_location: format!("line {}", line_num + 1),
                         intersection_of: vec![],
@@ -187,12 +195,20 @@ pub fn extract(source: &str) -> MinedModel {
                             name: vname,
                             fields: vfields,
                             is_abstract: false,
+                            is_var: false,
                             parent: Some(name.clone()),
                             source_location: format!("line {}", line_num + 1),
                             intersection_of: vec![],
                         });
                     }
                     continue;
+                }
+
+                // Detect @alloy: var sig annotation for the next declaration
+                if trimmed.contains("@alloy: var sig") {
+                    prev_line_has_var_sig = true;
+                } else {
+                    prev_line_has_var_sig = false;
                 }
             }
 

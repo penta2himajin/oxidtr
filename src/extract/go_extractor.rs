@@ -50,8 +50,18 @@ pub fn extract(source: &str) -> MinedModel {
     }
 
     // Second pass: parse structs, interfaces, funcs
+    let mut prev_line_has_var_sig = false;
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
+
+        // Detect @alloy: var sig annotation for the next declaration
+        if trimmed.contains("@alloy: var sig") {
+            prev_line_has_var_sig = true;
+            continue;
+        }
+
+        let sig_is_var = prev_line_has_var_sig;
+        prev_line_has_var_sig = false;
 
         // type Foo struct { → sig
         if let Some(name) = parse_go_struct(trimmed) {
@@ -64,6 +74,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields,
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -78,6 +89,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name,
                     fields: vec![],
                     is_abstract: true,
+                    is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
@@ -92,6 +104,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,
+                    is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
@@ -101,6 +114,7 @@ pub fn extract(source: &str) -> MinedModel {
                         name: v.clone(),
                         fields: vec![],
                         is_abstract: false,
+                        is_var: false,
                         parent: Some(name.clone()),
                         source_location: format!("line {}", line_num + 1),
                         intersection_of: vec![],
@@ -204,6 +218,7 @@ fn collect_go_struct_fields(
     let mut fields = Vec::new();
     let mut depth = 1usize;
     let mut prev_line_has_var = false;
+    let mut prev_line_has_seq = false;
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
@@ -217,12 +232,19 @@ fn collect_go_struct_fields(
             if prev_line_has_var {
                 field.is_var = true;
             }
+            if prev_line_has_seq && field.mult == MinedMultiplicity::Set {
+                field.mult = MinedMultiplicity::Seq;
+            }
             fields.push(field);
             prev_line_has_var = false;
-        } else if trimmed.contains("@alloy: var") {
+            prev_line_has_seq = false;
+        } else if trimmed.contains("@alloy: var") && !trimmed.contains("@alloy: var sig") {
             prev_line_has_var = true;
+        } else if trimmed.contains("@alloy: seq") {
+            prev_line_has_seq = true;
         } else {
             prev_line_has_var = false;
+            prev_line_has_seq = false;
         }
     }
 

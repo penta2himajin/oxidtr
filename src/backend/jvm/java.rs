@@ -128,12 +128,18 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → Java enum with INSTANCE
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "/* @alloy: var sig */").unwrap();
+        }
         writeln!(out, "enum {} {{", s.name).unwrap();
         writeln!(out, "    INSTANCE").unwrap();
         writeln!(out, "}}").unwrap();
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "/* @alloy: var sig */").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "record {}() {{}}", s.name).unwrap();
     } else {

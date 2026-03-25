@@ -21,6 +21,7 @@ sig FieldDecl {
 
 sig SigDecl {
   isAbstract:    lone SigDecl,
+  isVarSig:      lone SigDecl,  -- Alloy 6: var sig (mutable atom set)
   sigMultiplicity: one SigMultiplicity,
   parent:        lone SigDecl,
   fields:        set FieldDecl
@@ -218,9 +219,10 @@ fact FunParamsCardinality  { all f: FunDecl | #f.funParams = #f.funParams }
 -------------------------------------------------------------------------------
 
 sig StructureNode {
-  origin:   one SigDecl,
-  irFields: set IRField,
-  irParent: lone StructureNode
+  origin:    one SigDecl,
+  irIsVarSig: lone StructureNode,  -- Alloy 6: var sig marker
+  irFields:  set IRField,
+  irParent:  lone StructureNode
 }
 
 sig IRField {

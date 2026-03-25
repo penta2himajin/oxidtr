@@ -271,3 +271,17 @@ use oxidtr::backend::typescript::TsTestRunner;
         "non-singleton response sig should still trigger pattern or error warning"
     );
 }
+
+// ── Alloy 6: var sig lowering ───────────────────────────────────────────────
+
+#[test]
+fn lower_var_sig_preserves_is_var() {
+    let ir = parse_and_lower("var sig Token {}");
+    assert!(ir.structures[0].is_var, "var sig should lower to is_var=true");
+}
+
+#[test]
+fn lower_non_var_sig_is_var_false() {
+    let ir = parse_and_lower("sig Foo {}");
+    assert!(!ir.structures[0].is_var, "non-var sig should lower to is_var=false");
+}

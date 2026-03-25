@@ -30,6 +30,7 @@ pub enum SigMultiplicity {
 pub struct SigDecl {
     pub name: String,
     pub is_abstract: bool,
+    pub is_var: bool, // Alloy 6: `var sig` (mutable atom set across states)
     pub multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<FieldDecl>,

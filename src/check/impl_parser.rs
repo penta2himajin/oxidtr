@@ -16,6 +16,7 @@ pub struct ExtractedStruct {
     pub name: String,
     pub fields: Vec<ExtractedField>,
     pub is_enum: bool,
+    pub is_var: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,16 +39,24 @@ pub fn parse_impl(models_src: &str, ops_src: &str) -> ExtractedImpl {
 fn parse_structs(src: &str) -> Vec<ExtractedStruct> {
     let mut result = Vec::new();
     let mut lines = src.lines().peekable();
+    let mut pending_var_sig = false;
     while let Some(line) = lines.next() {
         let trimmed = line.trim();
+        // Detect @alloy: var sig annotation on comment lines before struct/enum
+        if trimmed.contains("@alloy: var sig") {
+            pending_var_sig = true;
+            continue;
+        }
         if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
             let fields = collect_fields(&mut lines);
-            result.push(ExtractedStruct { name, fields, is_enum: false });
+            result.push(ExtractedStruct { name, fields, is_enum: false, is_var: pending_var_sig });
+            pending_var_sig = false;
             continue;
         }
         if let Some(name) = parse_type_decl(trimmed, "pub enum ") {
             let variant_structs = collect_enum_variants(&mut lines);
-            result.push(ExtractedStruct { name, fields: vec![], is_enum: true });
+            result.push(ExtractedStruct { name, fields: vec![], is_enum: true, is_var: pending_var_sig });
+            pending_var_sig = false;
             // Each enum variant corresponds to a child sig in the IR.
             result.extend(variant_structs);
         }
@@ -127,11 +136,11 @@ fn collect_enum_variants(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -
             if name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
                 // Collect fields until we return to the variant's depth
                 let fields = collect_variant_fields(lines, &mut depth);
-                result.push(ExtractedStruct { name, fields, is_enum: false });
+                result.push(ExtractedStruct { name, fields, is_enum: false, is_var: false });
             }
         } else if cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
             // Unit variant
-            result.push(ExtractedStruct { name: cleaned.to_string(), fields: vec![], is_enum: false });
+            result.push(ExtractedStruct { name: cleaned.to_string(), fields: vec![], is_enum: false, is_var: false });
         }
     }
     result

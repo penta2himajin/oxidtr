@@ -190,3 +190,38 @@ fn parse_non_var_field_is_var_false() {
     let model = parser::parse(input).expect("should parse");
     assert!(!model.sigs[0].fields[0].is_var);
 }
+
+// ── Alloy 6: var sig tests ────────────────────────────────────────────────────
+
+#[test]
+fn parse_var_sig() {
+    let input = "var sig Server { load: one Int }";
+    let model = parser::parse(input).expect("should parse");
+    assert!(model.sigs[0].is_var, "var sig should have is_var=true");
+    assert_eq!(model.sigs[0].name, "Server");
+    assert!(!model.sigs[0].is_abstract);
+}
+
+#[test]
+fn parse_non_var_sig_is_var_false() {
+    let input = "sig Foo { bar: one Baz }";
+    let model = parser::parse(input).expect("should parse");
+    assert!(!model.sigs[0].is_var, "non-var sig should have is_var=false");
+}
+
+#[test]
+fn parse_var_sig_with_extends() {
+    let input = "sig Base {} var sig Sub extends Base { x: one Int }";
+    let model = parser::parse(input).expect("should parse");
+    assert!(!model.sigs[0].is_var, "Base should not be var");
+    assert!(model.sigs[1].is_var, "Sub should be var");
+    assert_eq!(model.sigs[1].parent.as_deref(), Some("Base"));
+}
+
+#[test]
+fn parse_var_sig_empty_body() {
+    let input = "var sig Token {}";
+    let model = parser::parse(input).expect("should parse");
+    assert!(model.sigs[0].is_var);
+    assert!(model.sigs[0].fields.is_empty());
+}

@@ -116,6 +116,9 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
     // Singleton: one sig → Kotlin object
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "// @alloy: var sig").unwrap();
+        }
         writeln!(out, "object {}", s.name).unwrap();
         return;
     }
@@ -134,12 +137,18 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             && target_mult == SigMultiplicity::Default
         {
             let type_str = mult_to_kt_type(&f.target, &f.mult);
+            if s.is_var {
+                writeln!(out, "// @alloy: var sig").unwrap();
+            }
             writeln!(out, "@JvmInline").unwrap();
             writeln!(out, "value class {}(val {}: {type_str})", s.name, f.name).unwrap();
             return;
         }
     }
 
+    if s.is_var {
+        writeln!(out, "// @alloy: var sig").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "data class {}(val placeholder: Unit = Unit)", s.name).unwrap();
     } else {

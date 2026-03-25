@@ -152,6 +152,9 @@ fn generate_models(ir: &OxidtrIR, ctx: &GoContext) -> String {
 fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoContext, disj_fields: &[(String, String)]) {
     // Singleton: one sig → package-level var
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "// @alloy: var sig").unwrap();
+        }
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
         writeln!(out).unwrap();
         writeln!(out, "var {}Instance = {}{{}}",
@@ -159,6 +162,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "// @alloy: var sig").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
     } else {
@@ -183,6 +189,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
 
             if f.is_var {
                 writeln!(out, "\t// @alloy: var").unwrap();
+            }
+            if f.mult == Multiplicity::Seq {
+                writeln!(out, "\t// @alloy: seq").unwrap();
             }
             writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
         }
@@ -231,6 +240,12 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
                         } else {
                             mult_to_go_type(&f.target, &f.mult, false)
                         };
+                        if f.is_var {
+                            writeln!(out, "\t// @alloy: var").unwrap();
+                        }
+                        if f.mult == Multiplicity::Seq {
+                            writeln!(out, "\t// @alloy: seq").unwrap();
+                        }
                         writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
                     }
                     writeln!(out, "}}").unwrap();

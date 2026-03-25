@@ -102,19 +102,26 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Token::Eof => break,
                 Token::Sig => {
-                    model.sigs.push(self.parse_sig(false)?);
+                    model.sigs.push(self.parse_sig(false, false)?);
+                }
+                Token::Var => {
+                    // Alloy 6: `var sig` — mutable atom set
+                    self.next();
+                    model.sigs.push(self.parse_sig(false, true)?);
                 }
                 Token::Abstract => {
                     self.next();
+                    // Alloy 6: `abstract var sig` — not typical but handle gracefully
+                    let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(true, SigMultiplicity::Default)?);
+                    model.sigs.push(self.parse_sig_body(true, is_var, SigMultiplicity::Default)?);
                 }
                 Token::One => {
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::One)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::One)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -125,12 +132,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Token::Some_ => {
-                    // Peek ahead: `some sig` is a sig decl; otherwise it's an expression (handled elsewhere)
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Some)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Some)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -141,12 +147,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Token::Lone => {
-                    // Peek ahead: `lone sig` is a sig decl; otherwise it's a field multiplicity
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Lone)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Lone)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -184,12 +189,12 @@ impl<'a> Parser<'a> {
         Ok(model)
     }
 
-    fn parse_sig(&mut self, is_abstract: bool) -> Result<SigDecl, ParseError> {
+    fn parse_sig(&mut self, is_abstract: bool, is_var: bool) -> Result<SigDecl, ParseError> {
         self.expect(&Token::Sig)?;
-        self.parse_sig_body(is_abstract, SigMultiplicity::Default)
+        self.parse_sig_body(is_abstract, is_var, SigMultiplicity::Default)
     }
 
-    fn parse_sig_body(&mut self, is_abstract: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
+    fn parse_sig_body(&mut self, is_abstract: bool, is_var: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
         let name = self.expect_ident()?;
         self.current_sig_name = name.clone(); // track for union annotation lookup
 
@@ -215,6 +220,7 @@ impl<'a> Parser<'a> {
         Ok(SigDecl {
             name,
             is_abstract,
+            is_var,
             multiplicity,
             parent,
             fields,

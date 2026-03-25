@@ -251,6 +251,9 @@ fn generate_struct(
 ) {
     // Singleton: one sig → unit struct + INSTANCE constant
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "/// @alloy: var sig").unwrap();
+        }
         if use_serde {
             writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
         } else {
@@ -261,6 +264,9 @@ fn generate_struct(
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "/// @alloy: var sig").unwrap();
+    }
     if use_serde {
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
     } else {

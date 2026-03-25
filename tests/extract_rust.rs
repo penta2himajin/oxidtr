@@ -360,6 +360,7 @@ fn resolve_external_types_filters_type_parameters() {
         sigs: vec![
             oxidtr::extract::MinedSig {
                 name: "Container".to_string(),
+                is_var: false,
                 fields: vec![
                     oxidtr::extract::MinedField {
                         name: "value".to_string(),

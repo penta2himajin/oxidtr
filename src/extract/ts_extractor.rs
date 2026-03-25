@@ -8,9 +8,19 @@ pub fn extract(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
+    let mut prev_line_has_var_sig = false;
 
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
+
+        // Detect @alloy: var sig annotation for the next declaration
+        if trimmed.contains("@alloy: var sig") {
+            prev_line_has_var_sig = true;
+            continue;
+        }
+
+        let sig_is_var = prev_line_has_var_sig;
+        prev_line_has_var_sig = false;
 
         // export interface Foo { ... } → sig
         if let Some((name, iface_parent)) = parse_interface_decl(trimmed) {
@@ -29,6 +39,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: real_fields,
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: iface_parent,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -41,6 +52,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: vec![],
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: components,
@@ -57,6 +69,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,
+                    is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
@@ -67,6 +80,7 @@ pub fn extract(source: &str) -> MinedModel {
                         name: vname,
                         fields: vec![],
                         is_abstract: false,
+                        is_var: false,
                         parent: Some(name.clone()),
                         source_location: format!("line {}", line_num + 1),
                         intersection_of: vec![],
@@ -78,6 +92,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,
+                    is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
