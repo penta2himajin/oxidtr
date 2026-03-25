@@ -206,11 +206,15 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
     }
 }
 
+
 fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
     let variants = ctx.children.get(&s.name);
 
-    // Check if all variants are unit (no fields)
-    let all_unit = variants.map_or(true, |vs| {
+    // Parent abstract sig may have fields that should be inherited by all variants
+    let parent_fields = &s.fields;
+
+    // Check if all variants are unit (no fields, including inherited)
+    let all_unit = parent_fields.is_empty() && variants.map_or(true, |vs| {
         vs.iter().all(|v| ctx.struct_map.get(v).map_or(true, |st| st.fields.is_empty()))
     });
 
@@ -237,11 +241,13 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
         if let Some(variants) = variants {
             for v in variants {
                 let child = ctx.struct_map.get(v.as_str());
-                let fields = child.map(|c| &c.fields).filter(|f| !f.is_empty());
+                let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
+                // Combine parent fields + child fields
+                let all_fields: Vec<&IRField> = parent_fields.iter().chain(child_fields.iter().copied()).collect();
                 writeln!(out).unwrap();
-                if let Some(fields) = fields {
+                if !all_fields.is_empty() {
                     writeln!(out, "type {} struct {{", v).unwrap();
-                    for f in fields {
+                    for f in &all_fields {
                         let type_str = if let Some(vt) = &f.value_type {
                             format!("map[{}]{}", f.target, vt)
                         } else {

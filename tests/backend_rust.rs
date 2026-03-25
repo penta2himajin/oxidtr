@@ -601,3 +601,22 @@ fn rust_newtypes_enum_variant_fully_qualified_in_validator() {
         "unqualified PortKindInput found in validator:\n{newtypes}");
 }
 
+
+#[test]
+fn abstract_sig_fields_propagated_to_enum_variants() {
+    let files = generate_from(r#"
+        sig Tick {}
+        abstract sig Event { tick: one Tick }
+        sig Started extends Event { source: one Tick }
+        sig Stopped extends Event {}
+    "#);
+    let content = find_file(&files, "models.rs");
+    // Parent field `tick` must appear in variant Started (alongside its own `source`)
+    assert!(content.contains("Started {"),
+        "Started should be a data variant:\n{content}");
+    assert!(content.contains("tick: Tick"),
+        "parent field `tick` should appear in enum variant:\n{content}");
+    // Stopped has no own fields, but inherits `tick` — must still be a data variant
+    assert!(content.contains("Stopped {"),
+        "Stopped should be a data variant (inherited field):\n{content}");
+}
