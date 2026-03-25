@@ -570,3 +570,35 @@ fn translate_since_translates_both_sides() {
     let result = translate(&expr);
     assert!(result.contains("&&"), "should combine with &&, got: {result}");
 }
+
+// ── Alloy 6: function application translation ──────────────────────────────────
+
+#[test]
+fn translate_fun_app_single_arg() {
+    let expr = Expr::FunApp {
+        name: "plus".to_string(),
+        args: vec![Expr::IntLiteral(1)],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "plus(1)");
+}
+
+#[test]
+fn translate_fun_app_multiple_args() {
+    let expr = Expr::FunApp {
+        name: "add".to_string(),
+        args: vec![var("x"), Expr::IntLiteral(2)],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "add(x, 2)");
+}
+
+#[test]
+fn translate_fun_app_no_args() {
+    let expr = Expr::FunApp {
+        name: "noop".to_string(),
+        args: vec![],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "noop()");
+}

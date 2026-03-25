@@ -74,6 +74,18 @@ one sig Since     extends TemporalBinaryOp {}
 one sig Release   extends TemporalBinaryOp {}
 one sig Triggered extends TemporalBinaryOp {}
 
+sig FunApp extends Expr {
+  funArgs: seq Expr
+}
+
+abstract sig TemporalKind {}
+one sig Invariant    extends TemporalKind {}
+one sig Liveness     extends TemporalKind {}
+one sig PastInvariant extends TemporalKind {}
+one sig PastLiveness extends TemporalKind {}
+one sig Step         extends TemporalKind {}
+one sig Binary       extends TemporalKind {}
+
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}
 one sig Eq    extends CompareOp {}

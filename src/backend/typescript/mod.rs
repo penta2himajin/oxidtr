@@ -485,12 +485,25 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             continue;
         }
 
-        let test_name = format!("invariant {fact_name}");
+        // Use temporal classification for test name prefix
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_prefix = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => "liveness",
+            Some(analyze::TemporalKind::PastInvariant) => "past_invariant",
+            Some(analyze::TemporalKind::PastLiveness) => "past_liveness",
+            Some(analyze::TemporalKind::Step) => "step",
+            Some(analyze::TemporalKind::Binary) => "temporal",
+            _ => "invariant",
+        };
+        let test_name = format!("{test_prefix} {fact_name}");
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let ownership = super::detect_ownership_pattern(&constraint.expr, ir, ts_param_name);
 
+        if let Some(ref kind) = temporal_kind {
+            writeln!(out, "  /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+        }
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
@@ -640,6 +653,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

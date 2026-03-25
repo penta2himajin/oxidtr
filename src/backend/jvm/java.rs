@@ -497,8 +497,21 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
+        // Use temporal classification for test name prefix
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_prefix = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => "liveness",
+            Some(analyze::TemporalKind::PastInvariant) => "past_invariant",
+            Some(analyze::TemporalKind::PastLiveness) => "past_liveness",
+            Some(analyze::TemporalKind::Step) => "step",
+            Some(analyze::TemporalKind::Binary) => "temporal",
+            _ => "invariant",
+        };
+        if let Some(ref kind) = temporal_kind {
+            writeln!(out, "    /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+        }
         writeln!(out, "    @Test").unwrap();
-        writeln!(out, "    void invariant_{}() {{", fact_name).unwrap();
+        writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
         }
@@ -612,6 +625,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

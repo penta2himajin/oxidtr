@@ -193,7 +193,22 @@ fn parse_extends(line: &str) -> Option<(String, String)> {
 
 fn extract_constructor_params(line: &str) -> Vec<MinedField> {
     let open = match line.find('(') { Some(p) => p + 1, None => return vec![] };
-    let close = match line.rfind(')') { Some(p) => p, None => return vec![] };
+    // Find the matching close paren (not rfind which could overshoot into `: Parent()`)
+    let close = {
+        let mut depth = 1;
+        let mut pos = None;
+        for (i, ch) in line[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 { pos = Some(open + i); break; }
+                }
+                _ => {}
+            }
+        }
+        match pos { Some(p) => p, None => return vec![] }
+    };
     if open >= close { return vec![]; }
 
     let params = &line[open..close];

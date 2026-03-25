@@ -46,6 +46,7 @@ pub enum DiffItem {
         fact_name: String,
         expected_kind: String, // "transition" or "invariant"
     },
+    MissingAssert { name: String },
 }
 
 impl std::fmt::Display for DiffItem {
@@ -78,6 +79,8 @@ impl std::fmt::Display for DiffItem {
                 write!(f, "[EXTRA_VALIDATION] {name}: validation in impl but no fact in model"),
             DiffItem::MissingTemporalTest { fact_name, expected_kind } =>
                 write!(f, "[MISSING_TEMPORAL_TEST] {fact_name}: expected {expected_kind} test in impl"),
+            DiffItem::MissingAssert { name } =>
+                write!(f, "[MISSING_ASSERT] {name}: assert in model but no property test in impl"),
         }
     }
 }
@@ -150,7 +153,7 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
 
         // Temporal constraint classification: verify correct test type exists
         let has_prime = analyze::expr_contains_prime(&constraint.expr);
-        let is_temporal = analyze::expr_is_temporal(&constraint.expr);
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
 
         if has_prime {
             // Facts with prime should have a transition test
@@ -165,19 +168,55 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
                     expected_kind: "transition".to_string(),
                 });
             }
-        } else if is_temporal {
-            // Temporal facts without prime should have an invariant test
-            let invariant_name = if use_snake_case {
-                format!("invariant_{}", to_snake_case(&fact_name))
-            } else {
-                format!("invariant_{fact_name}")
+        } else if let Some(kind) = temporal_kind {
+            // Classify temporal test by operator kind
+            let expected_kind = match kind {
+                analyze::TemporalKind::Invariant => "invariant",
+                analyze::TemporalKind::Liveness => "liveness",
+                analyze::TemporalKind::PastInvariant => "past_invariant",
+                analyze::TemporalKind::PastLiveness => "past_liveness",
+                analyze::TemporalKind::Step => "step",
+                analyze::TemporalKind::Binary => "temporal_binary",
             };
-            if !combined.contains(&invariant_name) {
-                diffs.push(DiffItem::MissingTemporalTest {
-                    fact_name,
-                    expected_kind: "invariant".to_string(),
-                });
+            let test_prefix = match kind {
+                analyze::TemporalKind::Invariant => "invariant",
+                analyze::TemporalKind::Liveness => "liveness",
+                analyze::TemporalKind::PastInvariant => "past_invariant",
+                analyze::TemporalKind::PastLiveness => "past_liveness",
+                analyze::TemporalKind::Step => "step",
+                analyze::TemporalKind::Binary => "temporal",
+            };
+            let temporal_name = if use_snake_case {
+                format!("{}_{}", test_prefix, to_snake_case(&fact_name))
+            } else {
+                format!("{test_prefix}_{fact_name}")
+            };
+            if !combined.contains(&temporal_name) {
+                // Fall back to invariant_ prefix for backward compatibility
+                let fallback_name = if use_snake_case {
+                    format!("invariant_{}", to_snake_case(&fact_name))
+                } else {
+                    format!("invariant_{fact_name}")
+                };
+                if !combined.contains(&fallback_name) {
+                    diffs.push(DiffItem::MissingTemporalTest {
+                        fact_name,
+                        expected_kind: expected_kind.to_string(),
+                    });
+                }
             }
+        }
+    }
+
+    // Check that each assert (property) in the model has a test in the implementation.
+    for prop in &ir.properties {
+        let search_name = if use_snake_case {
+            to_snake_case(&prop.name)
+        } else {
+            prop.name.clone()
+        };
+        if !combined.contains(&search_name) {
+            diffs.push(DiffItem::MissingAssert { name: prop.name.clone() });
         }
     }
 

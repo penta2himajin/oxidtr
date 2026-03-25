@@ -422,6 +422,7 @@ fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> 
         }
         Expr::MultFormula { expr: inner, .. } => expr_references_sig_name(inner, sig_name),
         Expr::FieldAccess { base, .. } => expr_references_sig_name(base, sig_name),
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_references_sig_name(a, sig_name)),
         Expr::Prime(inner) => expr_references_sig_name(inner, sig_name),
         Expr::TemporalUnary { expr: inner, .. } => expr_references_sig_name(inner, sig_name),
         Expr::TemporalBinary { left, right, .. } => {
@@ -459,6 +460,7 @@ fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, fiel
             constraint_references_field(left, _sig, field)
                 || constraint_references_field(right, _sig, field)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| constraint_references_field(a, _sig, field)),
         Expr::Prime(inner) => constraint_references_field(inner, _sig, field),
         Expr::TemporalUnary { expr: inner, .. } => constraint_references_field(inner, _sig, field),
         Expr::TemporalBinary { left, right, .. } => {
@@ -515,6 +517,9 @@ fn collect_tc_fields(expr: &crate::parser::ast::Expr, out: &mut std::collections
             collect_tc_fields(left, out); collect_tc_fields(right, out);
         }
         Expr::FieldAccess { base, .. } => collect_tc_fields(base, out),
+        Expr::FunApp { args, .. } => {
+            for arg in args { collect_tc_fields(arg, out); }
+        }
         Expr::Prime(inner) => collect_tc_fields(inner, out),
         Expr::TemporalUnary { expr: inner, .. } => collect_tc_fields(inner, out),
         Expr::TemporalBinary { left, right, .. } => {
@@ -565,6 +570,7 @@ fn constraint_references_field_non_tc(expr: &crate::parser::ast::Expr, field: &s
             constraint_references_field_non_tc(left, field)
                 || constraint_references_field_non_tc(right, field)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| constraint_references_field_non_tc(a, field)),
         Expr::Prime(inner) => constraint_references_field_non_tc(inner, field),
         Expr::TemporalUnary { expr: inner, .. } => constraint_references_field_non_tc(inner, field),
         Expr::TemporalBinary { left, right, .. } => {

@@ -130,6 +130,11 @@ pub enum Expr {
         left: Box<Expr>,
         right: Box<Expr>,
     },
+    /// Alloy 6: function application — `f[x, y]` or `expr.f[x]`
+    FunApp {
+        name: String,
+        args: Vec<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

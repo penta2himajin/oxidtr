@@ -120,6 +120,7 @@ pub fn expr_contains_prime(expr: &Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_contains_prime(left) || expr_contains_prime(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(expr_contains_prime),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -127,6 +128,39 @@ pub fn expr_contains_prime(expr: &Expr) -> bool {
 /// Returns true if the expression is wrapped in a temporal operator.
 pub fn expr_is_temporal(expr: &Expr) -> bool {
     matches!(expr, Expr::TemporalUnary { .. } | Expr::TemporalBinary { .. })
+}
+
+/// Temporal operator classification for test generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemporalKind {
+    /// Future-time safety: `always` — property holds in all future states
+    Invariant,
+    /// Future-time liveness: `eventually` — property holds in some future state
+    Liveness,
+    /// Past-time safety: `historically` — property held in all past states
+    PastInvariant,
+    /// Past-time liveness: `once` — property held in some past state
+    PastLiveness,
+    /// Temporal step: `after`/`before` — relates adjacent states
+    Step,
+    /// Binary temporal: `until`/`since`/`release`/`triggered`
+    Binary,
+}
+
+/// Classify the outermost temporal operator of an expression.
+/// Returns `None` if the expression is not temporal.
+pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
+    match expr {
+        Expr::TemporalUnary { op, .. } => Some(match op {
+            TemporalUnaryOp::Always => TemporalKind::Invariant,
+            TemporalUnaryOp::Eventually => TemporalKind::Liveness,
+            TemporalUnaryOp::Historically => TemporalKind::PastInvariant,
+            TemporalUnaryOp::Once => TemporalKind::PastLiveness,
+            TemporalUnaryOp::After | TemporalUnaryOp::Before => TemporalKind::Step,
+        }),
+        Expr::TemporalBinary { .. } => Some(TemporalKind::Binary),
+        _ => None,
+    }
 }
 
 /// Analyze all constraints in the IR and return structured info.
@@ -228,6 +262,10 @@ pub fn describe_expr(expr: &Expr) -> String {
                 _ => "all",
             };
             format!("{q} {}", describe_expr(expr))
+        }
+        Expr::FunApp { name, args } => {
+            let a: Vec<_> = args.iter().map(describe_expr).collect();
+            format!("{name}[{}]", a.join(", "))
         }
         Expr::Prime(inner) => format!("{}'", describe_expr(inner)),
         Expr::TemporalUnary { op, expr: inner } => {
@@ -627,6 +665,10 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
             kind: kind.clone(),
             expr: Box::new(substitute_var(expr, var, sig_name)),
         },
+        Expr::FunApp { name, args } => Expr::FunApp {
+            name: name.clone(),
+            args: args.iter().map(|a| substitute_var(a, var, sig_name)).collect(),
+        },
         Expr::IntLiteral(_) => expr.clone(),
         Expr::Prime(inner) => Expr::Prime(Box::new(substitute_var(inner, var, sig_name))),
         Expr::TemporalUnary { expr: inner, .. } => substitute_var(inner, var, sig_name),
@@ -690,6 +732,9 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
         }
         Expr::MultFormula { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
+        Expr::FunApp { args, .. } => {
+            for arg in args { collect_disj_fields(arg, results); }
+        }
         Expr::Prime(inner) => collect_disj_fields(inner, results),
         Expr::TemporalUnary { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::TemporalBinary { left, right, .. } => {
@@ -752,6 +797,7 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
             bindings.iter().all(|b| expr_only_refs_params(&b.domain, param_names))
                 && expr_only_refs_params(body, &extended_params)
         }
+        Expr::FunApp { args, .. } => args.iter().all(|a| expr_only_refs_params(a, param_names)),
         Expr::Prime(inner) => expr_only_refs_params(inner, param_names),
         Expr::TemporalUnary { expr: inner, .. } => expr_only_refs_params(inner, param_names),
         Expr::TemporalBinary { left, right, .. } => {
@@ -826,6 +872,10 @@ pub fn alloy_repr(expr: &Expr) -> String {
                 _ => "all",
             };
             format!("{q} {}", alloy_repr(expr))
+        }
+        Expr::FunApp { name, args } => {
+            let a: Vec<_> = args.iter().map(|e| alloy_repr(e)).collect();
+            format!("{name}[{}]", a.join(", "))
         }
         Expr::Prime(inner) => format!("{}'", alloy_repr(inner)),
         Expr::TemporalUnary { expr: inner, .. } => format!("{}'", alloy_repr(inner)),
@@ -971,6 +1021,7 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
             expr_references_sig(inner, sig_name)
         }
         Expr::FieldAccess { base, .. } => expr_references_sig(base, sig_name),
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_references_sig(a, sig_name)),
         Expr::Prime(inner) => expr_references_sig(inner, sig_name),
         Expr::TemporalUnary { expr: inner, .. } => expr_references_sig(inner, sig_name),
         Expr::TemporalBinary { left, right, .. } => {

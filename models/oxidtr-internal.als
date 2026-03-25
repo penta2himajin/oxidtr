@@ -174,6 +174,7 @@ sig ExtraFn                extends DiffItem {}
 sig MissingValidation      extends DiffItem {}
 sig ExtraValidation        extends DiffItem {}
 sig MissingTemporalTest    extends DiffItem {}
+sig MissingAssert          extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem

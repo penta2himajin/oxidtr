@@ -519,3 +519,43 @@ fn check_detects_missing_invariant_test_for_temporal_without_prime() {
         if fact_name == "AlwaysPositive" && expected_kind == "invariant"
     )), "should detect missing invariant test: {diffs:?}");
 }
+
+// ── Assert check ────────────────────────────────────────────────────────────────
+
+#[test]
+fn missing_assert_detected() {
+    use oxidtr::ir::nodes::PropertyNode;
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![PropertyNode {
+            name: "NoSelfLoop".to_string(),
+            expr: Expr::VarRef("placeholder".to_string()),
+        }],
+    };
+    let sources = vec!["fn some_other_test() {}".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingAssert { name } if name == "NoSelfLoop"
+    )), "should detect missing assert test: {diffs:?}");
+}
+
+#[test]
+fn present_assert_not_flagged() {
+    use oxidtr::ir::nodes::PropertyNode;
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![PropertyNode {
+            name: "NoSelfLoop".to_string(),
+            expr: Expr::VarRef("placeholder".to_string()),
+        }],
+    };
+    let sources = vec!["fn no_self_loop() { assert!(true); }".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingAssert { .. }
+    )), "should not flag present assert test: {diffs:?}");
+}

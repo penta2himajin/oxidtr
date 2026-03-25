@@ -691,31 +691,53 @@ impl<'a> Parser<'a> {
 
     fn parse_field_access(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
-        while self.peek() == Token::Dot {
-            self.next();
-            if self.peek() == Token::Caret {
-                self.next(); // consume ^
-                let field = self.expect_ident()?;
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
-                    field: field.clone(),
-                };
-                expr = Expr::TransitiveClosure(Box::new(expr));
-            } else {
-                let field = self.expect_ident()?;
-                // Alloy 6: `s.field'` — prime on field access
-                if let Some(base_field) = field.strip_suffix('\'') {
+        loop {
+            if self.peek() == Token::Dot {
+                self.next();
+                if self.peek() == Token::Caret {
+                    self.next(); // consume ^
+                    let field = self.expect_ident()?;
                     expr = Expr::FieldAccess {
                         base: Box::new(expr),
-                        field: base_field.to_string(),
+                        field: field.clone(),
                     };
-                    expr = Expr::Prime(Box::new(expr));
+                    expr = Expr::TransitiveClosure(Box::new(expr));
                 } else {
-                    expr = Expr::FieldAccess {
-                        base: Box::new(expr),
-                        field,
-                    };
+                    let field = self.expect_ident()?;
+                    // Alloy 6: `s.field'` — prime on field access
+                    if let Some(base_field) = field.strip_suffix('\'') {
+                        expr = Expr::FieldAccess {
+                            base: Box::new(expr),
+                            field: base_field.to_string(),
+                        };
+                        expr = Expr::Prime(Box::new(expr));
+                    } else {
+                        expr = Expr::FieldAccess {
+                            base: Box::new(expr),
+                            field,
+                        };
+                    }
                 }
+            } else if self.peek() == Token::LBracket {
+                // Alloy 6: function application — `expr[args]` or `name[args]`
+                // Extract the function name from the last field access or VarRef
+                let name = match &expr {
+                    Expr::FieldAccess { field, .. } => field.clone(),
+                    Expr::VarRef(name) => name.clone(),
+                    _ => break,
+                };
+                self.next(); // consume [
+                let mut args = Vec::new();
+                while self.peek() != Token::RBracket {
+                    args.push(self.parse_expr()?);
+                    if self.peek() == Token::Comma {
+                        self.next();
+                    }
+                }
+                self.expect(&Token::RBracket)?;
+                expr = Expr::FunApp { name, args };
+            } else {
+                break;
             }
         }
         Ok(expr)

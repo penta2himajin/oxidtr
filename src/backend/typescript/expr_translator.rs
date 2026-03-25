@@ -67,6 +67,9 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(left, sig_names, params);
             collect_params(right, sig_names, params);
         }
+        Expr::FunApp { args, .. } => {
+            for arg in args { collect_params(arg, sig_names, params); }
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -109,6 +112,9 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
         Expr::TemporalBinary { left, right, .. } => {
             collect_tc_fields(left, ir, out);
             collect_tc_fields(right, ir, out);
+        }
+        Expr::FunApp { args, .. } => {
+            for arg in args { collect_tc_fields(arg, ir, out); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -257,6 +263,10 @@ fn translate_inner(
             let l = ti(left, false);
             let r = ti(right, false);
             format!("{l} && {r}")
+        }
+        Expr::FunApp { name, args } => {
+            let a: Vec<_> = args.iter().map(|a| ti(a, false)).collect();
+            format!("{name}({})", a.join(", "))
         }
     };
 

@@ -463,6 +463,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -560,7 +561,17 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        let test_name = format!("invariant_{}", to_snake_case(&fact_name));
+        // Use temporal classification for test name prefix
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_prefix = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => "liveness",
+            Some(analyze::TemporalKind::PastInvariant) => "past_invariant",
+            Some(analyze::TemporalKind::PastLiveness) => "past_liveness",
+            Some(analyze::TemporalKind::Step) => "step",
+            Some(analyze::TemporalKind::Binary) => "temporal",
+            _ => "invariant",
+        };
+        let test_name = format!("{}_{}", test_prefix, to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         // Skip tests that reference enum variants (not standalone types in Rust)
         if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
@@ -602,6 +613,18 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         if any_partial {
             writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
+        }
+        // Add temporal kind annotation for temporal tests
+        if let Some(kind) = temporal_kind {
+            let annotation = match kind {
+                analyze::TemporalKind::Invariant => "@temporal Invariant: property must hold in all states",
+                analyze::TemporalKind::Liveness => "@temporal Liveness: property must eventually hold (static approximation)",
+                analyze::TemporalKind::PastInvariant => "@temporal PastInvariant: property must have held in all past states",
+                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: property must have held at some past state",
+                analyze::TemporalKind::Step => "@temporal Step: relates adjacent states",
+                analyze::TemporalKind::Binary => "@temporal Binary: temporal binary constraint",
+            };
+            writeln!(out, "    /// {annotation}").unwrap();
         }
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.
@@ -1046,6 +1069,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_has_comparison(left) || expr_has_comparison(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_has_comparison(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

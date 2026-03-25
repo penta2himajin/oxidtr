@@ -600,3 +600,103 @@ fn schema_disj_seq_already_has_unique_items() {
     assert!(file.content.contains("\"uniqueItems\": true"),
         "schema should already have uniqueItems for disj seq field:\n{}", file.content);
 }
+
+// ── Temporal kind classification ────────────────────────────────────────────────
+
+#[test]
+fn temporal_kind_always_is_invariant() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact AlwaysTrue { always all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Invariant));
+}
+
+#[test]
+fn temporal_kind_eventually_is_liveness() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact WillHappen { eventually all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Liveness));
+}
+
+#[test]
+fn temporal_kind_historically_is_past_invariant() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact WasAlways { historically all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::PastInvariant));
+}
+
+#[test]
+fn temporal_kind_once_is_past_liveness() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact WasOnce { once all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::PastLiveness));
+}
+
+#[test]
+fn temporal_kind_after_is_step() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact NextStep { after all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Step));
+}
+
+#[test]
+fn temporal_kind_before_is_step() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact PrevStep { before all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Step));
+}
+
+#[test]
+fn temporal_kind_until_is_binary() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { x: one S }\nfact UntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Binary));
+}
+
+#[test]
+fn describe_fun_app_uses_alloy_syntax() {
+    use oxidtr::parser::ast::Expr;
+    let expr = Expr::FunApp {
+        name: "plus".to_string(),
+        args: vec![Expr::IntLiteral(1)],
+    };
+    let desc = analyze::describe_expr(&expr);
+    assert_eq!(desc, "plus[1]", "describe_expr should use Alloy bracket syntax for FunApp");
+}
+
+#[test]
+fn temporal_kind_non_temporal_is_none() {
+    let model = parser::parse(
+        "sig S { x: one S }\nfact Plain { all s: S | s.x = s.x }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, None);
+}

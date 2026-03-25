@@ -462,12 +462,25 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        writeln!(out, "func Test_invariant_{}(t *testing.T) {{", fact_name).unwrap();
+        // Use temporal classification for test name prefix
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_prefix = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => "liveness",
+            Some(analyze::TemporalKind::PastInvariant) => "past_invariant",
+            Some(analyze::TemporalKind::PastLiveness) => "past_liveness",
+            Some(analyze::TemporalKind::Step) => "step",
+            Some(analyze::TemporalKind::Binary) => "temporal",
+            _ => "invariant",
+        };
+        if let Some(ref kind) = temporal_kind {
+            writeln!(out, "// @temporal {:?} constraint: {fact_name}", kind).unwrap();
+        }
+        writeln!(out, "func Test_{}_{}(t *testing.T) {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
         }
         writeln!(out, "\tif !({body}) {{").unwrap();
-        writeln!(out, "\t\tt.Error(\"invariant {} violated\")", fact_name).unwrap();
+        writeln!(out, "\t\tt.Error(\"{} {} violated\")", test_prefix, fact_name).unwrap();
         writeln!(out, "\t}}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
@@ -758,6 +771,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
+        Expr::FunApp { args, .. } => args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
