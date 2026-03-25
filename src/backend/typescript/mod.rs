@@ -534,6 +534,15 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{camel_name}").unwrap();
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
+        } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
+            // Liveness/past_liveness: cannot be verified with single snapshot
+            let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
+                "liveness" } else { "past_liveness" };
+            let camel_name = to_camel_case(&fact_name);
+            writeln!(out, "  it('{}', () => {{", test_name).unwrap();
+            writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{camel_name}").unwrap();
+            writeln!(out, "  }});").unwrap();
+            writeln!(out).unwrap();
         } else {
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {

@@ -172,7 +172,10 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
             } else {
                 format!("transition_{fact_name}")
             };
-            if !combined.contains(&transition_name) {
+            // TS/Kotlin use space-separated test names: `transition FlagName`
+            let found_transition = combined.contains(&transition_name)
+                || (!use_snake_case && combined.contains(&format!("transition {fact_name}")));
+            if !found_transition {
                 diffs.push(DiffItem::MissingTemporalTest {
                     fact_name: fact_name.clone(),
                     expected_kind: "transition".to_string(),
@@ -201,14 +204,19 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
             } else {
                 format!("{test_prefix}_{fact_name}")
             };
-            if !combined.contains(&temporal_name) {
+            // TS/Kotlin use space-separated test names: `prefix FactName`
+            let found_temporal = combined.contains(&temporal_name)
+                || (!use_snake_case && combined.contains(&format!("{test_prefix} {fact_name}")));
+            if !found_temporal {
                 // Fall back to invariant_ prefix for backward compatibility
                 let fallback_name = if use_snake_case {
                     format!("invariant_{}", to_snake_case(&fact_name))
                 } else {
                     format!("invariant_{fact_name}")
                 };
-                if !combined.contains(&fallback_name) {
+                let found_fallback = combined.contains(&fallback_name)
+                    || (!use_snake_case && combined.contains(&format!("invariant {fact_name}")));
+                if !found_fallback {
                     diffs.push(DiffItem::MissingTemporalTest {
                         fact_name,
                         expected_kind: expected_kind.to_string(),

@@ -588,6 +588,14 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "        // binary temporal: requires trace-based verification; see check{op_label}{fact_name}").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
+        } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
+            let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
+                "Liveness" } else { "PastLiveness" };
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();
+            writeln!(out, "        // {}: requires trace-based verification; see check{kind_label}{fact_name}", test_prefix).unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
         } else {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();

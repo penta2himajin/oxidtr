@@ -494,6 +494,14 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "        // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
+        } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
+            let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
+                "liveness" } else { "past_liveness" };
+            let snake_name = to_snake_case(&fact_name);
+            writeln!(out, "    func test_{}_{}() {{", test_prefix, fact_name).unwrap();
+            writeln!(out, "        // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
         } else {
         writeln!(out, "    func test_{}_{}() {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {

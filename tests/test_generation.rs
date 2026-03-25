@@ -1,11 +1,18 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::rust;
+use oxidtr::backend::typescript;
 
 fn generate_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
     let model = parser::parse(input).expect("should parse");
     let ir = ir::lower(&model).expect("should lower");
     rust::generate(&ir)
+}
+
+fn generate_ts_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
+    let model = parser::parse(input).expect("should parse");
+    let ir = ir::lower(&model).expect("should lower");
+    typescript::generate(&ir)
 }
 
 fn find_file<'a>(files: &'a [oxidtr::backend::GeneratedFile], path: &str) -> &'a str {
@@ -177,6 +184,76 @@ fn binary_temporal_since_static_test_does_not_assert_body() {
     assert!(
         content.contains("binary temporal: requires trace-based verification"),
         "since static test should document the limitation:\n{content}"
+    );
+}
+
+// ── ④b Liveness static test should reference trace checker, not assert body ──
+
+#[test]
+fn liveness_static_test_references_trace_checker_rust() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WillConverge { eventually all s: S | s.x = s.x }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Liveness test should exist
+    assert!(content.contains("fn liveness_"), "missing liveness test:\n{content}");
+    // But should NOT assert body — liveness cannot be verified with single snapshot
+    assert!(
+        !content.contains("assert!(s.iter()"),
+        "liveness static test should NOT assert body inline:\n{content}"
+    );
+    // Should reference trace checker
+    assert!(
+        content.contains("liveness: requires trace-based verification; see check_liveness_"),
+        "liveness static test should reference trace checker:\n{content}"
+    );
+}
+
+#[test]
+fn past_liveness_static_test_references_trace_checker_rust() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WasReached { once all s: S | s.x = s.x }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("fn past_liveness_"), "missing past_liveness test:\n{content}");
+    assert!(
+        content.contains("past_liveness: requires trace-based verification; see check_past_liveness_"),
+        "past_liveness static test should reference trace checker:\n{content}"
+    );
+}
+
+// ── ④c TS: liveness/binary temporal test names and trace checker references ──
+
+#[test]
+fn ts_liveness_static_test_references_trace_checker() {
+    let files = generate_ts_from(r#"
+        sig S { x: one S }
+        fact WillConverge { eventually all s: S | s.x = s.x }
+    "#);
+    let content = find_file(&files, "tests.ts");
+    // TS should generate `it('liveness WillConverge', ...)`
+    assert!(content.contains("it('liveness WillConverge'"), "missing liveness test with correct name:\n{content}");
+    // Should reference trace checker, not assert body
+    assert!(
+        content.contains("liveness: requires trace-based verification; see check_liveness_"),
+        "liveness static test should reference trace checker:\n{content}"
+    );
+}
+
+#[test]
+fn ts_binary_temporal_test_uses_temporal_prefix() {
+    let files = generate_ts_from(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.ts");
+    // TS should generate `it('temporal WaitUntilDone', ...)` not `it('invariant WaitUntilDone', ...)`
+    assert!(content.contains("it('temporal WaitUntilDone'"), "missing temporal binary test with correct name:\n{content}");
+    assert!(
+        content.contains("binary temporal: requires trace-based verification; see check_until_"),
+        "binary temporal should reference trace checker:\n{content}"
     );
 }
 
