@@ -527,6 +527,99 @@ fn check_detects_missing_invariant_test_for_temporal_without_prime() {
     )), "should detect missing invariant test: {diffs:?}");
 }
 
+// ── Temporal test name: space-separated form (TS/Kotlin) ────────────────────────
+
+#[test]
+fn check_accepts_space_separated_invariant_test_name() {
+    // TS/Kotlin generate `it('invariant FlagImpliesPositive', ...)` (space separator)
+    // check should recognize this as matching the temporal test requirement
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("FlagImpliesPositive".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Always,
+                expr: Box::new(Expr::Comparison {
+                    op: ast::CompareOp::Gte,
+                    left: Box::new(Expr::VarRef("x".to_string())),
+                    right: Box::new(Expr::IntLiteral(0)),
+                }),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    // Source uses space-separated form (as TS/Kotlin backends emit)
+    let sources = vec!["it('invariant FlagImpliesPositive', () => {".to_string()];
+    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
+        "should accept space-separated invariant test name: {diffs:?}");
+}
+
+#[test]
+fn check_accepts_space_separated_temporal_binary_test_name() {
+    // TS/Kotlin generate `it('temporal FlagUntilLarge', ...)` for binary temporal
+    use oxidtr::parser::ast::TemporalBinaryOp;
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("FlagUntilLarge".to_string()),
+            expr: Expr::TemporalBinary {
+                op: TemporalBinaryOp::Until,
+                left: Box::new(Expr::VarRef("x".to_string())),
+                right: Box::new(Expr::VarRef("y".to_string())),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    let sources = vec!["it('temporal FlagUntilLarge', () => {".to_string()];
+    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
+        "should accept space-separated temporal binary test name: {diffs:?}");
+}
+
+#[test]
+fn check_accepts_space_separated_liveness_test_name() {
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("WillConverge".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Eventually,
+                expr: Box::new(Expr::VarRef("x".to_string())),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    let sources = vec!["it('liveness WillConverge', () => {".to_string()];
+    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
+        "should accept space-separated liveness test name: {diffs:?}");
+}
+
+#[test]
+fn check_accepts_space_separated_transition_test_name() {
+    // TS generates `it('transition StateUpdate', ...)` for prime constraints
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![ConstraintNode {
+            name: Some("StateUpdate".to_string()),
+            expr: Expr::TemporalUnary {
+                op: ast::TemporalUnaryOp::Always,
+                expr: Box::new(Expr::Prime(Box::new(Expr::VarRef("x".to_string())))),
+            },
+        }],
+        operations: vec![],
+        properties: vec![],
+    };
+    let sources = vec!["it('transition StateUpdate', () => {".to_string()];
+    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
+        "should accept space-separated transition test name: {diffs:?}");
+}
+
 // ── Assert check ────────────────────────────────────────────────────────────────
 
 #[test]
