@@ -355,3 +355,22 @@ fn ts_validator_generates_disjoint_check() {
     assert!(validators.contains("must not overlap"),
         "validator should check disjoint constraint:\n{validators}");
 }
+
+#[test]
+fn ts_abstract_sig_fields_propagated_to_union_variants() {
+    let files = generate_from(r#"
+        sig Tick {}
+        abstract sig Event { tick: one Tick }
+        sig Started extends Event { source: one Tick }
+        sig Stopped extends Event {}
+    "#);
+    let models = find_file(&files, "models.ts");
+    // Parent field `tick` must appear in each variant interface
+    assert!(models.contains("export interface Started {"),
+        "Started should be a discriminated union variant:\n{models}");
+    assert!(models.contains("tick: Tick"),
+        "parent field `tick` should appear in variant:\n{models}");
+    // Stopped has no own fields, but inherits `tick` — must be interface, not string literal
+    assert!(models.contains("export interface Stopped {"),
+        "Stopped should be interface (inherited field), not string literal:\n{models}");
+}

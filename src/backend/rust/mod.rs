@@ -199,10 +199,13 @@ fn generate_enum(
         .map(|st| (st.name.as_str(), st))
         .collect();
 
+    // Parent abstract sig may have fields that should be inherited by all variants
+    let parent_fields = &s.fields;
+
     if use_serde {
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
-        // Check if any variant has fields — if so, use tagged representation
-        let has_data_variants = children.map_or(false, |vs| {
+        // Check if any variant has fields (including inherited parent fields) — if so, use tagged representation
+        let has_data_variants = !parent_fields.is_empty() || children.map_or(false, |vs| {
             vs.iter().any(|v| struct_map.get(v.as_str()).map_or(false, |st| !st.fields.is_empty()))
         });
         if has_data_variants {
@@ -215,10 +218,12 @@ fn generate_enum(
     if let Some(variants) = children {
         for v in variants {
             let child = struct_map.get(v.as_str());
-            let fields = child.map(|c| &c.fields).filter(|f| !f.is_empty());
-            if let Some(fields) = fields {
+            let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
+            // Combine parent fields + child fields
+            let all_fields: Vec<&IRField> = parent_fields.iter().chain(child_fields.iter().copied()).collect();
+            if !all_fields.is_empty() {
                 writeln!(out, "    {v} {{").unwrap();
-                for f in fields {
+                for f in &all_fields {
                     // Fields referencing the parent enum type need Box to break recursion
                     let needs_box = f.target == s.name;
                     let is_self_ref = needs_box

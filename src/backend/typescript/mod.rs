@@ -234,8 +234,11 @@ fn generate_union_type(
         return;
     };
 
-    // Check if all variants are unit (no fields) — use string literal union
-    let all_unit = variants.iter().all(|v| {
+    // Parent abstract sig may have fields that should be inherited by all variants
+    let parent_fields = &s.fields;
+
+    // Check if all variants are unit (no fields, including inherited) — use string literal union
+    let all_unit = parent_fields.is_empty() && variants.iter().all(|v| {
         struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
     });
 
@@ -249,25 +252,25 @@ fn generate_union_type(
         // Discriminated union with kind field
         for v in variants {
             let child = struct_map.get(v.as_str());
-            let fields = child.map(|c| &c.fields).filter(|f| !f.is_empty());
+            let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
+            // Combine parent fields + child fields
+            let all_fields: Vec<&IRField> = parent_fields.iter().chain(child_fields.iter().copied()).collect();
             writeln!(out, "export interface {} {{", v).unwrap();
             writeln!(out, "  readonly kind: \"{}\";", v).unwrap();
-            if let Some(fields) = fields {
-                for f in fields {
-                    let type_str = if let Some(vt) = &f.value_type {
-                        format!("Map<{}, {}>", f.target, vt)
-                    } else if let Some(raw) = &f.raw_union_type {
-                        if f.mult == Multiplicity::Lone {
-                            format!("{} | null", raw)
-                        } else {
-                            raw.clone()
-                        }
+            for f in &all_fields {
+                let type_str = if let Some(vt) = &f.value_type {
+                    format!("Map<{}, {}>", f.target, vt)
+                } else if let Some(raw) = &f.raw_union_type {
+                    if f.mult == Multiplicity::Lone {
+                        format!("{} | null", raw)
                     } else {
-                        mult_to_ts_type(&f.target, &f.mult)
-                    };
-                    let readonly = if f.is_var { "" } else { "readonly " };
-                    writeln!(out, "  {readonly}{}: {};", f.name, type_str).unwrap();
-                }
+                        raw.clone()
+                    }
+                } else {
+                    mult_to_ts_type(&f.target, &f.mult)
+                };
+                let readonly = if f.is_var { "" } else { "readonly " };
+                writeln!(out, "  {readonly}{}: {};", f.name, type_str).unwrap();
             }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
