@@ -387,7 +387,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
-        writeln!(out, "    func test_{}() {{", to_snake_case(&prop.name)).unwrap();
+        writeln!(out, "    func test_{}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
         }
