@@ -1453,9 +1453,17 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
 
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
 
         let struct_snake = to_snake_case(&s.name);
+
+        // Unit struct (no fields): generate a trivial factory.
+        if s.fields.is_empty() {
+            writeln!(out, "/// Factory: default value for unit struct {}", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn default_{}() -> {} {{ {} }}", struct_snake, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "/// Factory: create a default valid {}", s.name).unwrap();
         writeln!(out, "#[allow(dead_code)]").unwrap();
