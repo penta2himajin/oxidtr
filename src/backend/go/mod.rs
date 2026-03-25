@@ -162,7 +162,7 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
     // Singleton: one sig → package-level var
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
         if s.is_var {
-            writeln!(out, "// @alloy: var sig").unwrap();
+            writeln!(out, "// Alloy var sig: instances change across state transitions (Go fields are mutable by default)").unwrap();
         }
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
         writeln!(out).unwrap();
@@ -172,7 +172,7 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
     }
 
     if s.is_var {
-        writeln!(out, "// @alloy: var sig").unwrap();
+        writeln!(out, "// Alloy var sig: instances change across state transitions (Go fields are mutable by default)").unwrap();
     }
     if s.fields.is_empty() {
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
@@ -196,9 +196,7 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
                 }
             }
 
-            if f.is_var {
-                writeln!(out, "\t// @alloy: var").unwrap();
-            }
+            // Go fields are mutable by default; no annotation needed for var fields
             if f.mult == Multiplicity::Seq {
                 writeln!(out, "\t// @alloy: seq").unwrap();
             }
@@ -442,20 +440,21 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
 
-        // Alloy 6: temporal facts with prime → generate transition test
+        // Alloy 6: temporal facts with prime → generate scaffold test
+        // Prime references (x') require before/after state capture; emit scaffold.
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-            let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+            let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "// @temporal Transition constraint: {fact_name}").unwrap();
-            writeln!(out, "// Verifies state-transition invariant (prime = next-state).").unwrap();
+            writeln!(out, "// Scaffold: prime (next-state) references require a before/after transition mechanism.").unwrap();
             writeln!(out, "func Test_transition_{}(t *testing.T) {{", fact_name).unwrap();
+            writeln!(out, "\t// TODO: apply transition, then assert post-condition").unwrap();
+            writeln!(out, "\t// Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+                writeln!(out, "\t// pre: capture {pname}: []{tname} before transition").unwrap();
+                writeln!(out, "\t// post: assert condition on {pname} after transition").unwrap();
             }
-            writeln!(out, "\tif !({body}) {{").unwrap();
-            writeln!(out, "\t\tt.Error(\"transition {} violated\")", fact_name).unwrap();
-            writeln!(out, "\t}}").unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
             continue;
@@ -499,7 +498,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(ref kind) = temporal_kind {
             let note = match kind {
                 analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
-                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                    " — liveness property: cannot be fully verified at runtime; static test approximates via implies",
                 analyze::TemporalKind::Binary =>
                     " — binary temporal: requires trace-based verification",
                 _ => "",

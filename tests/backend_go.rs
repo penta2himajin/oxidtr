@@ -186,12 +186,16 @@ fn go_tests_import_testing() {
 
 #[test]
 fn go_var_field_annotated() {
+    // Go fields are mutable by default, so no @alloy: var annotation is needed.
+    // The field should still be present without any var-specific comment.
     let files = generate_go(r#"
         sig Account { var balance: one Int }
     "#);
     let m = find_file(&files, "models.go");
-    assert!(m.contains("@alloy: var"),
-        "var field should have @alloy: var annotation in Go:\n{m}");
+    assert!(!m.contains("@alloy: var"),
+        "Go var field should not have @alloy: var annotation (fields are mutable by default):\n{m}");
+    assert!(m.contains("Balance"),
+        "var field should still be present in struct:\n{m}");
 }
 
 // ── Binary temporal static test ──────────────────────────────────────────────

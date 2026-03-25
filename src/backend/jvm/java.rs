@@ -143,7 +143,12 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
     if s.fields.is_empty() {
         writeln!(out, "record {}() {{}}", s.name).unwrap();
     } else {
-        let params: Vec<String> = s.fields.iter()
+        // Java records are immutable (fields are final). If any field is var
+        // (mutable across state transitions), generate a class instead.
+        let has_var_field = s.fields.iter().any(|f| f.is_var);
+
+        // Collect field annotations (shared between record and class generation)
+        let field_infos: Vec<(String, String, bool)> = s.fields.iter()
             .map(|f| {
                 let mut annotations = Vec::new();
                 let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
@@ -202,9 +207,6 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         annotations.push("/* Consider using Set<T> for uniqueness (disj constraint) */".to_string());
                     }
                 }
-                if f.is_var {
-                    annotations.push("/* @alloy: var */".to_string());
-                }
                 let annotation_str = if annotations.is_empty() {
                     String::new()
                 } else {
@@ -223,11 +225,11 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 } else {
                     mult_to_java_type(&f.target, &f.mult)
                 };
-                format!("{annotation_str}{} {}", java_type, f.name)
+                (annotation_str, java_type, f.is_var)
             })
             .collect();
 
-        // FieldOrdering → compact constructor with validation
+        // FieldOrdering → constructor/compact-constructor validation
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
         let mut constructor_checks: Vec<String> = Vec::new();
         for c in &sig_constraints {
@@ -258,16 +260,51 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 _ => {}
             }
         }
-        if constructor_checks.is_empty() {
-            writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
-        } else {
-            writeln!(out, "record {}({}) {{", s.name, params.join(", ")).unwrap();
-            writeln!(out, "    {} {{", s.name).unwrap();
+
+        if has_var_field {
+            // Generate a mutable class instead of record for var fields
+            writeln!(out, "/* var fields require mutable state — using class instead of record */").unwrap();
+            writeln!(out, "class {} {{", s.name).unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let (ref ann, ref jtype, is_var) = field_infos[i];
+                let final_kw = if is_var { "/* MUTABLE: changes across state transitions */ " } else { "final " };
+                writeln!(out, "    {ann}{final_kw}{jtype} {};", f.name).unwrap();
+            }
+            // Generate constructor
+            let ctor_params: Vec<String> = s.fields.iter().enumerate()
+                .map(|(i, f)| {
+                    let (_, ref jtype, _) = field_infos[i];
+                    format!("{jtype} {}", f.name)
+                })
+                .collect();
+            writeln!(out, "    {}({}) {{", s.name, ctor_params.join(", ")).unwrap();
             for check in &constructor_checks {
                 writeln!(out, "        {check}").unwrap();
             }
+            for f in &s.fields {
+                writeln!(out, "        this.{} = {};", f.name, f.name).unwrap();
+            }
             writeln!(out, "    }}").unwrap();
             writeln!(out, "}}").unwrap();
+        } else {
+            // Standard record generation (all fields immutable)
+            let params: Vec<String> = s.fields.iter().enumerate()
+                .map(|(i, f)| {
+                    let (ref ann, ref jtype, _) = field_infos[i];
+                    format!("{ann}{jtype} {}", f.name)
+                })
+                .collect();
+            if constructor_checks.is_empty() {
+                writeln!(out, "record {}({}) {{}}", s.name, params.join(", ")).unwrap();
+            } else {
+                writeln!(out, "record {}({}) {{", s.name, params.join(", ")).unwrap();
+                writeln!(out, "    {} {{", s.name).unwrap();
+                for check in &constructor_checks {
+                    writeln!(out, "        {check}").unwrap();
+                }
+                writeln!(out, "    }}").unwrap();
+                writeln!(out, "}}").unwrap();
+            }
         }
     }
 }
@@ -491,19 +528,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     for constraint in &ir.constraints {
         let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
 
-        // Alloy 6: temporal facts with prime → generate transition test
+        // Alloy 6: temporal facts with prime → generate scaffold test
+        // Prime references (x') require before/after state capture; emit scaffold.
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-            let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
+            let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /** @temporal Transition constraint: {fact_name} */").unwrap();
-            writeln!(out, "    /** Verifies state-transition invariant (prime = next-state). */").unwrap();
+            writeln!(out, "    /** Scaffold: prime (next-state) references require a before/after transition mechanism. */").unwrap();
             writeln!(out, "    @Test").unwrap();
             writeln!(out, "    void transition_{}() {{", fact_name).unwrap();
+            writeln!(out, "        // TODO: apply transition, then assert post-condition").unwrap();
+            writeln!(out, "        // Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+                writeln!(out, "        // pre: capture {pname}: List<{tname}> before transition").unwrap();
+                writeln!(out, "        // post: assert condition on {pname} after transition").unwrap();
             }
-            writeln!(out, "        assertTrue({body});").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
             continue;
@@ -525,7 +565,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(ref kind) = temporal_kind {
             let note = match kind {
                 analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
-                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                    " — liveness property: cannot be fully verified at runtime; static test approximates via implies",
                 analyze::TemporalKind::Binary =>
                     " — binary temporal: requires trace-based verification",
                 _ => "",
