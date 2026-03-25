@@ -142,6 +142,44 @@ fn generate_since_trace_checker() {
     assert!(content.contains(".rposition("), "since checker should use .rposition():\n{content}");
 }
 
+// ── ④a Binary temporal static test should be comment-only ────────────────────
+
+#[test]
+fn binary_temporal_static_test_does_not_assert_body() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // The static test should exist (for check diff purposes)
+    assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
+    // But it should NOT assert the body — binary temporal requires trace-based verification
+    // The test body should trivially pass, not contain a meaningless snapshot assertion
+    assert!(
+        !content.contains("assert!(s.iter()"),
+        "binary temporal static test should NOT assert body inline:\n{content}"
+    );
+    // Should contain a comment about trace-based verification
+    assert!(
+        content.contains("binary temporal: requires trace-based verification"),
+        "binary temporal static test should document the limitation:\n{content}"
+    );
+}
+
+#[test]
+fn binary_temporal_since_static_test_does_not_assert_body() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact HeldSince { (all s: S | s.x = s.x) since (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
+    assert!(
+        content.contains("binary temporal: requires trace-based verification"),
+        "since static test should document the limitation:\n{content}"
+    );
+}
+
 // ── ③ Integer arithmetic translation ────────────────────────────────────────
 
 #[test]

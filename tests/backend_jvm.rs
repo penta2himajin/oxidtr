@@ -493,3 +493,61 @@ fn mine_java_var_field_from_annotation() {
     assert!(!mined.sigs[0].fields[1].is_var,
         "name should not be var");
 }
+
+// ── Binary temporal static test ──────────────────────────────────────────────
+
+#[test]
+fn kt_binary_temporal_static_test_is_comment_only() {
+    let files = generate_kt(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let tests = find_file(&files, "Tests.kt");
+    assert!(tests.contains("temporal WaitUntilDone"),
+        "should generate temporal test:\n{tests}");
+    assert!(tests.contains("binary temporal: requires trace-based verification"),
+        "should document trace-based verification:\n{tests}");
+}
+
+#[test]
+fn java_binary_temporal_static_test_is_comment_only() {
+    let files = generate_java(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let tests = find_file(&files, "Tests.java");
+    assert!(tests.contains("temporal_WaitUntilDone"),
+        "should generate temporal test:\n{tests}");
+    assert!(tests.contains("binary temporal: requires trace-based verification"),
+        "should document trace-based verification:\n{tests}");
+}
+
+// ── Disjoint constraint validation ──────────────────────────────────────────
+
+#[test]
+fn kotlin_init_block_generates_disjoint_check() {
+    let files = generate_kt(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#);
+    let models = find_file(&files, "Models.kt");
+    assert!(models.contains("morning"), "init block should reference morning field:\n{models}");
+    assert!(models.contains("evening"), "init block should reference evening field:\n{models}");
+    assert!(models.contains("must not overlap"),
+        "init block should check disjoint constraint:\n{models}");
+}
+
+#[test]
+fn java_constructor_generates_disjoint_check() {
+    let files = generate_java(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#);
+    let models = find_file(&files, "Models.java");
+    assert!(models.contains("morning"), "constructor should reference morning field:\n{models}");
+    assert!(models.contains("evening"), "constructor should reference evening field:\n{models}");
+    assert!(models.contains("must not overlap"),
+        "constructor should check disjoint constraint:\n{models}");
+}

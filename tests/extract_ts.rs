@@ -399,18 +399,35 @@ sig DisplayProps extends BaseProps {}
 // ── Alloy 6: var field extraction ───────────────────────────────────────────
 
 #[test]
-fn mine_ts_var_field_from_annotation() {
+fn mine_ts_var_field_from_readonly() {
     let src = r#"
 export interface Account {
-  // @alloy: var
   balance: number;
-  name: string;
+  readonly name: string;
 }
 "#;
     let mined = oxidtr::extract::ts_extractor::extract(src);
     assert_eq!(mined.sigs[0].fields.len(), 2);
     assert!(mined.sigs[0].fields[0].is_var,
-        "balance should be var (has @alloy: var annotation)");
+        "balance should be var (no readonly)");
+    assert!(!mined.sigs[0].fields[1].is_var,
+        "name should not be var (has readonly)");
+}
+
+#[test]
+fn mine_ts_var_field_from_legacy_annotation() {
+    // Backwards compatibility: @alloy: var comment still sets is_var
+    let src = r#"
+export interface Account {
+  // @alloy: var
+  readonly balance: number;
+  readonly name: string;
+}
+"#;
+    let mined = oxidtr::extract::ts_extractor::extract(src);
+    assert_eq!(mined.sigs[0].fields.len(), 2);
+    assert!(mined.sigs[0].fields[0].is_var,
+        "balance should be var (legacy @alloy: var overrides readonly)");
     assert!(!mined.sigs[0].fields[1].is_var,
         "name should not be var");
 }

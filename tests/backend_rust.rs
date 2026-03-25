@@ -488,3 +488,39 @@ fn rust_temporal_prime_fact_generates_transition_test() {
     assert!(tests.contains("next_value"),
         "transition test should reference next-state field:\n{tests}");
 }
+
+// ── Binary temporal static test ──────────────────────────────────────────────
+
+#[test]
+fn rust_binary_temporal_static_test_is_comment_only() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(tests.contains("fn temporal_wait_until_done"),
+        "should generate temporal test:\n{tests}");
+    assert!(tests.contains("binary temporal: requires trace-based verification; see check_until_wait_until_done"),
+        "should document trace-based verification:\n{tests}");
+    assert!(tests.contains("fn check_until_wait_until_done"),
+        "trace checker should still be generated:\n{tests}");
+}
+
+// ── Disjoint constraint validation ──────────────────────────────────────────
+
+#[test]
+fn rust_try_from_generates_disjoint_check() {
+    let files = generate_from(r#"
+        sig Schedule { morning: set Task, evening: set Task }
+        sig Task {}
+        fact NoOverlap { no (Schedule.morning & Schedule.evening) }
+    "#);
+    let newtypes = files.iter().find(|f| f.path == "newtypes.rs");
+    assert!(newtypes.is_some(), "newtypes.rs should be generated for disjoint constraint, files: {:?}",
+        files.iter().map(|f| &f.path).collect::<Vec<_>>());
+    let newtypes = newtypes.unwrap().content.as_str();
+    assert!(newtypes.contains("morning"), "TryFrom should reference morning field:\n{newtypes}");
+    assert!(newtypes.contains("evening"), "TryFrom should reference evening field:\n{newtypes}");
+    assert!(newtypes.contains("must not overlap"),
+        "TryFrom should check disjoint constraint:\n{newtypes}");
+}

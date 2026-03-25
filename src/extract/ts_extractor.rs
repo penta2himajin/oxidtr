@@ -318,8 +318,9 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
         return None;
     }
 
-    // "readonly kind: "Foo"" → skip (discriminant)
-    let rest = trimmed.strip_prefix("readonly ").unwrap_or(trimmed);
+    // readonly fields are non-var; absence of readonly means var (mutable across states)
+    let has_readonly = trimmed.starts_with("readonly ");
+    let rest = if has_readonly { &trimmed["readonly ".len()..] } else { trimmed };
 
     let colon = rest.find(':')?;
 
@@ -341,7 +342,7 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     if type_str.starts_with('"') && type_str.ends_with('"') && !type_str.contains(" | ") {
         return Some(MinedField {
             name,
-            is_var: false,
+            is_var: !has_readonly,
             mult: MinedMultiplicity::One,
             target: type_str.trim_matches('"').to_string(),
             raw_union_type: None,
@@ -356,7 +357,7 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
 
     let raw_union = detect_union_type(type_str);
     let (mult, target) = ts_type_to_mult(type_str, optional);
-    Some(MinedField { name, is_var: false, mult, target, raw_union_type: raw_union })
+    Some(MinedField { name, is_var: !has_readonly, mult, target, raw_union_type: raw_union })
 }
 
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {
