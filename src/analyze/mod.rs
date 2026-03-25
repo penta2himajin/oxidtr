@@ -230,6 +230,43 @@ pub fn find_temporal_binary(expr: &Expr) -> Option<(&TemporalBinaryOp, &Expr, &E
     }
 }
 
+/// Like `find_temporal_binary` but also returns the bindings of the nearest enclosing quantifier.
+/// Returns `(op, left, right, bindings)` where `bindings` contains the quantifier variable names.
+pub fn find_temporal_binary_with_bindings<'a>(
+    expr: &'a Expr,
+) -> Option<(&'a TemporalBinaryOp, &'a Expr, &'a Expr, Vec<String>)> {
+    find_temporal_binary_inner(expr, &[])
+}
+
+fn find_temporal_binary_inner<'a>(
+    expr: &'a Expr,
+    enclosing_vars: &[String],
+) -> Option<(&'a TemporalBinaryOp, &'a Expr, &'a Expr, Vec<String>)> {
+    match expr {
+        Expr::TemporalBinary { op, left, right } => {
+            Some((op, left, right, enclosing_vars.to_vec()))
+        }
+        Expr::TemporalUnary { expr: inner, .. } => {
+            find_temporal_binary_inner(inner, enclosing_vars)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            let mut vars = enclosing_vars.to_vec();
+            for b in bindings {
+                vars.extend(b.vars.clone());
+            }
+            find_temporal_binary_inner(body, &vars)
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            find_temporal_binary_inner(left, enclosing_vars)
+                .or_else(|| find_temporal_binary_inner(right, enclosing_vars))
+        }
+        Expr::Not(inner) | Expr::MultFormula { expr: inner, .. } => {
+            find_temporal_binary_inner(inner, enclosing_vars)
+        }
+        _ => None,
+    }
+}
+
 /// Strip the outermost temporal unary wrapper and universal quantifier from an expression.
 /// Returns `(quantifier_kind, bindings, inner_body)` if the expression has the pattern
 /// `TemporalUnary(_, Quantifier(kind, bindings, body))` or just `Quantifier(kind, bindings, body)`.
