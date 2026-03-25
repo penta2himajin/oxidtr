@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
+use crate::parser::ast::{Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -508,7 +508,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         // Binary temporal: static test cannot meaningfully assert the body
         if temporal_kind == Some(analyze::TemporalKind::Binary) {
-            let op_label = if let Expr::TemporalBinary { op, .. } = &constraint.expr {
+            let op_label = if let Some((op, _, _)) = analyze::find_temporal_binary(&constraint.expr) {
                 match op {
                     TemporalBinaryOp::Until => "until",
                     TemporalBinaryOp::Since => "since",
@@ -581,7 +581,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out).unwrap();
                 }
                 analyze::TemporalKind::Binary => {
-                    if let Expr::TemporalBinary { op, left, right } = &constraint.expr {
+                    if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
                         let left_body = expr_translator::translate_with_ir(left, ir);
                         let right_body = expr_translator::translate_with_ir(right, ir);
                         let op_name = match op {

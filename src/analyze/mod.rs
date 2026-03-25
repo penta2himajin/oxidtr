@@ -150,18 +150,82 @@ pub enum TemporalKind {
     Binary,
 }
 
-/// Classify the outermost temporal operator of an expression.
-/// Returns `None` if the expression is not temporal.
-pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
+/// Priority of temporal kind for determining test type.
+/// Higher priority kinds require trace-based verification and override lower ones.
+fn temporal_priority(kind: TemporalKind) -> u8 {
+    match kind {
+        TemporalKind::Binary => 3,
+        TemporalKind::Liveness | TemporalKind::PastLiveness => 2,
+        TemporalKind::Step => 1,
+        TemporalKind::Invariant | TemporalKind::PastInvariant => 0,
+    }
+}
+
+/// Map a temporal unary operator to its TemporalKind.
+fn unary_op_to_kind(op: &TemporalUnaryOp) -> TemporalKind {
+    match op {
+        TemporalUnaryOp::Always => TemporalKind::Invariant,
+        TemporalUnaryOp::Eventually => TemporalKind::Liveness,
+        TemporalUnaryOp::Historically => TemporalKind::PastInvariant,
+        TemporalUnaryOp::Once => TemporalKind::PastLiveness,
+        TemporalUnaryOp::After | TemporalUnaryOp::Before => TemporalKind::Step,
+    }
+}
+
+/// Recursively scan an expression tree for the highest-priority temporal operator.
+/// Walks through quantifiers, logical connectives, and temporal wrappers.
+fn scan_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
     match expr {
-        Expr::TemporalUnary { op, .. } => Some(match op {
-            TemporalUnaryOp::Always => TemporalKind::Invariant,
-            TemporalUnaryOp::Eventually => TemporalKind::Liveness,
-            TemporalUnaryOp::Historically => TemporalKind::PastInvariant,
-            TemporalUnaryOp::Once => TemporalKind::PastLiveness,
-            TemporalUnaryOp::After | TemporalUnaryOp::Before => TemporalKind::Step,
-        }),
         Expr::TemporalBinary { .. } => Some(TemporalKind::Binary),
+        Expr::TemporalUnary { op, expr: inner } => {
+            let this_kind = unary_op_to_kind(op);
+            let nested = scan_temporal_kind(inner);
+            match nested {
+                Some(n) if temporal_priority(n) > temporal_priority(this_kind) => Some(n),
+                _ => Some(this_kind),
+            }
+        }
+        Expr::Quantifier { body, .. } => scan_temporal_kind(body),
+        Expr::BinaryLogic { left, right, .. } => {
+            merge_temporal_kinds(scan_temporal_kind(left), scan_temporal_kind(right))
+        }
+        Expr::Not(inner) => scan_temporal_kind(inner),
+        Expr::MultFormula { expr: inner, .. } => scan_temporal_kind(inner),
+        _ => None,
+    }
+}
+
+/// Merge two optional temporal kinds, returning the higher-priority one.
+fn merge_temporal_kinds(a: Option<TemporalKind>, b: Option<TemporalKind>) -> Option<TemporalKind> {
+    match (a, b) {
+        (Some(ak), Some(bk)) => {
+            if temporal_priority(ak) >= temporal_priority(bk) { Some(ak) } else { Some(bk) }
+        }
+        (Some(ak), None) => Some(ak),
+        (None, bk) => bk,
+    }
+}
+
+/// Classify the temporal operator of an expression, recursing through quantifiers
+/// and logical connectives to find nested temporal operators.
+/// Returns `None` if the expression contains no temporal operators.
+pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
+    scan_temporal_kind(expr)
+}
+
+/// Find the first `TemporalBinary` node nested inside an expression tree,
+/// walking through quantifiers and logical connectives.
+/// Returns the operator, left, and right sub-expressions.
+pub fn find_temporal_binary(expr: &Expr) -> Option<(&TemporalBinaryOp, &Expr, &Expr)> {
+    match expr {
+        Expr::TemporalBinary { op, left, right } => Some((op, left, right)),
+        Expr::TemporalUnary { expr: inner, .. } => find_temporal_binary(inner),
+        Expr::Quantifier { body, .. } => find_temporal_binary(body),
+        Expr::BinaryLogic { left, right, .. } => {
+            find_temporal_binary(left).or_else(|| find_temporal_binary(right))
+        }
+        Expr::Not(inner) => find_temporal_binary(inner),
+        Expr::MultFormula { expr: inner, .. } => find_temporal_binary(inner),
         _ => None,
     }
 }

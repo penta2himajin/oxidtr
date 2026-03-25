@@ -837,3 +837,48 @@ fn temporal_kind_non_temporal_is_none() {
     let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
     assert_eq!(kind, None);
 }
+
+#[test]
+fn temporal_kind_nested_until_in_quantifier_is_binary() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { active: one S }\nfact WaitUntil { all s: S | s.active = s.active until s.active = s.active }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Binary), "until nested inside quantifier should be classified as Binary");
+}
+
+#[test]
+fn temporal_kind_nested_since_in_quantifier_is_binary() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { active: one S }\nfact SinceActive { all s: S | s.active = s.active since s.active = s.active }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Binary), "since nested inside quantifier should be classified as Binary");
+}
+
+#[test]
+fn temporal_kind_always_implies_eventually_is_liveness() {
+    use oxidtr::analyze::TemporalKind;
+    let model = parser::parse(
+        "sig S { active: one S }\nfact Responsive { always (all s: S | s.active = s.active implies eventually s.active = s.active) }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let kind = analyze::expr_temporal_kind(&ir_data.constraints[0].expr);
+    assert_eq!(kind, Some(TemporalKind::Liveness), "always-implies-eventually should be classified as Liveness, not Invariant");
+}
+
+#[test]
+fn find_temporal_binary_nested_in_quantifier() {
+    let model = parser::parse(
+        "sig S { active: one S }\nfact WaitUntil { all s: S | s.active = s.active until s.active = s.active }"
+    ).unwrap();
+    let ir_data = ir::lower(&model).unwrap();
+    let found = analyze::find_temporal_binary(&ir_data.constraints[0].expr);
+    assert!(found.is_some(), "find_temporal_binary should find until inside quantifier");
+    let (op, _, _) = found.unwrap();
+    assert_eq!(*op, oxidtr::parser::ast::TemporalBinaryOp::Until);
+}
