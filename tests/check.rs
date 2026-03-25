@@ -641,6 +641,80 @@ fn missing_assert_detected() {
     )), "should detect missing assert test: {diffs:?}");
 }
 
+/// Regression test: unit struct (e.g. `pub struct Foo;`) must be parsed correctly
+/// and must NOT consume subsequent struct definitions.
+/// Previously, `parse_structs` called `collect_fields` even for unit structs,
+/// which caused the depth counter to never reset and ate all following lines.
+#[test]
+fn parse_impl_unit_struct_does_not_consume_following_structs() {
+    let models_src = r#"
+pub struct Tag;
+
+pub struct Node {
+    pub tag: Tag,
+}
+
+pub struct Edge {
+    pub source: Node,
+    pub target: Node,
+}
+"#;
+    let result = impl_parser::parse_impl(models_src, "");
+    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
+    assert!(names.contains(&"Tag"),  "Tag should be parsed as unit struct; got: {names:?}");
+    assert!(names.contains(&"Node"), "Node should be parsed; got: {names:?}");
+    assert!(names.contains(&"Edge"), "Edge should be parsed; got: {names:?}");
+    assert_eq!(result.structs.len(), 3, "exactly 3 structs; got: {names:?}");
+
+    let node = result.structs.iter().find(|s| s.name == "Node").unwrap();
+    assert_eq!(node.fields.len(), 1, "Node should have 1 field; got: {:?}", node.fields);
+    assert_eq!(node.fields[0].name, "tag");
+
+    let edge = result.structs.iter().find(|s| s.name == "Edge").unwrap();
+    assert_eq!(edge.fields.len(), 2, "Edge should have 2 fields; got: {:?}", edge.fields);
+}
+
+/// Unit struct followed immediately by another unit struct — both must be captured.
+#[test]
+fn parse_impl_consecutive_unit_structs() {
+    let models_src = r#"
+pub struct Alpha;
+pub struct Beta;
+pub struct Gamma;
+"#;
+    let result = impl_parser::parse_impl(models_src, "");
+    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(result.structs.len(), 3, "3 unit structs; got: {names:?}");
+    assert!(names.contains(&"Alpha"));
+    assert!(names.contains(&"Beta"));
+    assert!(names.contains(&"Gamma"));
+}
+
+/// Unit struct mixed with enums and regular structs — none should eat another.
+#[test]
+fn parse_impl_unit_struct_mixed_with_enum_and_struct() {
+    let models_src = r#"
+pub enum Color {
+    Red,
+    Blue,
+}
+
+pub struct Token;
+
+pub struct Edge {
+    pub weight: Token,
+}
+"#;
+    let result = impl_parser::parse_impl(models_src, "");
+    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
+    // Color (enum) + Red + Blue (variants) + Token (unit) + Edge = 5 entries
+    assert!(names.contains(&"Token"), "Token unit struct; got: {names:?}");
+    assert!(names.contains(&"Edge"),  "Edge struct; got: {names:?}");
+    assert!(names.contains(&"Color"), "Color enum; got: {names:?}");
+    let edge = result.structs.iter().find(|s| s.name == "Edge").unwrap();
+    assert_eq!(edge.fields.len(), 1, "Edge has 1 field; got: {:?}", edge.fields);
+}
+
 #[test]
 fn present_assert_not_flagged() {
     use oxidtr::ir::nodes::PropertyNode;

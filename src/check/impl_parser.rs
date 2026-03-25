@@ -48,7 +48,14 @@ fn parse_structs(src: &str) -> Vec<ExtractedStruct> {
             continue;
         }
         if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
-            let fields = collect_fields(&mut lines);
+            // Unit struct (`pub struct Foo;`) has no brace block.
+            // Calling collect_fields on a unit struct would set depth=1 and
+            // consume all subsequent lines until the next `}` — eating other structs.
+            let fields = if trimmed.ends_with(';') {
+                vec![]
+            } else {
+                collect_fields(&mut lines)
+            };
             result.push(ExtractedStruct { name, fields, is_enum: false, is_var: pending_var_sig });
             pending_var_sig = false;
             continue;
