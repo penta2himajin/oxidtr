@@ -589,26 +589,25 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                     } else {
                         "property held in at least one past state"
                     };
+                    let trace_body = expr_translator::translate_trace_body(&constraint.expr, ir);
                     writeln!(out, "  /** Trace checker for {kind_label}: {semantics}. */").unwrap();
                     if params.len() == 1 {
                         let (pname, tname) = &params[0];
                         writeln!(out, "  function check_{kind_label}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
-                        writeln!(out, "    return trace.some(({pname}) => {{").unwrap();
+                        writeln!(out, "    return trace.some({pname} => {trace_body});").unwrap();
                     } else {
                         let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("M.{t}[]")).collect();
                         let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
                         writeln!(out, "  function check_{kind_label}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
-                        writeln!(out, "    return trace.some(([{}]) => {{", tuple_names.join(", ")).unwrap();
+                        writeln!(out, "    return trace.some(([{}]) => {trace_body});", tuple_names.join(", ")).unwrap();
                     }
-                    writeln!(out, "      return {body};").unwrap();
-                    writeln!(out, "    }});").unwrap();
                     writeln!(out, "  }}").unwrap();
                     writeln!(out).unwrap();
                 }
                 analyze::TemporalKind::Binary => {
                     if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
-                        let left_body = expr_translator::translate_with_ir(left, ir);
-                        let right_body = expr_translator::translate_with_ir(right, ir);
+                        let left_body = expr_translator::translate_trace_body(left, ir);
+                        let right_body = expr_translator::translate_trace_body(right, ir);
                         let op_name = match op {
                             TemporalBinaryOp::Until => "until",
                             TemporalBinaryOp::Since => "since",

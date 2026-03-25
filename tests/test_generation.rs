@@ -257,6 +257,59 @@ fn ts_binary_temporal_test_uses_temporal_prefix() {
     );
 }
 
+// ── ④d Trace checker variable scope: quantifier vars properly bound ─────────
+
+#[test]
+fn ts_trace_checker_binds_quantifier_variable_explicitly() {
+    let files = generate_ts_from(r#"
+        sig State { x: one Int }
+        fact WillConverge { eventually all s: State | s.x > 10 }
+    "#);
+    let content = find_file(&files, "tests.ts");
+    // Trace checker should use direct iteration without spread
+    assert!(
+        content.contains("states.every(s =>") || content.contains("states.every((s) =>"),
+        "trace checker should iterate with quantifier variable bound to trace element:\n{content}"
+    );
+    // Should NOT have [...states] spread — trace elements are already arrays
+    assert!(
+        !content.contains("[...states]"),
+        "trace checker should not spread trace elements (already arrays):\n{content}"
+    );
+}
+
+#[test]
+fn rust_trace_checker_binds_quantifier_variable_explicitly() {
+    let files = generate_from(r#"
+        sig Counter { value: one Int }
+        fact WillConverge { eventually all c: Counter | c.value > 0 }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Should use counters.iter().all(|c| ...) directly, not nested quantifier expansion
+    assert!(
+        content.contains("counters.iter().all(|c|"),
+        "trace checker should iterate trace element with quantifier variable:\n{content}"
+    );
+}
+
+#[test]
+fn ts_binary_trace_checker_binds_quantifier_variable() {
+    let files = generate_ts_from(r#"
+        sig S { x: one Int }
+        fact WaitDone { (all s: S | s.x > 0) until (all s: S | s.x > 10) }
+    "#);
+    let content = find_file(&files, "tests.ts");
+    // Binary temporal trace checker should iterate with quantifier variable
+    assert!(
+        content.contains("ss.every(s =>") || content.contains("ss.every((s) =>"),
+        "binary trace checker should bind quantifier variable via iteration:\n{content}"
+    );
+    assert!(
+        !content.contains("[...ss]"),
+        "binary trace checker should not spread trace elements:\n{content}"
+    );
+}
+
 // ── ③ Integer arithmetic translation ────────────────────────────────────────
 
 #[test]

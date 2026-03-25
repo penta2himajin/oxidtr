@@ -8,6 +8,24 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner(expr, false, &sig_names, ir)
 }
 
+/// Translate a temporal constraint expression for trace checker bodies.
+/// Strips the temporal unary wrapper and translates the outermost quantifier
+/// without spreading the domain (trace elements are already arrays).
+pub fn translate_trace_body(expr: &Expr, ir: &OxidtrIR) -> String {
+    let sig_names = collect_sig_names(ir);
+    let inner = match expr {
+        Expr::TemporalUnary { expr, .. } => expr.as_ref(),
+        _ => expr,
+    };
+    match inner {
+        Expr::Quantifier { kind, bindings, body } => {
+            let body_str = translate_inner(body, false, &sig_names, ir);
+            build_trace_quantifier_ts(kind, bindings, &body_str, &sig_names, ir)
+        }
+        _ => translate_inner(inner, false, &sig_names, ir),
+    }
+}
+
 /// Extract the collection parameters needed by an expression.
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
     let mut params = BTreeSet::new();
@@ -285,6 +303,29 @@ fn build_nested_quantifier_ts(
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
 ) -> String {
+    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, true)
+}
+
+/// Build quantifier iteration for trace checker bodies.
+/// Uses direct domain access (no spread) since trace elements are already arrays.
+fn build_trace_quantifier_ts(
+    kind: &QuantKind,
+    bindings: &[QuantBinding],
+    body_str: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+) -> String {
+    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, false)
+}
+
+fn build_quantifier_ts_common(
+    kind: &QuantKind,
+    bindings: &[QuantBinding],
+    body_str: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    spread_domain: bool,
+) -> String {
     // Collect all (var, domain_str, is_disj) expanding multi-var bindings
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
@@ -326,19 +367,20 @@ fn build_nested_quantifier_ts(
     };
 
     // Build from inside-out.
-    // Wrap domain in [...domain] to handle both Set and Array uniformly.
+    // When spread_domain is true, wrap in [...domain] to handle both Set and Array.
+    // When false (trace mode), use domain directly since trace elements are arrays.
     let mut result = guarded_body;
     for idx in (0..vars.len()).rev() {
         let (ref var, ref domain, _) = vars[idx];
-        let arr = format!("[...{domain}]");
+        let arr = if spread_domain { format!("[...{domain}]") } else { domain.clone() };
         result = match kind {
-            QuantKind::All => format!("{arr}.every(({var}) => {result})"),
-            QuantKind::Some => format!("{arr}.some(({var}) => {result})"),
+            QuantKind::All => format!("{arr}.every({var} => {result})"),
+            QuantKind::Some => format!("{arr}.some({var} => {result})"),
             QuantKind::No => {
                 if idx == 0 {
-                    format!("!{arr}.some(({var}) => {result})")
+                    format!("!{arr}.some({var} => {result})")
                 } else {
-                    format!("{arr}.some(({var}) => {result})")
+                    format!("{arr}.some({var} => {result})")
                 }
             }
         };

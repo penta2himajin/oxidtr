@@ -230,6 +230,22 @@ pub fn find_temporal_binary(expr: &Expr) -> Option<(&TemporalBinaryOp, &Expr, &E
     }
 }
 
+/// Strip the outermost temporal unary wrapper and universal quantifier from an expression.
+/// Returns `(quantifier_kind, bindings, inner_body)` if the expression has the pattern
+/// `TemporalUnary(_, Quantifier(kind, bindings, body))` or just `Quantifier(kind, bindings, body)`.
+/// Used by trace checker generation to avoid relying on naming coincidence between
+/// trace parameters and quantifier domain names.
+pub fn strip_outer_quantifier(expr: &Expr) -> Option<(&QuantKind, &[QuantBinding], &Expr)> {
+    let inner = match expr {
+        Expr::TemporalUnary { expr, .. } => expr.as_ref(),
+        _ => expr,
+    };
+    match inner {
+        Expr::Quantifier { kind, bindings, body } => Some((kind, bindings, body)),
+        _ => None,
+    }
+}
+
 /// Analyze all constraints in the IR and return structured info.
 pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
