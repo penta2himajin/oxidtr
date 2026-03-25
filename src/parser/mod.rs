@@ -34,6 +34,8 @@ struct Parser<'a> {
     _pending_union_comment: Option<String>,
     /// (sig_name, field_name) → raw union type string
     union_annotations: std::collections::HashMap<(String, String), String>,
+    /// sig_name → intersection components (from `-- intersection: Foo = A & B`)
+    intersection_annotations: std::collections::HashMap<String, Vec<String>>,
     /// Track current sig name for annotation lookup
     current_sig_name: String,
 }
@@ -44,15 +46,21 @@ impl<'a> Parser<'a> {
             lexer: Lexer::new(input),
             _pending_union_comment: None,
             union_annotations: std::collections::HashMap::new(),
+            intersection_annotations: std::collections::HashMap::new(),
             current_sig_name: String::new(),
         }
     }
 
-    fn new_with_annotations(input: &'a str, annotations: std::collections::HashMap<(String, String), String>) -> Self {
+    fn new_with_annotations(
+        input: &'a str,
+        annotations: std::collections::HashMap<(String, String), String>,
+        intersection_annotations: std::collections::HashMap<String, Vec<String>>,
+    ) -> Self {
         Parser {
             lexer: Lexer::new(input),
             _pending_union_comment: None,
             union_annotations: annotations,
+            intersection_annotations,
             current_sig_name: String::new(),
         }
     }
@@ -118,48 +126,21 @@ impl<'a> Parser<'a> {
                 }
                 Token::One => {
                     self.next();
-                    match self.peek() {
-                        Token::Sig => {
-                            self.next();
-                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::One)?);
-                        }
-                        _ => {
-                            return Err(ParseError::InvalidSyntax {
-                                message: "'one' must be followed by 'sig'".to_string(),
-                                pos: self.lexer.pos(),
-                            });
-                        }
-                    }
+                    let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
+                    self.expect(&Token::Sig)?;
+                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::One)?);
                 }
                 Token::Some_ => {
                     self.next();
-                    match self.peek() {
-                        Token::Sig => {
-                            self.next();
-                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Some)?);
-                        }
-                        _ => {
-                            return Err(ParseError::InvalidSyntax {
-                                message: "'some' at top level must be followed by 'sig'".to_string(),
-                                pos: self.lexer.pos(),
-                            });
-                        }
-                    }
+                    let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
+                    self.expect(&Token::Sig)?;
+                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::Some)?);
                 }
                 Token::Lone => {
                     self.next();
-                    match self.peek() {
-                        Token::Sig => {
-                            self.next();
-                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Lone)?);
-                        }
-                        _ => {
-                            return Err(ParseError::InvalidSyntax {
-                                message: "'lone' at top level must be followed by 'sig'".to_string(),
-                                pos: self.lexer.pos(),
-                            });
-                        }
-                    }
+                    let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
+                    self.expect(&Token::Sig)?;
+                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?);
                 }
                 Token::Fact => {
                     model.facts.push(self.parse_fact()?);
@@ -217,6 +198,10 @@ impl<'a> Parser<'a> {
 
         self.expect(&Token::RBrace)?;
 
+        let intersection_of = self.intersection_annotations
+            .remove(&name)
+            .unwrap_or_default();
+
         Ok(SigDecl {
             name,
             is_abstract,
@@ -224,6 +209,7 @@ impl<'a> Parser<'a> {
             multiplicity,
             parent,
             fields,
+            intersection_of,
         })
     }
 
@@ -839,8 +825,32 @@ fn scan_union_annotations(input: &str) -> std::collections::HashMap<(String, Str
     map
 }
 
+/// Scan for `-- intersection: Foo = A & B & C` comments.
+fn scan_intersection_annotations(input: &str) -> std::collections::HashMap<String, Vec<String>> {
+    let mut map = std::collections::HashMap::new();
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("-- intersection:") {
+            let rest = rest.trim();
+            if let Some(eq_pos) = rest.find('=') {
+                let name: String = rest[..eq_pos].trim().to_string();
+                let components: Vec<String> = rest[eq_pos + 1..]
+                    .split('&')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if !name.is_empty() && components.len() >= 2 {
+                    map.insert(name, components);
+                }
+            }
+        }
+    }
+    map
+}
+
 pub fn parse(input: &str) -> Result<AlloyModel, ParseError> {
     let union_annotations = scan_union_annotations(input);
-    let mut parser = Parser::new_with_annotations(input, union_annotations);
+    let intersection_annotations = scan_intersection_annotations(input);
+    let mut parser = Parser::new_with_annotations(input, union_annotations, intersection_annotations);
     parser.parse_model()
 }

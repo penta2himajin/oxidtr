@@ -52,7 +52,7 @@ fn mine_kotlin_map_field() {
 data class Registry(
     val entries: Map<String, User>
 )
-data class User(val placeholder: Unit = Unit)
+object User
 "#;
     let mined = kotlin_extractor::extract(src);
     let reg = mined.sigs.iter().find(|s| s.name == "Registry").unwrap();

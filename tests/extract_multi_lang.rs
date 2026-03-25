@@ -337,8 +337,8 @@ data class Config(
     val items: List<Item>,
     val owner: Owner?
 )
-data class Item(val placeholder: Unit = Unit)
-data class Owner(val placeholder: Unit = Unit)
+object Item
+object Owner
 "#).unwrap();
 
     let result = extract::run_merge(dir.to_str().unwrap(), None).unwrap();

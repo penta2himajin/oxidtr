@@ -56,7 +56,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
         sig_multiplicity: sig.multiplicity,
         parent: sig.parent.clone(),
         fields,
-        intersection_of: vec![], // set by extractors for type aliases
+        intersection_of: sig.intersection_of.clone(),
     }
 }
 

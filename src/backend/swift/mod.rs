@@ -457,7 +457,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             _ => "invariant",
         };
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "    /// @temporal {:?} constraint: {fact_name}", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                _ => "",
+            };
+            writeln!(out, "    /// @temporal {:?} constraint: {fact_name}{note}", kind).unwrap();
         }
         writeln!(out, "    func test_{}_{}() {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {

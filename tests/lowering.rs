@@ -285,3 +285,19 @@ fn lower_non_var_sig_is_var_false() {
     let ir = parse_and_lower("sig Foo {}");
     assert!(!ir.structures[0].is_var, "non-var sig should lower to is_var=false");
 }
+
+// ── intersection_of lowering ────────────────────────────────────────────────
+
+#[test]
+fn lower_intersection_comment_propagates() {
+    let input = "sig A {} sig B {}\n-- intersection: C = A & B\nsig C {}";
+    let ir = parse_and_lower(input);
+    let c = ir.structures.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(c.intersection_of, vec!["A", "B"]);
+}
+
+#[test]
+fn lower_non_intersection_sig_has_empty_vec() {
+    let ir = parse_and_lower("sig Foo {}");
+    assert!(ir.structures[0].intersection_of.is_empty());
+}

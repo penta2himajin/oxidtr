@@ -114,8 +114,8 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
 }
 
 fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
-    // Singleton: one sig → Kotlin object
-    if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+    // Empty sig → Kotlin object (no need for placeholder fields)
+    if s.fields.is_empty() {
         if s.is_var {
             writeln!(out, "// @alloy: var sig").unwrap();
         }
@@ -149,9 +149,8 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
     if s.is_var {
         writeln!(out, "// @alloy: var sig").unwrap();
     }
-    if s.fields.is_empty() {
-        writeln!(out, "data class {}(val placeholder: Unit = Unit)", s.name).unwrap();
-    } else {
+    // s.fields is non-empty here (empty sigs return early as `object`)
+    {
         writeln!(out, "data class {}(", s.name).unwrap();
         for (i, f) in s.fields.iter().enumerate() {
             let type_str = if let Some(vt) = &f.value_type {
@@ -520,7 +519,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             _ => "invariant",
         };
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "    /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                _ => "",
+            };
+            writeln!(out, "    /** @temporal {:?} constraint: {fact_name}{note} */", kind).unwrap();
         }
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{test_prefix} {fact_name}`() {{").unwrap();

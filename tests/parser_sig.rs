@@ -225,3 +225,74 @@ fn parse_var_sig_empty_body() {
     assert!(model.sigs[0].is_var);
     assert!(model.sigs[0].fields.is_empty());
 }
+
+// ── Alloy 6: multiplicity + var sig tests ────────────────────────────────────
+
+#[test]
+fn parse_one_var_sig() {
+    let model = parser::parse("one var sig Singleton {}").unwrap();
+    assert_eq!(model.sigs[0].name, "Singleton");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::One);
+    assert!(model.sigs[0].is_var);
+}
+
+#[test]
+fn parse_some_var_sig() {
+    let model = parser::parse("some var sig Pool { var count: one Int }").unwrap();
+    assert_eq!(model.sigs[0].name, "Pool");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Some);
+    assert!(model.sigs[0].is_var);
+    assert!(model.sigs[0].fields[0].is_var);
+}
+
+#[test]
+fn parse_lone_var_sig() {
+    let model = parser::parse("lone var sig Optional {}").unwrap();
+    assert_eq!(model.sigs[0].name, "Optional");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Lone);
+    assert!(model.sigs[0].is_var);
+}
+
+#[test]
+fn parse_one_var_sig_extends() {
+    let model = parser::parse("abstract sig Base {} one var sig Child extends Base {}").unwrap();
+    assert_eq!(model.sigs[1].name, "Child");
+    assert_eq!(model.sigs[1].multiplicity, SigMultiplicity::One);
+    assert!(model.sigs[1].is_var);
+    assert_eq!(model.sigs[1].parent.as_deref(), Some("Base"));
+}
+
+// ── intersection_of comment parsing ──────────────────────────────────────────
+
+#[test]
+fn parse_intersection_comment() {
+    let input = r#"
+sig A {}
+sig B {}
+-- intersection: C = A & B
+sig C {}
+"#;
+    let model = parser::parse(input).unwrap();
+    let c = model.sigs.iter().find(|s| s.name == "C").unwrap();
+    assert_eq!(c.intersection_of, vec!["A", "B"]);
+}
+
+#[test]
+fn parse_intersection_three_components() {
+    let input = r#"
+sig X {}
+sig Y {}
+sig Z {}
+-- intersection: W = X & Y & Z
+sig W {}
+"#;
+    let model = parser::parse(input).unwrap();
+    let w = model.sigs.iter().find(|s| s.name == "W").unwrap();
+    assert_eq!(w.intersection_of, vec!["X", "Y", "Z"]);
+}
+
+#[test]
+fn parse_no_intersection_comment() {
+    let model = parser::parse("sig Foo {}").unwrap();
+    assert!(model.sigs[0].intersection_of.is_empty());
+}

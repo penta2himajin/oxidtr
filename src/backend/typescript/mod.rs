@@ -508,7 +508,12 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         let ownership = super::detect_ownership_pattern(&constraint.expr, ir, ts_param_name);
 
         if let Some(ref kind) = temporal_kind {
-            writeln!(out, "  /** @temporal {:?} constraint: {fact_name} */", kind).unwrap();
+            let note = match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness =>
+                    " — cannot be fully tested statically; use trace checker for dynamic verification",
+                _ => "",
+            };
+            writeln!(out, "  /** @temporal {:?} constraint: {fact_name}{note} */", kind).unwrap();
         }
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {

@@ -624,9 +624,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(kind) = temporal_kind {
             let annotation = match kind {
                 analyze::TemporalKind::Invariant => "@temporal Invariant: property must hold in all states",
-                analyze::TemporalKind::Liveness => "@temporal Liveness: property must eventually hold (static approximation)",
+                analyze::TemporalKind::Liveness => "@temporal Liveness: cannot be fully tested statically; use trace checker for dynamic verification",
                 analyze::TemporalKind::PastInvariant => "@temporal PastInvariant: property must have held in all past states",
-                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: property must have held at some past state",
+                analyze::TemporalKind::PastLiveness => "@temporal PastLiveness: cannot be fully tested statically; use trace checker for dynamic verification",
                 analyze::TemporalKind::Step => "@temporal Step: relates adjacent states",
                 analyze::TemporalKind::Binary => "@temporal Binary: temporal binary constraint",
             };
