@@ -812,8 +812,9 @@ fn parse_fun_app_simple() {
             match body.as_ref() {
                 Expr::Comparison { left, .. } => {
                     match left.as_ref() {
-                        Expr::FunApp { name, args } => {
+                        Expr::FunApp { name, receiver, args } => {
                             assert_eq!(name, "plus");
+                            assert!(receiver.is_some(), "method-style FunApp should have receiver");
                             assert_eq!(args.len(), 1);
                             assert!(matches!(&args[0], Expr::IntLiteral(1)));
                         }
@@ -839,8 +840,9 @@ fn parse_fun_app_multiple_args() {
             match body.as_ref() {
                 Expr::Comparison { left, .. } => {
                     match left.as_ref() {
-                        Expr::FunApp { name, args } => {
+                        Expr::FunApp { name, receiver, args } => {
                             assert_eq!(name, "add");
+                            assert!(receiver.is_some(), "method-style FunApp should have receiver");
                             assert_eq!(args.len(), 2);
                         }
                         other => panic!("expected FunApp, got {other:?}"),
@@ -868,8 +870,9 @@ fn parse_bare_fun_app() {
             match body.as_ref() {
                 Expr::Comparison { left, .. } => {
                     match left.as_ref() {
-                        Expr::FunApp { name, args } => {
+                        Expr::FunApp { name, receiver, args } => {
                             assert_eq!(name, "myFun");
+                            assert!(receiver.is_none(), "bare FunApp should have no receiver");
                             assert_eq!(args.len(), 1);
                         }
                         other => panic!("expected FunApp, got {other:?}"),

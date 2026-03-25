@@ -120,7 +120,10 @@ pub fn expr_contains_prime(expr: &Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_contains_prime(left) || expr_contains_prime(right)
         }
-        Expr::FunApp { args, .. } => args.iter().any(expr_contains_prime),
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_ref().map_or(false, |r| expr_contains_prime(r))
+                || args.iter().any(expr_contains_prime)
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
@@ -263,9 +266,13 @@ pub fn describe_expr(expr: &Expr) -> String {
             };
             format!("{q} {}", describe_expr(expr))
         }
-        Expr::FunApp { name, args } => {
+        Expr::FunApp { name, receiver, args } => {
             let a: Vec<_> = args.iter().map(describe_expr).collect();
-            format!("{name}[{}]", a.join(", "))
+            if let Some(recv) = receiver {
+                format!("{}.{name}[{}]", describe_expr(recv), a.join(", "))
+            } else {
+                format!("{name}[{}]", a.join(", "))
+            }
         }
         Expr::Prime(inner) => format!("{}'", describe_expr(inner)),
         Expr::TemporalUnary { op, expr: inner } => {
@@ -665,8 +672,9 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
             kind: kind.clone(),
             expr: Box::new(substitute_var(expr, var, sig_name)),
         },
-        Expr::FunApp { name, args } => Expr::FunApp {
+        Expr::FunApp { name, receiver, args } => Expr::FunApp {
             name: name.clone(),
+            receiver: receiver.as_ref().map(|r| Box::new(substitute_var(r, var, sig_name))),
             args: args.iter().map(|a| substitute_var(a, var, sig_name)).collect(),
         },
         Expr::IntLiteral(_) => expr.clone(),
@@ -732,7 +740,8 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
         }
         Expr::MultFormula { expr: inner, .. } => collect_disj_fields(inner, results),
         Expr::FieldAccess { base, .. } => collect_disj_fields(base, results),
-        Expr::FunApp { args, .. } => {
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_disj_fields(r, results); }
             for arg in args { collect_disj_fields(arg, results); }
         }
         Expr::Prime(inner) => collect_disj_fields(inner, results),
@@ -797,7 +806,7 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
             bindings.iter().all(|b| expr_only_refs_params(&b.domain, param_names))
                 && expr_only_refs_params(body, &extended_params)
         }
-        Expr::FunApp { args, .. } => args.iter().all(|a| expr_only_refs_params(a, param_names)),
+        Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(true, |r| expr_only_refs_params(r, param_names)) && args.iter().all(|a| expr_only_refs_params(a, param_names)),
         Expr::Prime(inner) => expr_only_refs_params(inner, param_names),
         Expr::TemporalUnary { expr: inner, .. } => expr_only_refs_params(inner, param_names),
         Expr::TemporalBinary { left, right, .. } => {
@@ -873,9 +882,13 @@ pub fn alloy_repr(expr: &Expr) -> String {
             };
             format!("{q} {}", alloy_repr(expr))
         }
-        Expr::FunApp { name, args } => {
+        Expr::FunApp { name, receiver, args } => {
             let a: Vec<_> = args.iter().map(|e| alloy_repr(e)).collect();
-            format!("{name}[{}]", a.join(", "))
+            if let Some(recv) = receiver {
+                format!("{}.{name}[{}]", alloy_repr(recv), a.join(", "))
+            } else {
+                format!("{name}[{}]", a.join(", "))
+            }
         }
         Expr::Prime(inner) => format!("{}'", alloy_repr(inner)),
         Expr::TemporalUnary { expr: inner, .. } => format!("{}'", alloy_repr(inner)),
@@ -1021,7 +1034,7 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
             expr_references_sig(inner, sig_name)
         }
         Expr::FieldAccess { base, .. } => expr_references_sig(base, sig_name),
-        Expr::FunApp { args, .. } => args.iter().any(|a| expr_references_sig(a, sig_name)),
+        Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(false, |r| expr_references_sig(r, sig_name)) || args.iter().any(|a| expr_references_sig(a, sig_name)),
         Expr::Prime(inner) => expr_references_sig(inner, sig_name),
         Expr::TemporalUnary { expr: inner, .. } => expr_references_sig(inner, sig_name),
         Expr::TemporalBinary { left, right, .. } => {

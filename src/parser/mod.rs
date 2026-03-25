@@ -720,10 +720,14 @@ impl<'a> Parser<'a> {
                 }
             } else if self.peek() == Token::LBracket {
                 // Alloy 6: function application — `expr[args]` or `name[args]`
-                // Extract the function name from the last field access or VarRef
-                let name = match &expr {
-                    Expr::FieldAccess { field, .. } => field.clone(),
-                    Expr::VarRef(name) => name.clone(),
+                // Extract function name and receiver from the expression.
+                // `c.count.plus[1]` → receiver=Some(c.count), name="plus"
+                // `myFun[a]`        → receiver=None, name="myFun"
+                let (name, receiver) = match &expr {
+                    Expr::FieldAccess { base, field, .. } => {
+                        (field.clone(), Some(base.clone()))
+                    }
+                    Expr::VarRef(name) => (name.clone(), None),
                     _ => break,
                 };
                 self.next(); // consume [
@@ -735,7 +739,7 @@ impl<'a> Parser<'a> {
                     }
                 }
                 self.expect(&Token::RBracket)?;
-                expr = Expr::FunApp { name, args };
+                expr = Expr::FunApp { name, receiver, args };
             } else {
                 break;
             }

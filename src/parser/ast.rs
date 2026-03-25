@@ -131,8 +131,10 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// Alloy 6: function application — `f[x, y]` or `expr.f[x]`
+    /// `receiver` holds the base expression for method-style calls (e.g. `c.count` in `c.count.plus[1]`).
     FunApp {
         name: String,
+        receiver: Option<Box<Expr>>,
         args: Vec<Expr>,
     },
 }

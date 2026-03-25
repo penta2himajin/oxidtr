@@ -88,3 +88,69 @@ fn generate_cross_test_fact_times_operation() {
         "missing cross-test for fact×operation"
     );
 }
+
+// ── ⑤ Liveness trace checker generation ─────────────────────────────────────
+
+#[test]
+fn generate_liveness_trace_checker() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WillConverge { eventually all s: S | s.x = s.x }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Should have liveness test
+    assert!(content.contains("fn liveness_"), "missing liveness test:\n{content}");
+    // Should have trace checker function
+    assert!(content.contains("fn check_liveness_"), "missing liveness trace checker:\n{content}");
+    assert!(content.contains(".any("), "trace checker should use .any() for liveness:\n{content}");
+}
+
+#[test]
+fn generate_past_liveness_trace_checker() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WasReached { once all s: S | s.x = s.x }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("fn check_past_liveness_"), "missing past_liveness trace checker:\n{content}");
+}
+
+// ── ④ Binary temporal trace checker generation ──────────────────────────────
+
+#[test]
+fn generate_until_trace_checker() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact WaitUntilDone { (all s: S | s.x = s.x) until (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Should have temporal test
+    assert!(content.contains("fn temporal_"), "missing temporal binary test:\n{content}");
+    // Should have trace checker with until semantics
+    assert!(content.contains("fn check_until_"), "missing until trace checker:\n{content}");
+    assert!(content.contains(".position("), "until checker should use .position():\n{content}");
+}
+
+#[test]
+fn generate_since_trace_checker() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact HeldSince { (all s: S | s.x = s.x) since (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(content.contains("fn check_since_"), "missing since trace checker:\n{content}");
+    assert!(content.contains(".rposition("), "since checker should use .rposition():\n{content}");
+}
+
+// ── ③ Integer arithmetic translation ────────────────────────────────────────
+
+#[test]
+fn generate_arithmetic_plus_with_receiver() {
+    let files = generate_from(r#"
+        sig Counter { count: one Int }
+        fact Increment { all c: Counter | c.count.plus[1] = c.count }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Should translate plus[1] with receiver to arithmetic: count + 1
+    assert!(content.contains("+ 1"), "plus[1] should translate to arithmetic + 1:\n{content}");
+}

@@ -79,7 +79,8 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(left, ir, out);
             collect_tc_fields(right, ir, out);
         }
-        Expr::FunApp { args, .. } => {
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_tc_fields(r, ir, out); }
             for arg in args { collect_tc_fields(arg, ir, out); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
@@ -123,7 +124,8 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(left, sig_names, params);
             collect_params(right, sig_names, params);
         }
-        Expr::FunApp { args, .. } => {
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_params(r, sig_names, params); }
             for arg in args { collect_params(arg, sig_names, params); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
@@ -251,9 +253,8 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
             let r = translate_inner(right, false, sig_names);
             format!("{l} && {r}")
         }
-        Expr::FunApp { name, args } => {
-            let a: Vec<_> = args.iter().map(|a| translate_inner(a, false, sig_names)).collect();
-            format!("{name}({})", a.join(", "))
+        Expr::FunApp { name, receiver, args } => {
+            translate_fun_app(name, receiver.as_deref(), args, |e| translate_inner(e, false, sig_names))
         }
     };
 
@@ -377,6 +378,34 @@ fn build_nested_quantifier(
         };
     }
     result
+}
+
+/// Translate Alloy function application. Known integer functions (plus, minus, mul, div, rem)
+/// with a receiver are translated to arithmetic operators.
+fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], translate: impl Fn(&Expr) -> String) -> String {
+    // Alloy integer arithmetic: receiver.plus[n] → receiver + n
+    if let Some(recv) = receiver {
+        let op = match name {
+            "plus" | "add" => Some("+"),
+            "minus" | "sub" => Some("-"),
+            "mul" => Some("*"),
+            "div" => Some("/"),
+            "rem" => Some("%"),
+            _ => None,
+        };
+        if let (Some(op), Some(arg)) = (op, args.first()) {
+            let r = translate(recv);
+            let a = translate(arg);
+            return format!("{r} {op} {a}");
+        }
+        // Non-arithmetic method call with receiver
+        let a: Vec<_> = args.iter().map(&translate).collect();
+        let r = translate(recv);
+        return format!("{r}.{name}({})", a.join(", "));
+    }
+    // Bare function call: f[x, y] → f(x, y)
+    let a: Vec<_> = args.iter().map(translate).collect();
+    format!("{name}({})", a.join(", "))
 }
 
 fn needs_parens(expr: &Expr) -> bool {
@@ -561,9 +590,8 @@ fn translate_inner_ir(
             let r = ti(right, false);
             format!("{l} && {r}")
         }
-        Expr::FunApp { name, args } => {
-            let a: Vec<_> = args.iter().map(|a| ti(a, false)).collect();
-            format!("{name}({})", a.join(", "))
+        Expr::FunApp { name, receiver, args } => {
+            translate_fun_app(name, receiver.as_deref(), args, |e| ti(e, false))
         }
     };
 

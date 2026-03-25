@@ -76,6 +76,7 @@ one sig Release   extends TemporalBinaryOp {}
 one sig Triggered extends TemporalBinaryOp {}
 
 sig FunApp extends Expr {
+  receiver: lone Expr,
   funArgs: seq Expr
 }
 

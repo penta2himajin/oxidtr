@@ -685,10 +685,26 @@ fn describe_fun_app_uses_alloy_syntax() {
     use oxidtr::parser::ast::Expr;
     let expr = Expr::FunApp {
         name: "plus".to_string(),
+        receiver: None,
         args: vec![Expr::IntLiteral(1)],
     };
     let desc = analyze::describe_expr(&expr);
     assert_eq!(desc, "plus[1]", "describe_expr should use Alloy bracket syntax for FunApp");
+}
+
+#[test]
+fn describe_fun_app_with_receiver() {
+    use oxidtr::parser::ast::Expr;
+    let expr = Expr::FunApp {
+        name: "plus".to_string(),
+        receiver: Some(Box::new(Expr::FieldAccess {
+            base: Box::new(Expr::VarRef("c".to_string())),
+            field: "count".to_string(),
+        })),
+        args: vec![Expr::IntLiteral(1)],
+    };
+    let desc = analyze::describe_expr(&expr);
+    assert_eq!(desc, "c.count.plus[1]", "describe_expr should include receiver for FunApp");
 }
 
 #[test]
