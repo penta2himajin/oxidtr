@@ -8,9 +8,19 @@ pub fn extract(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
+    let mut prev_line_has_var_sig = false;
 
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
+
+        // Detect @alloy: var sig annotation for the next declaration
+        if trimmed.contains("@alloy: var sig") {
+            prev_line_has_var_sig = true;
+            continue;
+        }
+
+        let sig_is_var = prev_line_has_var_sig;
+        prev_line_has_var_sig = false;
 
         // public record Foo(Type field, ...) {} → sig
         if let Some((name, fields)) = parse_record(trimmed) {
@@ -18,6 +28,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields,
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -37,6 +48,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: vec![],
                 is_abstract: true,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -50,6 +62,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -59,6 +72,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name: v,
                     fields: vec![],
                     is_abstract: false,
+                    is_var: false,
                     parent: Some(name.clone()),
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],

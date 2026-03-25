@@ -102,19 +102,26 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Token::Eof => break,
                 Token::Sig => {
-                    model.sigs.push(self.parse_sig(false)?);
+                    model.sigs.push(self.parse_sig(false, false)?);
+                }
+                Token::Var => {
+                    // Alloy 6: `var sig` — mutable atom set
+                    self.next();
+                    model.sigs.push(self.parse_sig(false, true)?);
                 }
                 Token::Abstract => {
                     self.next();
+                    // Alloy 6: `abstract var sig` — not typical but handle gracefully
+                    let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(true, SigMultiplicity::Default)?);
+                    model.sigs.push(self.parse_sig_body(true, is_var, SigMultiplicity::Default)?);
                 }
                 Token::One => {
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::One)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::One)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -125,12 +132,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Token::Some_ => {
-                    // Peek ahead: `some sig` is a sig decl; otherwise it's an expression (handled elsewhere)
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Some)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Some)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -141,12 +147,11 @@ impl<'a> Parser<'a> {
                     }
                 }
                 Token::Lone => {
-                    // Peek ahead: `lone sig` is a sig decl; otherwise it's a field multiplicity
                     self.next();
                     match self.peek() {
                         Token::Sig => {
                             self.next();
-                            model.sigs.push(self.parse_sig_body(false, SigMultiplicity::Lone)?);
+                            model.sigs.push(self.parse_sig_body(false, false, SigMultiplicity::Lone)?);
                         }
                         _ => {
                             return Err(ParseError::InvalidSyntax {
@@ -184,12 +189,12 @@ impl<'a> Parser<'a> {
         Ok(model)
     }
 
-    fn parse_sig(&mut self, is_abstract: bool) -> Result<SigDecl, ParseError> {
+    fn parse_sig(&mut self, is_abstract: bool, is_var: bool) -> Result<SigDecl, ParseError> {
         self.expect(&Token::Sig)?;
-        self.parse_sig_body(is_abstract, SigMultiplicity::Default)
+        self.parse_sig_body(is_abstract, is_var, SigMultiplicity::Default)
     }
 
-    fn parse_sig_body(&mut self, is_abstract: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
+    fn parse_sig_body(&mut self, is_abstract: bool, is_var: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
         let name = self.expect_ident()?;
         self.current_sig_name = name.clone(); // track for union annotation lookup
 
@@ -215,6 +220,7 @@ impl<'a> Parser<'a> {
         Ok(SigDecl {
             name,
             is_abstract,
+            is_var,
             multiplicity,
             parent,
             fields,
@@ -691,31 +697,57 @@ impl<'a> Parser<'a> {
 
     fn parse_field_access(&mut self) -> Result<Expr, ParseError> {
         let mut expr = self.parse_primary()?;
-        while self.peek() == Token::Dot {
-            self.next();
-            if self.peek() == Token::Caret {
-                self.next(); // consume ^
-                let field = self.expect_ident()?;
-                expr = Expr::FieldAccess {
-                    base: Box::new(expr),
-                    field: field.clone(),
-                };
-                expr = Expr::TransitiveClosure(Box::new(expr));
-            } else {
-                let field = self.expect_ident()?;
-                // Alloy 6: `s.field'` — prime on field access
-                if let Some(base_field) = field.strip_suffix('\'') {
+        loop {
+            if self.peek() == Token::Dot {
+                self.next();
+                if self.peek() == Token::Caret {
+                    self.next(); // consume ^
+                    let field = self.expect_ident()?;
                     expr = Expr::FieldAccess {
                         base: Box::new(expr),
-                        field: base_field.to_string(),
+                        field: field.clone(),
                     };
-                    expr = Expr::Prime(Box::new(expr));
+                    expr = Expr::TransitiveClosure(Box::new(expr));
                 } else {
-                    expr = Expr::FieldAccess {
-                        base: Box::new(expr),
-                        field,
-                    };
+                    let field = self.expect_ident()?;
+                    // Alloy 6: `s.field'` — prime on field access
+                    if let Some(base_field) = field.strip_suffix('\'') {
+                        expr = Expr::FieldAccess {
+                            base: Box::new(expr),
+                            field: base_field.to_string(),
+                        };
+                        expr = Expr::Prime(Box::new(expr));
+                    } else {
+                        expr = Expr::FieldAccess {
+                            base: Box::new(expr),
+                            field,
+                        };
+                    }
                 }
+            } else if self.peek() == Token::LBracket {
+                // Alloy 6: function application — `expr[args]` or `name[args]`
+                // Extract function name and receiver from the expression.
+                // `c.count.plus[1]` → receiver=Some(c.count), name="plus"
+                // `myFun[a]`        → receiver=None, name="myFun"
+                let (name, receiver) = match &expr {
+                    Expr::FieldAccess { base, field, .. } => {
+                        (field.clone(), Some(base.clone()))
+                    }
+                    Expr::VarRef(name) => (name.clone(), None),
+                    _ => break,
+                };
+                self.next(); // consume [
+                let mut args = Vec::new();
+                while self.peek() != Token::RBracket {
+                    args.push(self.parse_expr()?);
+                    if self.peek() == Token::Comma {
+                        self.next();
+                    }
+                }
+                self.expect(&Token::RBracket)?;
+                expr = Expr::FunApp { name, receiver, args };
+            } else {
+                break;
             }
         }
         Ok(expr)

@@ -52,6 +52,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
     StructureNode {
         name: sig.name.clone(),
         is_enum: sig.is_abstract,
+        is_var: sig.is_var,
         sig_multiplicity: sig.multiplicity,
         parent: sig.parent.clone(),
         fields,

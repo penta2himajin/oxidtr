@@ -57,6 +57,10 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
             collect_tc_fields(left, ir, out);
             collect_tc_fields(right, ir, out);
         }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_tc_fields(r, ir, out); }
+            for arg in args { collect_tc_fields(arg, ir, out); }
+        }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
 }
@@ -101,6 +105,10 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
         Expr::TemporalBinary { left, right, .. } => {
             collect_params(left, sig_names, params);
             collect_params(right, sig_names, params);
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_params(r, sig_names, params); }
+            for arg in args { collect_params(arg, sig_names, params); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -232,6 +240,9 @@ fn translate_inner(
             let r = ti(right, false);
             format!("{l} && {r}")
         }
+        Expr::FunApp { name, receiver, args } => {
+            translate_fun_app(name, receiver.as_deref(), args, |e| ti(e, false))
+        }
     };
 
     if parens_if_complex && needs_parens(expr) {
@@ -303,6 +314,26 @@ fn build_nested_quantifier(
         };
     }
     result
+}
+
+fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], translate: impl Fn(&Expr) -> String) -> String {
+    if let Some(recv) = receiver {
+        let op = match name {
+            "plus" | "add" => Some("+"),
+            "minus" | "sub" => Some("-"),
+            "mul" => Some("*"),
+            "div" => Some("/"),
+            "rem" => Some("%"),
+            _ => None,
+        };
+        if let (Some(op), Some(arg)) = (op, args.first()) {
+            return format!("{} {} {}", translate(recv), op, translate(arg));
+        }
+        let a: Vec<_> = args.iter().map(&translate).collect();
+        return format!("{}.{name}({})", translate(recv), a.join(", "));
+    }
+    let a: Vec<_> = args.iter().map(translate).collect();
+    format!("{name}({})", a.join(", "))
 }
 
 fn needs_parens(expr: &Expr) -> bool {

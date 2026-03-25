@@ -384,6 +384,7 @@ sig DisplayProps extends BaseProps {}
     ir.structures.push(oxidtr::ir::nodes::StructureNode {
         name: "AllProps".to_string(),
         is_enum: false,
+        is_var: false,
         sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![],

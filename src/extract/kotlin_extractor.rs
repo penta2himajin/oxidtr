@@ -8,9 +8,19 @@ pub fn extract(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
+    let mut prev_line_has_var_sig = false;
 
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
+
+        // Detect @alloy: var sig annotation for the next declaration
+        if trimmed.contains("@alloy: var sig") {
+            prev_line_has_var_sig = true;
+            continue;
+        }
+
+        let sig_is_var = prev_line_has_var_sig;
+        prev_line_has_var_sig = false;
 
         // data class Foo(...) → sig
         if let Some(name) = parse_data_class(trimmed) {
@@ -25,6 +35,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields,
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -41,6 +52,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: vec![],
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -53,6 +65,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: vec![],
                 is_abstract: false,
+                is_var: sig_is_var,
                 parent: Some(parent),
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -65,6 +78,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name,
                 fields: vec![],
                 is_abstract: true,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -78,6 +92,7 @@ pub fn extract(source: &str) -> MinedModel {
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![],
@@ -87,6 +102,7 @@ pub fn extract(source: &str) -> MinedModel {
                     name: v,
                     fields: vec![],
                     is_abstract: false,
+                    is_var: false,
                     parent: Some(name.clone()),
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
@@ -193,7 +209,22 @@ fn parse_extends(line: &str) -> Option<(String, String)> {
 
 fn extract_constructor_params(line: &str) -> Vec<MinedField> {
     let open = match line.find('(') { Some(p) => p + 1, None => return vec![] };
-    let close = match line.rfind(')') { Some(p) => p, None => return vec![] };
+    // Find the matching close paren (not rfind which could overshoot into `: Parent()`)
+    let close = {
+        let mut depth = 1;
+        let mut pos = None;
+        for (i, ch) in line[open..].char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 { pos = Some(open + i); break; }
+                }
+                _ => {}
+            }
+        }
+        match pos { Some(p) => p, None => return vec![] }
+    };
     if open >= close { return vec![]; }
 
     let params = &line[open..close];

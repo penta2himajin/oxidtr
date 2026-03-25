@@ -43,6 +43,9 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
     if sig.is_abstract {
         write!(out, "abstract ").unwrap();
     }
+    if sig.is_var {
+        write!(out, "var ").unwrap();
+    }
     write!(out, "sig {}", sig.name).unwrap();
     if let Some(parent) = &sig.parent {
         write!(out, " extends {parent}").unwrap();

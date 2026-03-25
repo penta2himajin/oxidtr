@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -152,6 +152,9 @@ fn generate_models(ir: &OxidtrIR, ctx: &GoContext) -> String {
 fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoContext, disj_fields: &[(String, String)]) {
     // Singleton: one sig → package-level var
     if s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty() {
+        if s.is_var {
+            writeln!(out, "// @alloy: var sig").unwrap();
+        }
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
         writeln!(out).unwrap();
         writeln!(out, "var {}Instance = {}{{}}",
@@ -159,6 +162,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
         return;
     }
 
+    if s.is_var {
+        writeln!(out, "// @alloy: var sig").unwrap();
+    }
     if s.fields.is_empty() {
         writeln!(out, "type {} struct{{}}", s.name).unwrap();
     } else {
@@ -183,6 +189,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
 
             if f.is_var {
                 writeln!(out, "\t// @alloy: var").unwrap();
+            }
+            if f.mult == Multiplicity::Seq {
+                writeln!(out, "\t// @alloy: seq").unwrap();
             }
             writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
         }
@@ -231,6 +240,12 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
                         } else {
                             mult_to_go_type(&f.target, &f.mult, false)
                         };
+                        if f.is_var {
+                            writeln!(out, "\t// @alloy: var").unwrap();
+                        }
+                        if f.mult == Multiplicity::Seq {
+                            writeln!(out, "\t// @alloy: seq").unwrap();
+                        }
                         writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
                     }
                     writeln!(out, "}}").unwrap();
@@ -462,15 +477,223 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        writeln!(out, "func Test_invariant_{}(t *testing.T) {{", fact_name).unwrap();
+        // Use temporal classification for test name prefix
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_prefix = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => "liveness",
+            Some(analyze::TemporalKind::PastInvariant) => "past_invariant",
+            Some(analyze::TemporalKind::PastLiveness) => "past_liveness",
+            Some(analyze::TemporalKind::Step) => "step",
+            Some(analyze::TemporalKind::Binary) => "temporal",
+            _ => "invariant",
+        };
+        if let Some(ref kind) = temporal_kind {
+            writeln!(out, "// @temporal {:?} constraint: {fact_name}", kind).unwrap();
+        }
+        writeln!(out, "func Test_{}_{}(t *testing.T) {{", test_prefix, fact_name).unwrap();
         for (pname, tname) in &params {
             writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
         }
         writeln!(out, "\tif !({body}) {{").unwrap();
-        writeln!(out, "\t\tt.Error(\"invariant {} violated\")", fact_name).unwrap();
+        writeln!(out, "\t\tt.Error(\"{} {} violated\")", test_prefix, fact_name).unwrap();
         writeln!(out, "\t}}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+
+        // Generate trace checker functions for temporal constraints
+        if let Some(kind) = temporal_kind {
+            let snake_name = to_snake_case(&fact_name);
+            match kind {
+                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
+                    let kind_label = if kind == analyze::TemporalKind::Liveness {
+                        "liveness" } else { "past_liveness" };
+                    let semantics = if kind == analyze::TemporalKind::Liveness {
+                        "property holds in at least one future state"
+                    } else {
+                        "property held in at least one past state"
+                    };
+                    writeln!(out, "// Trace checker for {kind_label}: {semantics}.").unwrap();
+                    if params.len() == 1 {
+                        let (pname, tname) = &params[0];
+                        writeln!(out, "func check_{kind_label}_{snake_name}(trace [][]{tname}) bool {{").unwrap();
+                        writeln!(out, "\tfor _, {pname} := range trace {{").unwrap();
+                        writeln!(out, "\t\tif {body} {{").unwrap();
+                        writeln!(out, "\t\t\treturn true").unwrap();
+                        writeln!(out, "\t\t}}").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    } else {
+                        let tuple_fields: Vec<_> = params.iter().enumerate().map(|(i, (_, t))| format!("F{i} []{t}")).collect();
+                        let struct_name = format!("trace_{kind_label}_{snake_name}_entry");
+                        writeln!(out, "type {struct_name} struct {{ {} }}", tuple_fields.join("; ")).unwrap();
+                        writeln!(out, "func check_{kind_label}_{snake_name}(trace []{struct_name}) bool {{").unwrap();
+                        writeln!(out, "\tfor _, entry := range trace {{").unwrap();
+                        for (i, (pname, _)) in params.iter().enumerate() {
+                            writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                        }
+                        writeln!(out, "\t\tif {body} {{").unwrap();
+                        writeln!(out, "\t\t\treturn true").unwrap();
+                        writeln!(out, "\t\t}}").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    writeln!(out, "\treturn false").unwrap();
+                    writeln!(out, "}}").unwrap();
+                    writeln!(out).unwrap();
+                }
+                analyze::TemporalKind::Binary => {
+                    if let Expr::TemporalBinary { op, left, right } = &constraint.expr {
+                        let left_body = expr_translator::translate_with_ir(left, ir);
+                        let right_body = expr_translator::translate_with_ir(right, ir);
+                        let op_name = match op {
+                            TemporalBinaryOp::Until => "until",
+                            TemporalBinaryOp::Since => "since",
+                            TemporalBinaryOp::Release => "release",
+                            TemporalBinaryOp::Triggered => "triggered",
+                        };
+                        let semantics = match op {
+                            TemporalBinaryOp::Until => "left holds until right becomes true",
+                            TemporalBinaryOp::Since => "left has held since right was true",
+                            TemporalBinaryOp::Release => "right holds until left releases it",
+                            TemporalBinaryOp::Triggered => "left triggers right",
+                        };
+                        writeln!(out, "// Trace checker for {op_name}: {semantics}.").unwrap();
+                        if params.len() == 1 {
+                            let (pname, tname) = &params[0];
+                            writeln!(out, "func check_{op_name}_{snake_name}(trace [][]{tname}) bool {{").unwrap();
+                            match op {
+                                TemporalBinaryOp::Until => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i, {pname} := range trace {{").unwrap();
+                                    writeln!(out, "\t\tif {right_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tif pos < 0 {{ return false }}").unwrap();
+                                    writeln!(out, "\tfor _, {pname} := range trace[:pos] {{").unwrap();
+                                    writeln!(out, "\t\tif !({left_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Since => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i := len(trace) - 1; i >= 0; i-- {{").unwrap();
+                                    writeln!(out, "\t\t{pname} := trace[i]").unwrap();
+                                    writeln!(out, "\t\tif {right_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tif pos < 0 {{ return false }}").unwrap();
+                                    writeln!(out, "\tfor _, {pname} := range trace[pos:] {{").unwrap();
+                                    writeln!(out, "\t\tif !({left_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Release => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i, {pname} := range trace {{").unwrap();
+                                    writeln!(out, "\t\tif {left_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tend := len(trace)").unwrap();
+                                    writeln!(out, "\tif pos >= 0 {{ end = pos + 1 }}").unwrap();
+                                    writeln!(out, "\tfor _, {pname} := range trace[:end] {{").unwrap();
+                                    writeln!(out, "\t\tif !({right_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Triggered => {
+                                    writeln!(out, "\tfor i, {pname} := range trace {{").unwrap();
+                                    writeln!(out, "\t\tif {right_body} {{").unwrap();
+                                    writeln!(out, "\t\t\tfound := false").unwrap();
+                                    writeln!(out, "\t\t\tfor _, {pname} := range trace[:i+1] {{").unwrap();
+                                    writeln!(out, "\t\t\t\tif {left_body} {{ found = true; break }}").unwrap();
+                                    writeln!(out, "\t\t\t}}").unwrap();
+                                    writeln!(out, "\t\t\tif !found {{ return false }}").unwrap();
+                                    writeln!(out, "\t\t}}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                            }
+                        } else {
+                            let tuple_fields: Vec<_> = params.iter().enumerate().map(|(i, (_, t))| format!("F{i} []{t}")).collect();
+                            let struct_name = format!("trace_{op_name}_{snake_name}_entry");
+                            writeln!(out, "type {struct_name} struct {{ {} }}", tuple_fields.join("; ")).unwrap();
+                            writeln!(out, "func check_{op_name}_{snake_name}(trace []{struct_name}) bool {{").unwrap();
+                            match op {
+                                TemporalBinaryOp::Until => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i, entry := range trace {{").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif {right_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tif pos < 0 {{ return false }}").unwrap();
+                                    writeln!(out, "\tfor _, entry := range trace[:pos] {{").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif !({left_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Since => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i := len(trace) - 1; i >= 0; i-- {{").unwrap();
+                                    writeln!(out, "\t\tentry := trace[i]").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif {right_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tif pos < 0 {{ return false }}").unwrap();
+                                    writeln!(out, "\tfor _, entry := range trace[pos:] {{").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif !({left_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Release => {
+                                    writeln!(out, "\tpos := -1").unwrap();
+                                    writeln!(out, "\tfor i, entry := range trace {{").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif {left_body} {{ pos = i; break }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\tend := len(trace)").unwrap();
+                                    writeln!(out, "\tif pos >= 0 {{ end = pos + 1 }}").unwrap();
+                                    writeln!(out, "\tfor _, entry := range trace[:end] {{").unwrap();
+                                    for (i, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{i}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif !({right_body}) {{ return false }}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                                TemporalBinaryOp::Triggered => {
+                                    writeln!(out, "\tfor i, entry := range trace {{").unwrap();
+                                    for (idx, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t{pname} := entry.F{idx}").unwrap();
+                                    }
+                                    writeln!(out, "\t\tif {right_body} {{").unwrap();
+                                    writeln!(out, "\t\t\tfound := false").unwrap();
+                                    writeln!(out, "\t\t\tfor _, entry := range trace[:i+1] {{").unwrap();
+                                    for (idx, (pname, _)) in params.iter().enumerate() {
+                                        writeln!(out, "\t\t\t\t{pname} := entry.F{idx}").unwrap();
+                                    }
+                                    writeln!(out, "\t\t\t\tif {left_body} {{ found = true; break }}").unwrap();
+                                    writeln!(out, "\t\t\t}}").unwrap();
+                                    writeln!(out, "\t\t\tif !found {{ return false }}").unwrap();
+                                    writeln!(out, "\t\t}}").unwrap();
+                                    writeln!(out, "\t}}").unwrap();
+                                    writeln!(out, "\treturn true").unwrap();
+                                }
+                            }
+                        }
+                        writeln!(out, "}}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+                _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
+            }
+        }
     }
 
     // Boundary value tests
@@ -758,6 +981,7 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_uses_tc(left) || expr_uses_tc(right)
         }
+        Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(false, |r| expr_uses_tc(r)) || args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }

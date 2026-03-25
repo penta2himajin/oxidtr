@@ -795,3 +795,92 @@ fn parse_nested_always_until() {
         other => panic!("expected Always(Until(...)), got {other:?}"),
     }
 }
+
+// ── Alloy 6: function application tests ─────────────────────────────────────
+
+#[test]
+fn parse_fun_app_simple() {
+    // c.count.plus[1] — function application on field access chain
+    let input = r#"
+        sig Counter { count: one Int }
+        fact Increment { all c: Counter | c.count.plus[1] = c.count }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    // The fact body should contain a FunApp
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    match left.as_ref() {
+                        Expr::FunApp { name, receiver, args } => {
+                            assert_eq!(name, "plus");
+                            assert!(receiver.is_some(), "method-style FunApp should have receiver");
+                            assert_eq!(args.len(), 1);
+                            assert!(matches!(&args[0], Expr::IntLiteral(1)));
+                        }
+                        other => panic!("expected FunApp, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_fun_app_multiple_args() {
+    let input = r#"
+        sig A { x: one Int, y: one Int }
+        fact Multi { all a: A | a.x.add[a.y, 1] = a.x }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    match left.as_ref() {
+                        Expr::FunApp { name, receiver, args } => {
+                            assert_eq!(name, "add");
+                            assert!(receiver.is_some(), "method-style FunApp should have receiver");
+                            assert_eq!(args.len(), 2);
+                        }
+                        other => panic!("expected FunApp, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_bare_fun_app() {
+    // f[x] — bare identifier function application
+    let input = r#"
+        sig A {}
+        sig B {}
+        fun myFun[a: one A] : one B { a }
+        fact UseFun { all a: A | myFun[a] = a }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    match &model.facts[0].body {
+        Expr::Quantifier { body, .. } => {
+            match body.as_ref() {
+                Expr::Comparison { left, .. } => {
+                    match left.as_ref() {
+                        Expr::FunApp { name, receiver, args } => {
+                            assert_eq!(name, "myFun");
+                            assert!(receiver.is_none(), "bare FunApp should have no receiver");
+                            assert_eq!(args.len(), 1);
+                        }
+                        other => panic!("expected FunApp, got {other:?}"),
+                    }
+                }
+                other => panic!("expected Comparison, got {other:?}"),
+            }
+        }
+        other => panic!("expected Quantifier, got {other:?}"),
+    }
+}

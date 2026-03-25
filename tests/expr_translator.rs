@@ -90,6 +90,7 @@ fn make_ir_two_sigs(
     let node_b = StructureNode {
         name: sig_b.to_string(),
         is_enum: false,
+        is_var: false,
         sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![],
@@ -98,6 +99,7 @@ fn make_ir_two_sigs(
     let node_a = StructureNode {
         name: sig_a.to_string(),
         is_enum: false,
+        is_var: false,
         sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![IRField {
@@ -119,6 +121,7 @@ fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> Oxi
     let node = StructureNode {
         name: sig_name.to_string(),
         is_enum: false,
+        is_var: false,
         sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![IRField {
@@ -569,4 +572,77 @@ fn translate_since_translates_both_sides() {
     };
     let result = translate(&expr);
     assert!(result.contains("&&"), "should combine with &&, got: {result}");
+}
+
+// ── Alloy 6: function application translation ──────────────────────────────────
+
+#[test]
+fn translate_fun_app_bare_call() {
+    let expr = Expr::FunApp {
+        name: "myFun".to_string(),
+        receiver: None,
+        args: vec![var("x")],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "myFun(x)");
+}
+
+#[test]
+fn translate_fun_app_no_args() {
+    let expr = Expr::FunApp {
+        name: "noop".to_string(),
+        receiver: None,
+        args: vec![],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "noop()");
+}
+
+// ── Integer arithmetic: receiver.plus[n] → receiver + n ─────────────────────
+
+#[test]
+fn translate_fun_app_plus_with_receiver() {
+    let expr = Expr::FunApp {
+        name: "plus".to_string(),
+        receiver: Some(Box::new(Expr::FieldAccess {
+            base: Box::new(var("c")),
+            field: "count".to_string(),
+        })),
+        args: vec![Expr::IntLiteral(1)],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "c.count + 1");
+}
+
+#[test]
+fn translate_fun_app_minus_with_receiver() {
+    let expr = Expr::FunApp {
+        name: "minus".to_string(),
+        receiver: Some(Box::new(var("x"))),
+        args: vec![Expr::IntLiteral(3)],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "x - 3");
+}
+
+#[test]
+fn translate_fun_app_mul_with_receiver() {
+    let expr = Expr::FunApp {
+        name: "mul".to_string(),
+        receiver: Some(Box::new(var("x"))),
+        args: vec![var("y")],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "x * y");
+}
+
+#[test]
+fn translate_fun_app_non_arithmetic_with_receiver() {
+    let expr = Expr::FunApp {
+        name: "custom".to_string(),
+        receiver: Some(Box::new(var("obj"))),
+        args: vec![var("a"), var("b")],
+    };
+    let result = translate(&expr);
+    assert_eq!(result, "obj.custom(a, b)");
 }

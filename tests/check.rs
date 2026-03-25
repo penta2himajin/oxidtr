@@ -148,6 +148,7 @@ fn differ_no_diff_when_in_sync() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField {
@@ -164,6 +165,7 @@ fn differ_no_diff_when_in_sync() {
         structs: vec![ExtractedStruct {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             fields: vec![ExtractedField {
                 name: "name".into(),
                 mult: Multiplicity::One,
@@ -181,7 +183,7 @@ fn differ_no_diff_when_in_sync() {
 fn differ_missing_struct() {
     use oxidtr::check::impl_parser::ExtractedImpl;
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
@@ -194,7 +196,7 @@ fn differ_extra_struct() {
     use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct};
     let ir = make_ir(vec![], vec![]);
     let extracted = ExtractedImpl {
-        structs: vec![ExtractedStruct { name: "Ghost".into(), is_enum: false, fields: vec![] }],
+        structs: vec![ExtractedStruct { name: "Ghost".into(), is_enum: false, is_var: false, fields: vec![] }],
         fns: vec![],
     };
     let diffs = differ::diff(&ir, &extracted);
@@ -208,6 +210,7 @@ fn differ_missing_field() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "email".into(), is_var: false, mult: Multiplicity::One, target: "String".into(), value_type: None, raw_union_type: None }],
@@ -216,7 +219,7 @@ fn differ_missing_field() {
         vec![],
     );
     let extracted = ExtractedImpl {
-        structs: vec![ExtractedStruct { name: "User".into(), is_enum: false, fields: vec![] }],
+        structs: vec![ExtractedStruct { name: "User".into(), is_enum: false, is_var: false, fields: vec![] }],
         fns: vec![],
     };
     let diffs = differ::diff(&ir, &extracted);
@@ -230,13 +233,14 @@ fn differ_missing_field() {
 fn differ_extra_field() {
     use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
     );
     let extracted = ExtractedImpl {
         structs: vec![ExtractedStruct {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             fields: vec![ExtractedField { name: "phantom".into(), mult: Multiplicity::One, target: "String".into(), is_var: false }],
         }],
         fns: vec![],
@@ -255,6 +259,7 @@ fn differ_multiplicity_mismatch() {
         vec![StructureNode {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "manager".into(), is_var: false, mult: Multiplicity::Lone, target: "User".into(), value_type: None, raw_union_type: None }],
@@ -267,6 +272,7 @@ fn differ_multiplicity_mismatch() {
         structs: vec![ExtractedStruct {
             name: "User".into(),
             is_enum: false,
+            is_var: false,
             fields: vec![ExtractedField { name: "manager".into(), mult: Multiplicity::One, target: "User".into(), is_var: false }],
         }],
         fns: vec![],
@@ -404,6 +410,7 @@ fn differ_detects_var_mismatch() {
         structures: vec![StructureNode {
             name: "Account".to_string(),
             is_enum: false,
+            is_var: false,
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField {
@@ -518,4 +525,44 @@ fn check_detects_missing_invariant_test_for_temporal_without_prime() {
         DiffItem::MissingTemporalTest { fact_name, expected_kind }
         if fact_name == "AlwaysPositive" && expected_kind == "invariant"
     )), "should detect missing invariant test: {diffs:?}");
+}
+
+// ── Assert check ────────────────────────────────────────────────────────────────
+
+#[test]
+fn missing_assert_detected() {
+    use oxidtr::ir::nodes::PropertyNode;
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![PropertyNode {
+            name: "NoSelfLoop".to_string(),
+            expr: Expr::VarRef("placeholder".to_string()),
+        }],
+    };
+    let sources = vec!["fn some_other_test() {}".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingAssert { name } if name == "NoSelfLoop"
+    )), "should detect missing assert test: {diffs:?}");
+}
+
+#[test]
+fn present_assert_not_flagged() {
+    use oxidtr::ir::nodes::PropertyNode;
+    let ir = OxidtrIR {
+        structures: vec![],
+        constraints: vec![],
+        operations: vec![],
+        properties: vec![PropertyNode {
+            name: "NoSelfLoop".to_string(),
+            expr: Expr::VarRef("placeholder".to_string()),
+        }],
+    };
+    let sources = vec!["fn no_self_loop() { assert!(true); }".to_string()];
+    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    assert!(!diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingAssert { .. }
+    )), "should not flag present assert test: {diffs:?}");
 }

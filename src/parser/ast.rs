@@ -30,6 +30,7 @@ pub enum SigMultiplicity {
 pub struct SigDecl {
     pub name: String,
     pub is_abstract: bool,
+    pub is_var: bool, // Alloy 6: `var sig` (mutable atom set across states)
     pub multiplicity: SigMultiplicity,
     pub parent: Option<String>,
     pub fields: Vec<FieldDecl>,
@@ -129,6 +130,13 @@ pub enum Expr {
         op: TemporalBinaryOp,
         left: Box<Expr>,
         right: Box<Expr>,
+    },
+    /// Alloy 6: function application — `f[x, y]` or `expr.f[x]`
+    /// `receiver` holds the base expression for method-style calls (e.g. `c.count` in `c.count.plus[1]`).
+    FunApp {
+        name: String,
+        receiver: Option<Box<Expr>>,
+        args: Vec<Expr>,
     },
 }
 

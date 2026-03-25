@@ -219,6 +219,7 @@ where F: Fn(&str) -> extract::MinedModel {
                 }
             }).collect(),
             is_enum: s.is_abstract,
+            is_var: false, // MinedSig does not yet track var sig
         }
     }).collect();
 
@@ -248,6 +249,7 @@ fn mined_to_extracted(mined: &extract::MinedModel) -> ExtractedImpl {
                 }
             }).collect(),
             is_enum: s.is_abstract,
+            is_var: false, // MinedSig does not yet track var sig
         }
     }).collect();
 

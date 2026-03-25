@@ -21,6 +21,7 @@ sig FieldDecl {
 
 sig SigDecl {
   isAbstract:    lone SigDecl,
+  isVarSig:      lone SigDecl,  -- Alloy 6: var sig (mutable atom set)
   sigMultiplicity: one SigMultiplicity,
   parent:        lone SigDecl,
   fields:        set FieldDecl
@@ -74,6 +75,19 @@ one sig Until     extends TemporalBinaryOp {}
 one sig Since     extends TemporalBinaryOp {}
 one sig Release   extends TemporalBinaryOp {}
 one sig Triggered extends TemporalBinaryOp {}
+
+sig FunApp extends Expr {
+  receiver: lone Expr,
+  funArgs: seq Expr
+}
+
+abstract sig TemporalKind {}
+one sig Invariant    extends TemporalKind {}
+one sig Liveness     extends TemporalKind {}
+one sig PastInvariant extends TemporalKind {}
+one sig PastLiveness extends TemporalKind {}
+one sig Step         extends TemporalKind {}
+one sig Binary       extends TemporalKind {}
 
 abstract sig CompareOp {}
 one sig In    extends CompareOp {}
@@ -205,9 +219,10 @@ fact FunParamsCardinality  { all f: FunDecl | #f.funParams = #f.funParams }
 -------------------------------------------------------------------------------
 
 sig StructureNode {
-  origin:   one SigDecl,
-  irFields: set IRField,
-  irParent: lone StructureNode
+  origin:    one SigDecl,
+  irIsVarSig: lone StructureNode,  -- Alloy 6: var sig marker
+  irFields:  set IRField,
+  irParent:  lone StructureNode
 }
 
 sig IRField {

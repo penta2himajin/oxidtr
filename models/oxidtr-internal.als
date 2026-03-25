@@ -169,11 +169,13 @@ sig MissingField           extends DiffItem {}
 sig ExtraField             extends DiffItem {}
 sig MultiplicityMismatch   extends DiffItem {}
 sig VarMismatch            extends DiffItem {}
+sig VarMismatchSig         extends DiffItem {}
 sig MissingFn              extends DiffItem {}
 sig ExtraFn                extends DiffItem {}
 sig MissingValidation      extends DiffItem {}
 sig ExtraValidation        extends DiffItem {}
 sig MissingTemporalTest    extends DiffItem {}
+sig MissingAssert          extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem

@@ -199,6 +199,10 @@ fn merge_models(per_lang: Vec<(String, MinedModel)>) -> (MinedModel, Vec<MergeCo
                 if sig.is_abstract {
                     merged_sig.is_abstract = true;
                 }
+                // Prefer var if either source says var
+                if sig.is_var {
+                    merged_sig.is_var = true;
+                }
                 // Prefer parent if either source provides one
                 if merged_sig.parent.is_none() && sig.parent.is_some() {
                     merged_sig.parent = sig.parent.clone();
@@ -301,6 +305,8 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
                 }
                 // Prefer abstract if either says abstract
                 if sig.is_abstract { existing.is_abstract = true; }
+                // Prefer var if either says var
+                if sig.is_var { existing.is_var = true; }
                 // Prefer parent if either provides one
                 if existing.parent.is_none() && sig.parent.is_some() {
                     existing.parent = sig.parent.clone();
@@ -387,6 +393,7 @@ pub struct MinedSig {
     pub name: String,
     pub fields: Vec<MinedField>,
     pub is_abstract: bool,
+    pub is_var: bool, // Alloy 6: mutable sig (var sig)
     pub parent: Option<String>,
     pub source_location: String,
     /// Components for intersection type aliases (e.g. ["A", "B", "C"] for `type T = A & B & C`).
@@ -519,6 +526,7 @@ pub fn resolve_external_types(model: &mut MinedModel) {
             name,
             fields: vec![],
             is_abstract: false,
+            is_var: false,
             parent: None,
             source_location: "external type".to_string(),
             intersection_of: vec![],
