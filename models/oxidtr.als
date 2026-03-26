@@ -269,9 +269,9 @@ sig OxidtrIR {
   properties:  set PropertyNode
 }
 
--- Derived field: total count of IR nodes (structures + constraints + operations + properties)
-fun OxidtrIR.totalNodes: one Int {
-  #this.structures.plus[#this.constraints].plus[#this.operations].plus[#this.properties]
+-- Derived field: the source model that this IR was lowered from
+fun OxidtrIR.origin: one AlloyModel {
+  this.source
 }
 
 -------------------------------------------------------------------------------
