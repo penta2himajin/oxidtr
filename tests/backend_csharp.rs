@@ -176,3 +176,15 @@ fn cs_expr_cardinality() {
     assert!(result.contains(".Count") || result.contains("Count("),
         "expected Count in: {result}");
 }
+
+// ── Derived fields (fun Sig.name → property) ────────────────────────────────
+
+#[test]
+fn cs_derived_field_generates_property() {
+    let files = generate_cs(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "Models.cs");
+    assert!(models.contains("public static Int Balance =>"), "should generate property:\n{models}");
+}

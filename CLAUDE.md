@@ -123,10 +123,10 @@ cargo run -- extract generated/ -o /tmp/mined.als
 
 | テストファイル | 対象 |
 |---|---|
-| `parser_sig`, `parser_expr` | Alloyパーサー |
+| `parser_sig`, `parser_expr` | Alloyパーサー (派生フィールド `fun Sig.name` 構文含む) |
 | `lowering` | AST→IR変換 |
 | `expr_translator` | 式変換 (Rust, prime/temporal含む) |
-| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp` | 各言語コード生成 |
+| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp` | 各言語コード生成 (派生フィールド含む) |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `check` | 構造的整合性検証 (var field差分検出含む) |
@@ -165,8 +165,9 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Phase 10: Lean backend
 - Phase 11: Alloy 6 時相パーサー ✅ (完了: var field, prime operator, temporal unary operators)
 - Phase 12-13: Alloy 6 時相コード生成 ✅ (完了: prime式変換, temporal invariant/transition validators, var field check差分検出)
-- explore: Alloyインスタンス異常パターン検出
-- cover: カバレッジ×fact直交テスト生成
+- explore: Alloyインスタンス異常パターン検出 ✅ (完了: detect_anomalies — UnconstrainedField/UnboundedCollection/UnguardedSelfRef、generateパイプラインに統合済み)
+- cover: カバレッジ×fact直交テスト生成 ✅ (完了: fact_coverage — sig_facts/uncovered_fields/pairwise、全7バックエンドでテストスキャフォールド生成)
+- Phase 14: 派生フィールド (fun Sig.name 構文 → computed property生成)
 
 ### fact本体式の活用における伸びしろ
 
@@ -193,8 +194,17 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - TemporalTransition (`eventually`/`after`/`before`): transition validator関数を生成（全6言語）
 - var field: check差分でis_var不整合を検出 (VarMismatch)
 
+**派生フィールド (Phase 14, 実装済み):**
+- `fun Sig.name[params]: mult Type { body }` 構文: パーサー・AST・IR・全7バックエンドで対応
+- Rust: `impl Sig { pub fn name(&self) -> Type { body } }`
+- TypeScript: クラスメソッド `name(): Type { return body; }`
+- Kotlin: メソッド `fun name(): Type = body`
+- Java: メソッド `public Type name() { return body; }`
+- Swift: computed property `var name: Type { body }`
+- Go: メソッド `func (s *Sig) Name() Type { return body }`
+- C#: property `public Type Name => body;`
+
 **未到達の領域:**
-- 派生フィールド（`totalDelta`は`behaviorDeltas`から計算される等）: 時相コード生成の基盤は完了、より高度な状態遷移ロジックへの拡張が残課題
 - Lean backend: fact本体式を定理として完全変換する最終目標。「制約を実行時に検証する」から「制約を証明する」への移行
 
 ## Alloyモデルへのフィードバック

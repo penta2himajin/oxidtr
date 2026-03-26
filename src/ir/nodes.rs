@@ -51,6 +51,7 @@ pub struct IRReturnType {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OperationNode {
     pub name: String,
+    pub receiver_sig: Option<String>,
     pub params: Vec<IRParam>,
     pub return_type: Option<IRReturnType>,
     pub body: Vec<Expr>,

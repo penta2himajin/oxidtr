@@ -374,3 +374,15 @@ fn ts_abstract_sig_fields_propagated_to_union_variants() {
     assert!(models.contains("export interface Stopped {"),
         "Stopped should be interface (inherited field), not string literal:\n{models}");
 }
+
+// ── Derived fields (fun Sig.name → class method) ───────────────────────────
+
+#[test]
+fn ts_derived_field_generates_method() {
+    let files = generate_from(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(models.contains("balance(): M.Int"), "should generate method on class:\n{models}");
+}

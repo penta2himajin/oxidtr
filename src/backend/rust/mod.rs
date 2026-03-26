@@ -181,7 +181,56 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → impl blocks
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    // Group receiver operations by sig name
+    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            by_sig.entry(sig.clone()).or_default().push(op);
+        }
+    }
+
+    for (sig_name, ops) in &by_sig {
+        writeln!(out, "impl {sig_name} {{").unwrap();
+        for op in ops {
+            let fn_name = to_snake_case(&op.name);
+            let params = op.params.iter().map(|p| {
+                let type_str = match p.mult {
+                    Multiplicity::One => format!("&{}", p.type_name),
+                    Multiplicity::Lone => format!("Option<&{}>", p.type_name),
+                    Multiplicity::Set => format!("&std::collections::BTreeSet<{}>", p.type_name),
+                    Multiplicity::Seq => format!("&[{}]", p.type_name),
+                };
+                format!("{}: {type_str}", to_snake_case(&p.name))
+            }).collect::<Vec<_>>().join(", ");
+
+            let return_str = match &op.return_type {
+                Some(rt) => {
+                    let t = rust_return_type(&rt.type_name, &rt.mult);
+                    format!(" -> {t}")
+                }
+                None => String::new(),
+            };
+
+            let param_str = if params.is_empty() {
+                "&self".to_string()
+            } else {
+                format!("&self, {params}")
+            };
+
+            writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
+            writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 fn generate_enum(
@@ -372,6 +421,10 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out).unwrap();
 
     for op in &ir.operations {
+        // Skip receiver functions — they are rendered as impl methods in models.rs
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let fn_name = to_snake_case(&op.name);
         let params = op
             .params

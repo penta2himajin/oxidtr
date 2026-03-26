@@ -150,6 +150,7 @@ sig PredDecl {
 }
 
 sig FunDecl {
+  receiverSig:   lone SigDecl,   -- derived field: fun Sig.name syntax
   funParams:     set ParamDecl,
   funReturnMult: one Multiplicity,
   funBody:       one Expr
@@ -241,9 +242,10 @@ sig IRReturnType {
 }
 
 sig OperationNode {
-  oorigin:     one PredDecl,
-  oparams:     set IRParam,
-  oreturnType: lone IRReturnType
+  oorigin:      one PredDecl,
+  oreceiverSig: lone StructureNode,  -- derived field receiver
+  oparams:      set IRParam,
+  oreturnType:  lone IRReturnType
 }
 
 abstract sig LoweringError {}
@@ -265,6 +267,11 @@ sig OxidtrIR {
   constraints: set ConstraintNode,
   operations:  set OperationNode,
   properties:  set PropertyNode
+}
+
+-- Derived field: total count of IR nodes (structures + constraints + operations + properties)
+fun OxidtrIR.totalNodes: one Int {
+  #this.structures.plus[#this.constraints].plus[#this.operations].plus[#this.properties]
 }
 
 -------------------------------------------------------------------------------

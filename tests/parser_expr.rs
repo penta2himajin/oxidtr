@@ -884,3 +884,60 @@ fn parse_bare_fun_app() {
         other => panic!("expected Quantifier, got {other:?}"),
     }
 }
+
+// ── Derived fields (fun Sig.name) tests ────────────────────────────────────
+
+#[test]
+fn parse_receiver_fun_no_params() {
+    let input = r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.funs.len(), 1);
+    let f = &model.funs[0];
+    assert_eq!(f.name, "balance");
+    assert_eq!(f.receiver_sig.as_deref(), Some("Account"));
+    assert!(f.params.is_empty());
+    assert_eq!(f.return_mult, Multiplicity::One);
+    assert_eq!(f.return_type, "Int");
+}
+
+#[test]
+fn parse_receiver_fun_with_params() {
+    let input = r#"
+        sig Account { items: set Item }
+        sig Item {}
+        fun Account.hasItem[i: one Item]: one Int { i in this.items }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.funs.len(), 1);
+    let f = &model.funs[0];
+    assert_eq!(f.name, "hasItem");
+    assert_eq!(f.receiver_sig.as_deref(), Some("Account"));
+    assert_eq!(f.params.len(), 1);
+    assert_eq!(f.params[0].name, "i");
+}
+
+#[test]
+fn parse_non_receiver_fun_has_no_receiver() {
+    let input = r#"
+        sig A {}
+        fun allAs: set A { A }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert!(model.funs[0].receiver_sig.is_none());
+}
+
+#[test]
+fn parse_receiver_fun_lowers_to_operation_with_receiver() {
+    let input = r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    let ir = oxidtr::ir::lower(&model).expect("should lower");
+    let op = ir.operations.iter().find(|o| o.name == "balance").unwrap();
+    assert_eq!(op.receiver_sig.as_deref(), Some("Account"));
+    assert!(op.return_type.is_some());
+}

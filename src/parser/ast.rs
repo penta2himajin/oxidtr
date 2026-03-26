@@ -188,6 +188,7 @@ pub struct AssertDecl {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunDecl {
     pub name: String,
+    pub receiver_sig: Option<String>,
     pub params: Vec<ParamDecl>,
     pub return_mult: Multiplicity,
     pub return_type: String,

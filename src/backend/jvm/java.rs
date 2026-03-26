@@ -122,7 +122,45 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → static methods taking self
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    use std::collections::HashMap;
+    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            by_sig.entry(sig.clone()).or_default().push(op);
+        }
+    }
+
+    for (sig_name, ops) in &by_sig {
+        writeln!(out, "class {sig_name}Derived {{").unwrap();
+        for op in ops {
+            let params_with_self = {
+                let mut ps = vec![format!("{sig_name} self")];
+                for p in &op.params {
+                    let type_str = java_return_type(&p.type_name, &p.mult);
+                    ps.push(format!("{type_str} {}", p.name));
+                }
+                ps.join(", ")
+            };
+
+            let return_str = match &op.return_type {
+                Some(rt) => java_return_type(&rt.type_name, &rt.mult),
+                None => "void".to_string(),
+            };
+
+            writeln!(out, "    static {return_str} {}({params_with_self}) {{", op.name).unwrap();
+            writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement {}\");", op.name).unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
@@ -470,6 +508,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out, "class Operations {{").unwrap();
 
     for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let params = op.params.iter()
             .map(|p| {
                 let type_str = match p.mult {

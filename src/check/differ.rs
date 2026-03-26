@@ -321,7 +321,9 @@ where F: Fn(&str) -> String {
 
     // ── operations ─────────────────────────────────────────────────────────────
     // Normalize pred names for comparison (snake_case for Rust, identity for TS).
+    // Skip receiver functions — they are generated as methods on models, not operations.
     let ir_fn_pairs: Vec<(String, &str)> = ir.operations.iter()
+        .filter(|o| o.receiver_sig.is_none())
         .map(|o| (normalize_fn(&o.name), o.name.as_str()))
         .collect();
     let impl_fn_snakes: std::collections::HashSet<&str> =

@@ -148,7 +148,48 @@ fn generate_models(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → class methods
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    use std::collections::HashMap;
+    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            by_sig.entry(sig.clone()).or_default().push(op);
+        }
+    }
+
+    for (sig_name, ops) in &by_sig {
+        writeln!(out, "export class {sig_name}Methods {{").unwrap();
+        writeln!(out, "  constructor(private readonly self: {sig_name}) {{}}").unwrap();
+        for op in ops {
+            let fn_name = to_camel_case(&op.name);
+            let params = op.params.iter().map(|p| {
+                let type_str = match p.mult {
+                    Multiplicity::One => p.type_name.clone(),
+                    Multiplicity::Lone => format!("{} | null", p.type_name),
+                    Multiplicity::Set => format!("Set<{}>", p.type_name),
+                    Multiplicity::Seq => format!("{}[]", p.type_name),
+                };
+                format!("{}: {type_str}", to_camel_case(&p.name))
+            }).collect::<Vec<_>>().join(", ");
+
+            let return_str = match &op.return_type {
+                Some(rt) => ts_return_type(&rt.type_name, &rt.mult),
+                None => "void".to_string(),
+            };
+
+            writeln!(out, "  {fn_name}({params}): {return_str} {{").unwrap();
+            writeln!(out, "    throw new Error(\"oxidtr: implement {}\");", op.name).unwrap();
+            writeln!(out, "  }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
@@ -374,6 +415,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out).unwrap();
 
     for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let fn_name = to_camel_case(&op.name);
         let params = op
             .params
