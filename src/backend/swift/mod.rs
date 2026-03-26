@@ -200,6 +200,47 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
             let let_or_var = if f.is_var { "var" } else { "let" };
             writeln!(out, "    {let_or_var} {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
         }
+
+        // Generate validate() method for Disjoint and Exhaustive constraints
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let has_validation = sig_constraints.iter().any(|c| matches!(c,
+            analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
+        ));
+        if has_validation {
+            writeln!(out).unwrap();
+            writeln!(out, "    func validate() -> [String] {{").unwrap();
+            writeln!(out, "        var errors: [String] = []").unwrap();
+            for c in &sig_constraints {
+                match c {
+                    analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                        let left_field = to_swift_field_name(left.rsplit('.').next().unwrap_or(left));
+                        let right_field = to_swift_field_name(right.rsplit('.').next().unwrap_or(right));
+                        writeln!(out, "        if !{left_field}.isDisjoint(with: {right_field}) {{").unwrap();
+                        writeln!(out, "            errors.append(\"{left_field} and {right_field} must not overlap (disjoint constraint)\")").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                        let cats = categories.join(", ");
+                        let checks: Vec<String> = categories.iter().map(|cat| {
+                            let parts: Vec<&str> = cat.split('.').collect();
+                            if parts.len() == 2 {
+                                format!("{}.{}.contains(self)", parts[0], to_swift_field_name(parts[1]))
+                            } else {
+                                format!("{cat}.contains(self)")
+                            }
+                        }).collect();
+                        let condition = checks.join(" || ");
+                        writeln!(out, "        if !({condition}) {{").unwrap();
+                        writeln!(out, "            errors.append(\"must belong to one of [{cats}] (exhaustive constraint)\")").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            writeln!(out, "        return errors").unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+
         writeln!(out, "}}").unwrap();
     }
 }

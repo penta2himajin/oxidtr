@@ -255,7 +255,16 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 }
                 analyze::ConstraintInfo::Exhaustive { categories, .. } => {
                     let cats = categories.join(", ");
-                    constructor_checks.push(format!("// exhaustive: must belong to one of [{cats}]"));
+                    let checks: Vec<String> = categories.iter().map(|cat| {
+                        let parts: Vec<&str> = cat.split('.').collect();
+                        if parts.len() == 2 {
+                            format!("!{}.{}.contains(this)", parts[0], parts[1])
+                        } else {
+                            format!("!{cat}.contains(this)")
+                        }
+                    }).collect();
+                    let condition = checks.join(" && ");
+                    constructor_checks.push(format!("if ({condition}) throw new IllegalArgumentException(\"must belong to one of [{cats}] (exhaustive constraint)\");"));
                 }
                 _ => {}
             }

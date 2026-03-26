@@ -203,6 +203,42 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
             writeln!(out, "\t{} {type_str}", expr_translator::capitalize(&f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();
+
+        // Generate Validate() method for Disjoint and Exhaustive constraints
+        let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let has_validation = sig_constraints.iter().any(|c| matches!(c,
+            analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
+        ));
+        if has_validation {
+            writeln!(out).unwrap();
+            writeln!(out, "func (s {}) Validate() []string {{", s.name).unwrap();
+            writeln!(out, "\tvar errors []string").unwrap();
+            for c in &sig_constraints {
+                match c {
+                    analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                        let left_field = expr_translator::capitalize(left.rsplit('.').next().unwrap_or(left));
+                        let right_field = expr_translator::capitalize(right.rsplit('.').next().unwrap_or(right));
+                        writeln!(out, "\tfor _, v := range s.{left_field} {{").unwrap();
+                        writeln!(out, "\t\tfor _, w := range s.{right_field} {{").unwrap();
+                        writeln!(out, "\t\t\tif v == w {{").unwrap();
+                        writeln!(out, "\t\t\t\terrors = append(errors, \"{left_field} and {right_field} must not overlap (disjoint constraint)\")").unwrap();
+                        writeln!(out, "\t\t\t\tbreak").unwrap();
+                        writeln!(out, "\t\t\t}}").unwrap();
+                        writeln!(out, "\t\t}}").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                        let cats = categories.join(", ");
+                        writeln!(out, "\t// exhaustive: must belong to one of [{cats}]").unwrap();
+                        writeln!(out, "\t// Validate at integration level with category collections").unwrap();
+                        writeln!(out, "\t_ = \"must belong to one of [{cats}] (exhaustive constraint)\"").unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            writeln!(out, "\treturn errors").unwrap();
+            writeln!(out, "}}").unwrap();
+        }
     }
 }
 
