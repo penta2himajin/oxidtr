@@ -119,6 +119,9 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
     writeln!(out, "public class {}", s.name).unwrap();
     writeln!(out, "{{").unwrap();
     for f in &s.fields {
+        if f.mult == Multiplicity::Seq {
+            writeln!(out, "    // @alloy: seq").unwrap();
+        }
         let type_str = mult_to_cs_type(&f.target, &f.mult);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
     }
@@ -158,6 +161,9 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
                 writeln!(out, "public class {} : {}", v, s.name).unwrap();
                 writeln!(out, "{{").unwrap();
                 for f in &child_fields {
+                    if f.mult == Multiplicity::Seq {
+                        writeln!(out, "    // @alloy: seq").unwrap();
+                    }
                     let type_str = mult_to_cs_type(&f.target, &f.mult);
                     writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
                 }

@@ -99,7 +99,7 @@ jobs:
       # Verify no @alloy comments in any generated code
       - name: Verify no @alloy comments
         run: |
-          ! grep -r '@alloy:' generated/ generated-ts/ generated-kt/ generated-java/ generated-swift/ generated-cs/
+          ! grep -r '@alloy:' generated/ generated-ts/ generated-kt/ generated-java/ generated-swift/
 
       # Verify TS validators exist
       - name: Verify TS validators

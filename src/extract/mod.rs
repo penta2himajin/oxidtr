@@ -4,6 +4,7 @@ pub mod kotlin_extractor;
 pub mod java_extractor;
 pub mod swift_extractor;
 pub mod go_extractor;
+pub mod csharp_extractor;
 pub mod schema_extractor;
 pub mod renderer;
 
@@ -23,6 +24,7 @@ pub fn detect_lang(path: &Path) -> Option<String> {
         if path.join("models.rs").exists() { return Some("rust".to_string()); }
         if path.join("Models.swift").exists() { return Some("swift".to_string()); }
         if path.join("models.go").exists() { return Some("go".to_string()); }
+        if path.join("Models.cs").exists() { return Some("csharp".to_string()); }
         if path.join("schemas.json").exists() { return Some("schema".to_string()); }
 
         // Scan for any matching extension
@@ -46,6 +48,7 @@ fn detect_lang_from_file(path: &Path) -> Option<String> {
         "java" => Some("java".to_string()),
         "swift" => Some("swift".to_string()),
         "go" => Some("go".to_string()),
+        "cs" => Some("csharp".to_string()),
         "json" => Some("schema".to_string()),
         _ => None,
     }
@@ -153,6 +156,9 @@ fn detect_all_langs(dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
 
     let go_files = collect_files(dir, "go");
     if !go_files.is_empty() { result.push(("go".to_string(), go_files)); }
+
+    let cs_files = collect_files(dir, "cs");
+    if !cs_files.is_empty() { result.push(("csharp".to_string(), cs_files)); }
 
     // JSON Schema as supplemental
     let schema_path = dir.join("schemas.json");
@@ -357,6 +363,7 @@ fn extract_with_lang(content: &str, lang: &str) -> Result<MinedModel, String> {
         "java" => Ok(java_extractor::extract(content)),
         "swift" => Ok(swift_extractor::extract(content)),
         "go" => Ok(go_extractor::extract(content)),
+        "csharp" | "cs" => Ok(csharp_extractor::extract(content)),
         "schema" | "json" => Ok(schema_extractor::extract(content)),
         other => Err(format!("unsupported language: {other}")),
     }
@@ -437,6 +444,8 @@ pub fn is_language_primitive(name: &str) -> bool {
         | "Int8" | "Int16" | "Int32" | "Int64"
         | "UInt" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
         | "Bool" | "Void" | "AnyObject" | "Never"
+        // C#
+        | "decimal" | "nint" | "nuint" | "dynamic"
         // Go
         | "int8" | "int16" | "int32" | "int64"
         | "uint" | "uint8" | "uint16" | "uint32" | "uint64"
