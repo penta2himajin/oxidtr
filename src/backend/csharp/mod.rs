@@ -317,6 +317,36 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         }
     }
 
+    // Anomaly fixtures
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if ctx.variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            writeln!(out, "    /// <summary>Anomaly fixture: all collections empty</summary>").unwrap();
+            writeln!(out, "    public static {sig_name} AnomalyEmpty{sig_name}() => new(").unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+                let upper = capitalize(&f.name);
+                let val = match &f.mult {
+                    Multiplicity::Set => format!("new HashSet<{}>(){}", f.target, comma),
+                    Multiplicity::Seq => format!("new List<{}>(){}", f.target, comma),
+                    _ => format!("{}{}", cs_default_value(&f.target, &f.mult), comma),
+                };
+                writeln!(out, "        {upper}: {val}").unwrap();
+            }
+            writeln!(out, "    );").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}}").unwrap();
     out
 }
@@ -382,6 +412,122 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    let has_fixture: HashSet<String> = ir.structures.iter()
+        .filter(|s| !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone())
+        .collect();
+
+    // --- Anomaly tests ---
+    let anomalies = analyze::detect_anomalies(ir);
+    if !anomalies.is_empty() {
+        writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        let mut anomaly_sigs: std::collections::HashMap<String, Vec<&analyze::AnomalyPattern>> = std::collections::HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        let upper = capitalize(field_name);
+                        writeln!(out, "    [Fact]").unwrap();
+                        writeln!(out, "    public void Anomaly_{sig_name}_{upper}_Unconstrained()").unwrap();
+                        writeln!(out, "    {{").unwrap();
+                        writeln!(out, "        var instance = Fixtures.Default{sig_name}();").unwrap();
+                        writeln!(out, "        Assert.NotNull(instance.{upper} as object);").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        let upper = capitalize(field_name);
+                        writeln!(out, "    [Fact]").unwrap();
+                        writeln!(out, "    public void Anomaly_{sig_name}_{upper}_Empty()").unwrap();
+                        writeln!(out, "    {{").unwrap();
+                        writeln!(out, "        var instance = Fixtures.AnomalyEmpty{sig_name}();").unwrap();
+                        writeln!(out, "        Assert.NotNull(instance.{upper});").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        let upper = capitalize(field_name);
+                        writeln!(out, "    [Fact]").unwrap();
+                        writeln!(out, "    public void Anomaly_{sig_name}_{upper}_SelfRef()").unwrap();
+                        writeln!(out, "    {{").unwrap();
+                        writeln!(out, "        var instance = Fixtures.Default{sig_name}();").unwrap();
+                        writeln!(out, "        // Self-referential without guard").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        let sig_names: HashSet<String> = ir.structures.iter().map(|s| s.name.clone()).collect();
+        let mut cover_names_seen: HashSet<String> = HashSet::new();
+        for pair in &coverage.pairwise {
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+            let snake_a = to_snake_case(&pair.fact_a);
+            let snake_b = to_snake_case(&pair.fact_b);
+            let test_name = format!("Cover_{snake_a}_x_{snake_b}");
+
+            // Skip duplicate test names (same fact pair from different sig perspectives)
+            if !cover_names_seen.insert(test_name.clone()) { continue; }
+
+            // Find the constraint nodes for both facts
+            let constraint_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a));
+            let constraint_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b));
+
+            let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
+
+            let body_a = expr_translator::translate_with_ir(&ca.expr, ir);
+            let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
+
+            // Extract all params from both facts to declare all needed variables
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let mut all_params: Vec<(String, String)> = Vec::new();
+            let mut param_names_seen: HashSet<String> = HashSet::new();
+            for (pname, tname) in params_a.iter().chain(params_b.iter()) {
+                if param_names_seen.insert(pname.clone()) {
+                    all_params.push((pname.clone(), tname.clone()));
+                }
+            }
+
+            writeln!(out, "    [Fact(Skip = \"pairwise coverage scaffold\")]").unwrap();
+            writeln!(out, "    public void {test_name}()").unwrap();
+            writeln!(out, "    {{").unwrap();
+            for (pname, tname) in &all_params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                } else {
+                    writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                }
+            }
+            writeln!(out, "        Assert.True({body_a});").unwrap();
+            writeln!(out, "        Assert.True({body_b});").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}}").unwrap();
     out
 }
@@ -410,5 +556,29 @@ fn to_camel_case(s: &str) -> String {
     match chars.next() {
         None => String::new(),
         Some(c) => c.to_lowercase().to_string() + chars.as_str(),
+    }
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_lowercase().next().unwrap());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn cs_default_value(target: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::One => format!("new {}()", target),
+        Multiplicity::Lone => "null".to_string(),
+        Multiplicity::Set => format!("new HashSet<{}>()", target),
+        Multiplicity::Seq => format!("new List<{}>()", target),
     }
 }

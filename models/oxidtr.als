@@ -301,6 +301,42 @@ sig Exhaustive {
 }
 
 -------------------------------------------------------------------------------
+-- Anomaly detection (AnomalyPattern variants)
+-------------------------------------------------------------------------------
+
+abstract sig AnomalyPattern {}
+
+sig UnconstrainedField extends AnomalyPattern {
+  ucfSig:   one StructureNode,
+  ucfField: one IRField
+}
+
+sig UnboundedCollection extends AnomalyPattern {
+  ubcSig:   one StructureNode,
+  ubcField: one IRField
+}
+
+sig UnguardedSelfRef extends AnomalyPattern {
+  usrSig:   one StructureNode,
+  usrField: one IRField
+}
+
+-------------------------------------------------------------------------------
+-- Fact coverage analysis
+-------------------------------------------------------------------------------
+
+sig PairwiseCoverage {
+  pcSig:   one StructureNode,
+  pcFactA: one ConstraintNode,
+  pcFactB: one ConstraintNode
+}
+
+sig FactCoverage {
+  fcPairwise:         set PairwiseCoverage,
+  fcUncoveredFields:  set IRField
+}
+
+-------------------------------------------------------------------------------
 -- Validated newtypes (Rust TryFrom wrappers for constrained sigs)
 -------------------------------------------------------------------------------
 

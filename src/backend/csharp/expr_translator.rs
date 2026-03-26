@@ -1,6 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
@@ -226,6 +226,51 @@ fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], transla
 
 fn needs_parens(expr: &Expr) -> bool {
     matches!(expr, Expr::Comparison { .. } | Expr::BinaryLogic { .. } | Expr::Quantifier { .. })
+}
+
+pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
+    let mut params = BTreeSet::new();
+    collect_params(expr, sig_names, &mut params);
+    params.into_iter().collect()
+}
+
+fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSet<(String, String)>) {
+    match expr {
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                if let Expr::VarRef(name) = &b.domain {
+                    if sig_names.contains(name) {
+                        params.insert((to_camel_plural(name), name.clone()));
+                    }
+                }
+                collect_params(&b.domain, sig_names, params);
+            }
+            collect_params(body, sig_names, params);
+        }
+        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_params(left, sig_names, params);
+            collect_params(right, sig_names, params);
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+            collect_params(inner, sig_names, params);
+        }
+        Expr::MultFormula { expr: inner, .. } => {
+            collect_params(inner, sig_names, params);
+        }
+        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
+        Expr::Prime(inner) => collect_params(inner, sig_names, params),
+        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_params(left, sig_names, params);
+            collect_params(right, sig_names, params);
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_params(r, sig_names, params); }
+            for arg in args { collect_params(arg, sig_names, params); }
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
+    }
 }
 
 fn to_camel_plural(name: &str) -> String {

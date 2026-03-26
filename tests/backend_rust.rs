@@ -620,3 +620,67 @@ fn abstract_sig_fields_propagated_to_enum_variants() {
     assert!(content.contains("Stopped {"),
         "Stopped should be a data variant (inherited field):\n{content}");
 }
+
+// --- Anomaly fixture and test generation ---
+
+#[test]
+fn rust_anomaly_empty_fixture_for_unbounded_set() {
+    let files = generate_from(r#"
+        sig Team { members: set User }
+        sig User {}
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    assert!(fixtures.contains("anomaly_empty_team"),
+        "should generate empty anomaly fixture for unbounded set:\n{fixtures}");
+}
+
+#[test]
+fn rust_anomaly_test_generated_for_unconstrained() {
+    let files = generate_from(r#"
+        sig User { name: one Name, age: one Int }
+        sig Name {}
+        fact AgePositive { all u: User | u.age >= 0 }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    // name is unconstrained → should generate anomaly test
+    assert!(tests.contains("anomaly_"),
+        "should generate anomaly tests:\n{tests}");
+}
+
+#[test]
+fn rust_no_anomaly_fixture_when_fully_constrained() {
+    // Every field is bounded and referenced by a fact
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        fact HasRole { all u: User | u.role = u.role }
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    assert!(!fixtures.contains("anomaly_empty_"),
+        "fully constrained should not have empty anomaly fixture:\n{fixtures}");
+}
+
+// --- Coverage test generation ---
+
+#[test]
+fn rust_coverage_pairwise_test_generated() {
+    let files = generate_from(r#"
+        sig Account { balance: one Int, limit: one Int }
+        fact NonNeg { all a: Account | a.balance >= 0 }
+        fact BelowLimit { all a: Account | a.balance <= a.limit }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(tests.contains("cover_"),
+        "should generate pairwise coverage tests:\n{tests}");
+}
+
+#[test]
+fn rust_no_coverage_test_for_single_fact() {
+    let files = generate_from(r#"
+        sig User { age: one Int }
+        fact MinAge { all u: User | u.age >= 0 }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(!tests.contains("cover_"),
+        "single fact should not generate pairwise test:\n{tests}");
+}

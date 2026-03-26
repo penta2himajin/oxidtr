@@ -461,6 +461,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let sig_names = expr_translator::collect_sig_names(ir);
     let lang = KotlinLang;
 
+    let enum_parents: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.is_enum)
+        .map(|s| s.name.clone()).collect();
+    let variant_names_set: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone()).collect();
+    let has_fixture: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone()).collect();
+
     writeln!(out, "import org.junit.jupiter.api.Test").unwrap();
     writeln!(out, "import org.junit.jupiter.api.Disabled").unwrap();
     writeln!(out, "import org.junit.jupiter.api.Assertions.*").unwrap();
@@ -769,6 +779,113 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
+    // --- Anomaly tests ---
+    let anomalies = analyze::detect_anomalies(ir);
+    if !anomalies.is_empty() {
+        writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        let mut anomaly_sigs: std::collections::HashMap<String, Vec<&analyze::AnomalyPattern>> = std::collections::HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        writeln!(out, "    @Test").unwrap();
+                        writeln!(out, "    fun `anomaly - {sig_name} {field_name} unconstrained`() {{").unwrap();
+                        writeln!(out, "        val instance = default{sig_name}()").unwrap();
+                        writeln!(out, "        instance.{field_name} // unconstrained field access").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        writeln!(out, "    @Test").unwrap();
+                        writeln!(out, "    fun `anomaly - {sig_name} {field_name} empty edge case`() {{").unwrap();
+                        writeln!(out, "        val instance = anomalyEmpty{sig_name}()").unwrap();
+                        writeln!(out, "        instance.{field_name} // empty edge case").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        writeln!(out, "    @Test").unwrap();
+                        writeln!(out, "    fun `anomaly - {sig_name} {field_name} self-ref unguarded`() {{").unwrap();
+                        writeln!(out, "        val instance = default{sig_name}()").unwrap();
+                        writeln!(out, "        instance.{field_name} // self-ref without guard").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        let mut seen_cover_names: HashSet<String> = HashSet::new();
+        for pair in &coverage.pairwise {
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+            let fact_a_snake = to_snake_case(&pair.fact_a);
+            let fact_b_snake = to_snake_case(&pair.fact_b);
+
+            let test_name = format!("cover {fact_a_snake} x {fact_b_snake}");
+            if !seen_cover_names.insert(test_name.clone()) { continue; }
+
+            let constraint_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a));
+            let constraint_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b));
+
+            let body_a = constraint_a
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir, &lang));
+            let body_b = constraint_b
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir, &lang));
+
+            // Collect params from both constraint expressions
+            let mut all_params: Vec<(String, String)> = Vec::new();
+            let mut param_names: HashSet<String> = HashSet::new();
+            if let Some(c) = constraint_a {
+                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                    if param_names.insert(p.0.clone()) {
+                        all_params.push(p);
+                    }
+                }
+            }
+            if let Some(c) = constraint_b {
+                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                    if param_names.insert(p.0.clone()) {
+                        all_params.push(p);
+                    }
+                }
+            }
+
+            writeln!(out, "    @Disabled").unwrap();
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    fun `{test_name}`() {{").unwrap();
+            for (pname, tname) in &all_params {
+                writeln!(out, "        val {pname}: List<{tname}> = listOf(default{tname}())").unwrap();
+            }
+            if let (Some(a), Some(b)) = (&body_a, &body_b) {
+                writeln!(out, "        assertTrue({a})").unwrap();
+                writeln!(out, "        assertTrue({b})").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}}").unwrap();
     out
 }
@@ -940,6 +1057,35 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         }
     }
 
+    // Anomaly fixtures
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if ctx.is_variant(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            writeln!(out, "/** Anomaly fixture: all collections empty */").unwrap();
+            writeln!(out, "fun anomalyEmpty{sig_name}(): {sig_name} = {sig_name}(").unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+                let val = match &f.mult {
+                    Multiplicity::Set => "emptySet()".to_string(),
+                    Multiplicity::Seq => "emptyList()".to_string(),
+                    _ => kt_default_value(&f.target, &f.mult),
+                };
+                writeln!(out, "    {} = {}{}", f.name, val, comma).unwrap();
+            }
+            writeln!(out, ")").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     out
 }
 
@@ -997,4 +1143,19 @@ fn kt_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &Hash
         }
         Multiplicity::One => format!("default{target}()"),
     }
+}
+
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_lowercase().next().unwrap());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }

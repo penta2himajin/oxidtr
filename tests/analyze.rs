@@ -937,3 +937,139 @@ fn find_temporal_binary_nested_in_quantifier() {
     let (op, _, _) = found.unwrap();
     assert_eq!(*op, oxidtr::parser::ast::TemporalBinaryOp::Until);
 }
+
+// --- Anomaly detection tests ---
+
+use oxidtr::analyze::AnomalyPattern;
+
+fn detect_from(input: &str) -> Vec<AnomalyPattern> {
+    let model = parser::parse(input).expect("parse");
+    let ir_data = ir::lower(&model).expect("lower");
+    analyze::detect_anomalies(&ir_data)
+}
+
+#[test]
+fn anomaly_unconstrained_field() {
+    let anomalies = detect_from(
+        "sig User { name: one String, role: one Role }\nsig Role {}\nsig String {}"
+    );
+    // name and role are not mentioned in any fact → both should be unconstrained
+    assert!(anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnconstrainedField { sig_name, field_name }
+        if sig_name == "User" && field_name == "name"
+    )), "name field should be detected as unconstrained");
+}
+
+#[test]
+fn anomaly_constrained_field_not_flagged() {
+    let anomalies = detect_from(
+        "sig User { role: one Role }\nsig Role {}\nfact HasRole { all u: User | u.role = u.role }"
+    );
+    // role is mentioned in a fact → should NOT be unconstrained
+    assert!(!anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnconstrainedField { sig_name, field_name }
+        if sig_name == "User" && field_name == "role"
+    )), "constrained field should not be flagged");
+}
+
+#[test]
+fn anomaly_unbounded_collection() {
+    let anomalies = detect_from(
+        "sig Team { members: set User }\nsig User {}"
+    );
+    // members is a set with no cardinality bound
+    assert!(anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnboundedCollection { sig_name, field_name }
+        if sig_name == "Team" && field_name == "members"
+    )), "set field without cardinality bound should be detected");
+}
+
+#[test]
+fn anomaly_bounded_collection_not_flagged() {
+    let anomalies = detect_from(
+        "sig Team { members: set User }\nsig User {}\nfact MaxMembers { all t: Team | #t.members <= 10 }"
+    );
+    assert!(!anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnboundedCollection { sig_name, field_name }
+        if sig_name == "Team" && field_name == "members"
+    )), "bounded collection should not be flagged");
+}
+
+#[test]
+fn anomaly_unguarded_self_ref() {
+    let anomalies = detect_from(
+        "sig Node { next: lone Node }"
+    );
+    // Self-referential without NoSelfRef or Acyclic
+    assert!(anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnguardedSelfRef { sig_name, field_name }
+        if sig_name == "Node" && field_name == "next"
+    )), "self-referential field without guard should be detected");
+}
+
+#[test]
+fn anomaly_guarded_self_ref_not_flagged() {
+    let anomalies = detect_from(
+        "sig Node { parent: lone Node }\nfact NoCycle { no n: Node | n in n.^parent }"
+    );
+    assert!(!anomalies.iter().any(|a| matches!(a,
+        AnomalyPattern::UnguardedSelfRef { sig_name, field_name }
+        if sig_name == "Node" && field_name == "parent"
+    )), "guarded self-ref should not be flagged");
+}
+
+// --- Fact coverage tests ---
+
+use oxidtr::analyze::FactCoverage;
+
+fn coverage_from(input: &str) -> FactCoverage {
+    let model = parser::parse(input).expect("parse");
+    let ir_data = ir::lower(&model).expect("lower");
+    analyze::fact_coverage(&ir_data)
+}
+
+#[test]
+fn coverage_sig_facts_mapping() {
+    let cov = coverage_from(
+        "sig User { age: one Int }\nfact MinAge { all u: User | u.age >= 0 }\nfact MaxAge { all u: User | u.age <= 200 }"
+    );
+    let user_facts = cov.sig_facts.get("User");
+    assert!(user_facts.is_some(), "User should have facts");
+    assert_eq!(user_facts.unwrap().len(), 2, "User should have 2 facts");
+}
+
+#[test]
+fn coverage_uncovered_fields() {
+    let cov = coverage_from(
+        "sig User { name: one String, age: one Int }\nsig String {}\nfact MinAge { all u: User | u.age >= 0 }"
+    );
+    // name is not referenced by any fact
+    assert!(cov.uncovered_fields.iter().any(|(s, f)| s == "User" && f == "name"),
+        "name should be uncovered");
+    // age IS referenced
+    assert!(!cov.uncovered_fields.iter().any(|(s, f)| s == "User" && f == "age"),
+        "age should be covered");
+}
+
+#[test]
+fn coverage_pairwise_facts() {
+    let cov = coverage_from(
+        "sig Account { balance: one Int, limit: one Int }\n\
+         fact NonNeg { all a: Account | a.balance >= 0 }\n\
+         fact BelowLimit { all a: Account | a.balance <= a.limit }"
+    );
+    // Two facts on same sig → should have pairwise combination
+    assert!(!cov.pairwise.is_empty(), "should generate pairwise combinations");
+    assert!(cov.pairwise.iter().any(|p| p.sig_name == "Account"),
+        "Account should have pairwise coverage");
+}
+
+#[test]
+fn coverage_no_pairwise_for_single_fact() {
+    let cov = coverage_from(
+        "sig User { age: one Int }\nfact MinAge { all u: User | u.age >= 0 }"
+    );
+    // Only one fact → no pairwise
+    assert!(cov.pairwise.iter().all(|p| p.sig_name != "User"),
+        "single fact should not generate pairwise");
+}
