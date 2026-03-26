@@ -266,6 +266,7 @@ one sig Swift      extends TargetLang {}
 one sig Kotlin     extends TargetLang {}
 one sig Java       extends TargetLang {}
 one sig Go         extends TargetLang {}
+one sig CSharp     extends TargetLang {}
 one sig TypeScript extends TargetLang {}
 
 -------------------------------------------------------------------------------

@@ -1,0 +1,250 @@
+use crate::parser::ast::*;
+use crate::ir::nodes::OxidtrIR;
+use std::collections::HashSet;
+
+pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
+    ir.structures.iter().map(|s| s.name.clone()).collect()
+}
+
+pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
+    let sig_names = collect_sig_names(ir);
+    translate_inner(expr, false, &sig_names, ir)
+}
+
+fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
+    for s in &ir.structures {
+        for f in &s.fields {
+            if f.name == field_name {
+                let is_self_ref = f.target == s.name;
+                return Some((f.mult.clone(), is_self_ref));
+            }
+        }
+    }
+    None
+}
+
+fn translate_inner(
+    expr: &Expr,
+    parens_if_complex: bool,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+) -> String {
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+
+    let result = match expr {
+        Expr::IntLiteral(n) => n.to_string(),
+
+        Expr::VarRef(name) => name.clone(),
+
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", ti(base, false), capitalize(field))
+        }
+
+        Expr::Cardinality(inner) => format!("{}.Count", ti(inner, false)),
+
+        Expr::TransitiveClosure(inner) => {
+            if let Expr::FieldAccess { base, field } = inner.as_ref() {
+                format!("Tc{}({})", capitalize(field), ti(base, false))
+            } else {
+                format!("TransitiveClosure({})", ti(inner, false))
+            }
+        }
+
+        Expr::Comparison { op, left, right } => {
+            match op {
+                CompareOp::Eq => format!("{} == {}", ti(left, false), ti(right, false)),
+                CompareOp::NotEq => format!("{} != {}", ti(left, false), ti(right, false)),
+                CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
+                CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
+                CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
+                CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
+                CompareOp::In => {
+                    let l = ti(left, false);
+                    if let Expr::FieldAccess { base, field } = right.as_ref() {
+                        let r_base = ti(base, false);
+                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
+                            return format!("{r_base}.{} == {l}", capitalize(field));
+                        }
+                    }
+                    let r = ti(right, false);
+                    format!("{r}.Contains({l})")
+                }
+            }
+        }
+
+        Expr::BinaryLogic { op, left, right } => match op {
+            LogicOp::And     => format!("{} && {}", ti(left, false), ti(right, false)),
+            LogicOp::Or      => format!("{} || {}", ti(left, false), ti(right, false)),
+            LogicOp::Implies => format!("!{} || {}", ti(left, true), ti(right, false)),
+            LogicOp::Iff     => format!("{} == {}", ti(left, true), ti(right, true)),
+        },
+
+        Expr::Not(inner) => format!("!{}", ti(inner, true)),
+
+        Expr::Quantifier { kind, bindings, body } => {
+            let b = ti(body, false);
+            build_nested_quantifier(kind, bindings, &b, sig_names, ir)
+        }
+
+        Expr::SetOp { op, left, right } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            match op {
+                SetOpKind::Union => format!("{l}.Union({r})"),
+                SetOpKind::Intersection => format!("{l}.Intersect({r})"),
+                SetOpKind::Difference => format!("{l}.Except({r})"),
+            }
+        }
+
+        Expr::Product { left, right } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            format!("({l}, {r})")
+        }
+
+        Expr::MultFormula { kind, expr: inner } => {
+            let translated = ti(inner, false);
+            match kind {
+                QuantKind::Some => format!("{translated} != null"),
+                QuantKind::No => format!("{translated} == null"),
+                _ => format!("{kind:?}({translated})"),
+            }
+        }
+
+        Expr::Prime(inner) => {
+            match inner.as_ref() {
+                Expr::FieldAccess { base, field } => {
+                    let base_str = ti(base, false);
+                    format!("{base_str}.Next{}", capitalize(field))
+                }
+                Expr::VarRef(name) => format!("next{}", capitalize(name)),
+                _ => format!("{}.Next()", ti(inner, false)),
+            }
+        }
+
+        Expr::TemporalUnary { expr: inner, .. } => ti(inner, false),
+        Expr::TemporalBinary { left, right, .. } => {
+            let l = ti(left, false);
+            let r = ti(right, false);
+            format!("{l} && {r}")
+        }
+
+        Expr::FunApp { name, receiver, args } => {
+            translate_fun_app(name, receiver.as_deref(), args, |e| ti(e, false))
+        }
+    };
+
+    if parens_if_complex && needs_parens(expr) {
+        format!("({result})")
+    } else {
+        result
+    }
+}
+
+fn build_nested_quantifier(
+    kind: &QuantKind,
+    bindings: &[QuantBinding],
+    body_str: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+) -> String {
+    let mut vars: Vec<(String, String, bool)> = Vec::new();
+    for b in bindings {
+        let d = if let Expr::VarRef(name) = &b.domain {
+            if sig_names.contains(name) { to_camel_plural(name) }
+            else { name.clone() }
+        } else {
+            translate_inner(&b.domain, false, sig_names, ir)
+        };
+        for v in &b.vars {
+            vars.push((v.clone(), d.clone(), b.disj));
+        }
+    }
+
+    let mut disj_checks = Vec::new();
+    let mut i = 0;
+    while i < vars.len() {
+        if vars[i].2 {
+            let domain = &vars[i].1;
+            let start = i;
+            while i < vars.len() && vars[i].2 && vars[i].1 == *domain { i += 1; }
+            for a in start..i {
+                for b_idx in (a+1)..i {
+                    disj_checks.push(format!("{} != {}", vars[a].0, vars[b_idx].0));
+                }
+            }
+        } else { i += 1; }
+    }
+
+    let guarded_body = if disj_checks.is_empty() {
+        body_str.to_string()
+    } else {
+        let guard = disj_checks.join(" && ");
+        match kind {
+            QuantKind::All | QuantKind::No => format!("(!({guard}) || ({body_str}))"),
+            QuantKind::Some => format!("{guard} && {body_str}"),
+        }
+    };
+
+    let mut result = guarded_body;
+    for idx in (0..vars.len()).rev() {
+        let (ref var, ref domain, _) = vars[idx];
+        result = match kind {
+            QuantKind::All => format!("{domain}.TrueForAll({var} => {body})", body = result),
+            QuantKind::Some => format!("{domain}.Exists({var} => {body})", body = result),
+            QuantKind::No => {
+                if idx == 0 {
+                    format!("!{domain}.Exists({var} => {body})", body = result)
+                } else {
+                    format!("{domain}.Exists({var} => {body})", body = result)
+                }
+            }
+        };
+    }
+    result
+}
+
+fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], translate: impl Fn(&Expr) -> String) -> String {
+    if let Some(recv) = receiver {
+        let op = match name {
+            "plus" | "add" => Some("+"),
+            "minus" | "sub" => Some("-"),
+            "mul" => Some("*"),
+            "div" => Some("/"),
+            "rem" => Some("%"),
+            _ => None,
+        };
+        if let (Some(op), Some(arg)) = (op, args.first()) {
+            return format!("{} {} {}", translate(recv), op, translate(arg));
+        }
+        let a: Vec<_> = args.iter().map(&translate).collect();
+        return format!("{}.{name}({})", translate(recv), a.join(", "));
+    }
+    let a: Vec<_> = args.iter().map(translate).collect();
+    format!("{name}({})", a.join(", "))
+}
+
+fn needs_parens(expr: &Expr) -> bool {
+    matches!(expr, Expr::Comparison { .. } | Expr::BinaryLogic { .. } | Expr::Quantifier { .. })
+}
+
+fn to_camel_plural(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if i == 0 {
+            out.push(c.to_lowercase().next().unwrap());
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('s');
+    out
+}
+
+pub fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        None => String::new(),
+        Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}

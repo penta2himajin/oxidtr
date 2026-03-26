@@ -7,6 +7,7 @@ use crate::backend::typescript::{TsTestRunner, TsBackendConfig};
 use crate::backend::jvm::{kotlin, java};
 use crate::backend::swift;
 use crate::backend::go;
+use crate::backend::csharp;
 use crate::backend::schema;
 use crate::analyze::guarantee::TargetLang;
 
@@ -148,6 +149,7 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
         "java" => java::generate(&ir),
         "swift" => swift::generate(&ir),
         "go" => go::generate(&ir),
+        "csharp" | "cs" => csharp::generate(&ir),
         other => {
             return Err(GenerateError::ParseError(parser::ParseError::InvalidSyntax {
                 message: format!("unsupported target: {other}"),

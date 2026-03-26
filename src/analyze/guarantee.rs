@@ -28,6 +28,7 @@ pub enum TargetLang {
     Kotlin,
     Java,
     Go,
+    CSharp,
     TypeScript,
 }
 
@@ -40,6 +41,7 @@ impl TargetLang {
             "kotlin" | "kt" => Some(TargetLang::Kotlin),
             "java" => Some(TargetLang::Java),
             "go" => Some(TargetLang::Go),
+            "csharp" | "cs" => Some(TargetLang::CSharp),
             "typescript" | "ts" => Some(TargetLang::TypeScript),
             _ => None,
         }
@@ -50,7 +52,7 @@ impl TargetLang {
         // All languages default off. Use --schema to enable.
         // TS round-trip tests use --schema for lossless cardinality recovery.
         match self {
-            TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::Go | TargetLang::TypeScript => false,
+            TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::Go | TargetLang::CSharp | TargetLang::TypeScript => false,
         }
     }
 }
@@ -70,7 +72,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         // Null safety via Option<T> (Rust) or T? (Kotlin)
         ConstraintInfo::Presence { kind: super::PresenceKind::Required, .. } => {
             match lang {
-                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
+                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::CSharp => Guarantee::FullyByType,
                 TargetLang::Java | TargetLang::Go => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
@@ -78,7 +80,7 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         // Absence (no sig.field) — same pattern
         ConstraintInfo::Presence { kind: super::PresenceKind::Absent, .. } => {
             match lang {
-                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin => Guarantee::FullyByType,
+                TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::CSharp => Guarantee::FullyByType,
                 TargetLang::Java | TargetLang::Go => Guarantee::PartiallyByType,
                 TargetLang::TypeScript => Guarantee::RequiresTest,
             }
@@ -136,7 +138,7 @@ pub fn has_type_guarantee(constraints: &[ConstraintInfo], lang: TargetLang, sig_
 /// Rust (match), Kotlin (when), Java (switch) → FullyByType. TS → RequiresTest.
 pub fn enum_exhaustiveness_guarantee(lang: TargetLang) -> Guarantee {
     match lang {
-        TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java => Guarantee::FullyByType,
+        TargetLang::Rust | TargetLang::Swift | TargetLang::Kotlin | TargetLang::Java | TargetLang::CSharp => Guarantee::FullyByType,
         TargetLang::Go | TargetLang::TypeScript => Guarantee::RequiresTest,
     }
 }
