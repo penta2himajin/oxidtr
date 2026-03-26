@@ -80,6 +80,7 @@ fn lower_pred(pred: &PredDecl) -> OperationNode {
 
     OperationNode {
         name: pred.name.clone(),
+        receiver_sig: None,
         params,
         return_type: None,
         body: pred.body.clone(),
@@ -99,6 +100,7 @@ fn lower_fun(fun: &FunDecl) -> OperationNode {
 
     OperationNode {
         name: fun.name.clone(),
+        receiver_sig: fun.receiver_sig.clone(),
         params,
         return_type: Some(IRReturnType {
             mult: fun.return_mult.clone(),

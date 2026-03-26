@@ -110,7 +110,31 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → extension functions
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            let params = op.params.iter().map(|p| {
+                let type_str = kt_return_type(&p.type_name, &p.mult);
+                format!("{}: {type_str}", p.name)
+            }).collect::<Vec<_>>().join(", ");
+
+            let return_str = match &op.return_type {
+                Some(rt) => format!(": {}", kt_return_type(&rt.type_name, &rt.mult)),
+                None => String::new(),
+            };
+
+            writeln!(out, "fun {sig}.{}({params}){return_str} {{", op.name).unwrap();
+            writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
 }
 
 fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fields: &[(String, String)]) {
@@ -415,6 +439,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
     for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let params = op.params.iter()
             .map(|p| {
                 let type_str = match p.mult {

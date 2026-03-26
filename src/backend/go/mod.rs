@@ -155,7 +155,32 @@ fn generate_models(ir: &OxidtrIR, ctx: &GoContext) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → methods
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            let fn_name = expr_translator::capitalize(&op.name);
+            let params = op.params.iter().map(|p| {
+                let type_str = go_return_type(&p.type_name, &p.mult);
+                format!("{} {type_str}", p.name)
+            }).collect::<Vec<_>>().join(", ");
+
+            let return_str = match &op.return_type {
+                Some(rt) => format!(" {}", go_return_type(&rt.type_name, &rt.mult)),
+                None => String::new(),
+            };
+
+            writeln!(out, "func (s *{sig}) {fn_name}({params}){return_str} {{").unwrap();
+            writeln!(out, "\tpanic(\"oxidtr: implement {}\")", op.name).unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
 }
 
 fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoContext, disj_fields: &[(String, String)]) {
@@ -407,6 +432,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out).unwrap();
 
     for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let params = op.params.iter()
             .map(|p| {
                 let type_str = match p.mult {

@@ -228,3 +228,15 @@ fn swift_test_generates_disjoint_check() {
     assert!(tests.contains("isDisjoint") || tests.contains("intersection"),
         "test should check disjoint using set operations:\n{tests}");
 }
+
+// ── Derived fields (fun Sig.name → computed property) ───────────────────────
+
+#[test]
+fn swift_derived_field_generates_computed_property() {
+    let files = generate_swift(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "Models.swift");
+    assert!(models.contains("var balance: Int"), "should generate computed property:\n{models}");
+}

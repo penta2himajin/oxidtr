@@ -89,7 +89,47 @@ fn generate_models(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out).unwrap();
     }
 
+    // Derived fields: receiver functions → extension methods / partial classes
+    generate_derived_fields(&mut out, ir);
+
     out
+}
+
+fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
+    use std::collections::HashMap;
+    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            by_sig.entry(sig.clone()).or_default().push(op);
+        }
+    }
+
+    for (sig_name, ops) in &by_sig {
+        writeln!(out, "public static class {sig_name}Extensions").unwrap();
+        writeln!(out, "{{").unwrap();
+        for op in ops {
+            let return_type = match &op.return_type {
+                Some(rt) => mult_to_cs_type(&rt.type_name, &rt.mult),
+                None => "void".to_string(),
+            };
+
+            if op.params.is_empty() {
+                // No params → extension property (C# uses method for this)
+                writeln!(out, "    public static {return_type} {} => throw new NotImplementedException(\"oxidtr: implement {}\");", capitalize(&op.name), op.name).unwrap();
+            } else {
+                let params = op.params.iter().map(|p| {
+                    let type_str = mult_to_cs_type(&p.type_name, &p.mult);
+                    format!("{type_str} {}", to_camel_case(&p.name))
+                }).collect::<Vec<_>>().join(", ");
+                writeln!(out, "    public static {return_type} {}(this {sig_name} self, {params})", capitalize(&op.name)).unwrap();
+                writeln!(out, "    {{").unwrap();
+                writeln!(out, "        throw new NotImplementedException(\"oxidtr: implement {}\");", op.name).unwrap();
+                writeln!(out, "    }}").unwrap();
+            }
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
 }
 
 fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsContext) {
@@ -224,6 +264,9 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out, "{{").unwrap();
 
     for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
         let params = op.params.iter()
             .map(|p| {
                 let type_str = mult_to_cs_type(&p.type_name, &p.mult);

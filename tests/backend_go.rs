@@ -229,3 +229,15 @@ fn go_test_generates_disjoint_check() {
     assert!(tests.contains("NoOverlap"),
         "test should generate a test for the disjoint fact:\n{tests}");
 }
+
+// ── Derived fields (fun Sig.name → method) ──────────────────────────────────
+
+#[test]
+fn go_derived_field_generates_method() {
+    let files = generate_go(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "models.go");
+    assert!(models.contains("func (s *Account) Balance()"), "should generate method:\n{models}");
+}

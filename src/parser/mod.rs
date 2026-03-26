@@ -297,7 +297,16 @@ impl<'a> Parser<'a> {
 
     fn parse_fun(&mut self) -> Result<FunDecl, ParseError> {
         self.expect(&Token::Fun)?;
-        let name = self.expect_ident()?;
+        let first_ident = self.expect_ident()?;
+
+        // Check for receiver syntax: `fun Sig.name`
+        let (receiver_sig, name) = if self.peek() == Token::Dot {
+            self.next(); // consume dot
+            let method_name = self.expect_ident()?;
+            (Some(first_ident), method_name)
+        } else {
+            (None, first_ident)
+        };
 
         let mut params = Vec::new();
         if self.peek() == Token::LBracket {
@@ -320,7 +329,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_expr()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(FunDecl { name, params, return_mult, return_type, body })
+        Ok(FunDecl { name, receiver_sig, params, return_mult, return_type, body })
     }
 
     fn parse_param(&mut self) -> Result<ParamDecl, ParseError> {

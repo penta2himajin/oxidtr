@@ -684,3 +684,39 @@ fn rust_no_coverage_test_for_single_fact() {
     assert!(!tests.contains("cover_"),
         "single fact should not generate pairwise test:\n{tests}");
 }
+
+// ── Derived fields (fun Sig.name → impl method) ────────────────────────────
+
+#[test]
+fn rust_derived_field_generates_impl_method() {
+    let files = generate_from(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("impl Account"), "should generate impl block:\n{models}");
+    assert!(models.contains("fn balance(&self) -> Int"), "should generate method:\n{models}");
+}
+
+#[test]
+fn rust_derived_field_with_params() {
+    let files = generate_from(r#"
+        sig Account { items: set Item }
+        sig Item {}
+        fun Account.hasItem[i: one Item]: one Int { i in this.items }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("impl Account"), "should generate impl block:\n{models}");
+    assert!(models.contains("fn has_item(&self"), "should generate method with params:\n{models}");
+}
+
+#[test]
+fn rust_non_receiver_fun_still_in_operations() {
+    let files = generate_from(r#"
+        sig User {}
+        sig Role {}
+        fun getRole[u: one User]: one Role { u }
+    "#);
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("fn get_role("), "non-receiver fun should remain in operations.rs:\n{ops}");
+}

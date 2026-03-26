@@ -556,3 +556,25 @@ fn java_constructor_generates_disjoint_check() {
     assert!(models.contains("must not overlap"),
         "constructor should check disjoint constraint:\n{models}");
 }
+
+// ── Derived fields (fun Sig.name → method) ──────────────────────────────────
+
+#[test]
+fn kotlin_derived_field_generates_method() {
+    let files = generate_kt(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "Models.kt");
+    assert!(models.contains("fun Account.balance()"), "should generate extension function:\n{models}");
+}
+
+#[test]
+fn java_derived_field_generates_method() {
+    let files = generate_java(r#"
+        sig Account { deposits: set Int }
+        fun Account.balance: one Int { #this.deposits }
+    "#);
+    let models = find_file(&files, "Models.java");
+    assert!(models.contains("Int balance("), "should generate method on derived class:\n{models}");
+}
