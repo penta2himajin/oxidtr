@@ -988,6 +988,14 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 }
             }
         }
+        // Check if this constraint contains an Exhaustive pattern
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Exhaustive { sig_name, .. } = c {
+                if !sig_name.is_empty() {
+                    newtype_pairs.push((fact_name.clone(), sig_name.clone()));
+                }
+            }
+        }
     }
 
     if newtype_pairs.is_empty() {
@@ -1204,15 +1212,14 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
-        // Exhaustive checks
+        // Exhaustive checks — validate_exhaustive helper generated below
         for c in &all_constraints {
             if let analyze::ConstraintInfo::Exhaustive { sig_name: s, categories } = c {
                 if s == sig_name {
                     let cats = categories.join(", ");
+                    let fn_name = format!("validate_exhaustive_{}", to_snake_case(sig_name));
                     writeln!(out, "        // Exhaustive: must belong to one of [{cats}]").unwrap();
-                    writeln!(out, "        // (cross-sig membership — checked at integration level)").unwrap();
-                    writeln!(out, "        // To enable: pass category collections and verify membership").unwrap();
-                    writeln!(out, "        // must belong to one of [{cats}]").unwrap();
+                    writeln!(out, "        // Call {fn_name}(&value, &[...]) at integration level").unwrap();
                 }
             }
         }
@@ -1239,6 +1246,27 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         writeln!(out, "    }}").unwrap();
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
+    }
+
+    // Generate standalone validate_exhaustive functions for cross-sig membership
+    let all_constraints_final = analyze::analyze(ir);
+    let mut seen_exhaustive = HashSet::new();
+    for c in &all_constraints_final {
+        if let analyze::ConstraintInfo::Exhaustive { sig_name, categories } = c {
+            if seen_exhaustive.insert(sig_name.clone()) {
+                let fn_name = format!("validate_exhaustive_{}", to_snake_case(sig_name));
+                let cats = categories.join(", ");
+                writeln!(out, "/// Validates exhaustive constraint: must belong to one of [{cats}]").unwrap();
+                writeln!(out, "pub fn {fn_name}(item: &{sig_name}, categories: &[&std::collections::BTreeSet<{sig_name}>]) -> Result<(), &'static str> {{").unwrap();
+                writeln!(out, "    if categories.iter().any(|cat| cat.contains(item)) {{").unwrap();
+                writeln!(out, "        Ok(())").unwrap();
+                writeln!(out, "    }} else {{").unwrap();
+                writeln!(out, "        Err(\"must belong to one of [{cats}]\")").unwrap();
+                writeln!(out, "    }}").unwrap();
+                writeln!(out, "}}").unwrap();
+                writeln!(out).unwrap();
+            }
+        }
     }
 
     out

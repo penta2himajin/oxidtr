@@ -180,9 +180,9 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Implication: TS validator（translate_validator_expr） / Kotlin・Java コメント
 - Iff / Prohibition: TS validator（translate_validator_expr）
 
-**検出済みだがコード生成がコメント止まり:**
-- Disjoint (`no (A & B)`): TSコメント出力のみ。switch/matchの排他性チェック生成が可能
-- Exhaustive (`all x | x in A or x in B or ...`): TSコメント出力のみ。switch/matchのdefault: never型チェック、Rustのunreachable!()アーム生成が可能
+**実装済み（全7言語でバリデーションコード生成）:**
+- Disjoint (`no (A & B)`): Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Exhaustive (`all x | x in A or x in B or ...`): Rust validate_exhaustive関数 / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
 
 **パーサー拡張済み・活用余地あり:**
 - `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。solidionのドメインモデルでimpliesパターンの記述が可能に

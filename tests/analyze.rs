@@ -776,6 +776,9 @@ fn rust_exhaustive_generates_tryfrom_check() {
     let content = &newtypes.unwrap().content;
     assert!(content.contains("must belong to"),
         "Rust should generate exhaustive validation in newtypes:\n{}", content);
+    // Must generate actual validation code, not just a comment
+    assert!(content.contains("validate_exhaustive") || content.contains("Err(\""),
+        "Rust should generate actual exhaustive validation code, not just a comment:\n{}", content);
 }
 
 #[test]
@@ -787,8 +790,9 @@ fn kotlin_exhaustive_generates_require_check() {
     let ir_val = ir::lower(&model).unwrap();
     let files = oxidtr::backend::jvm::kotlin::generate(&ir_val);
     let models = files.iter().find(|f| f.path == "Models.kt").unwrap();
-    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
-        "Kotlin should generate exhaustive validation:\n{}", models.content);
+    // Must generate actual require() check, not just a comment
+    assert!(models.content.contains("require(") && models.content.contains("must belong to"),
+        "Kotlin should generate actual require() exhaustive validation, not just comment:\n{}", models.content);
 }
 
 #[test]
@@ -800,32 +804,83 @@ fn java_exhaustive_generates_constructor_check() {
     let ir_val = ir::lower(&model).unwrap();
     let files = oxidtr::backend::jvm::java::generate(&ir_val);
     let models = files.iter().find(|f| f.path == "Models.java").unwrap();
-    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
-        "Java should generate exhaustive validation:\n{}", models.content);
+    // Must generate actual throw check, not just a comment
+    assert!(models.content.contains("throw") && models.content.contains("must belong to"),
+        "Java should generate actual constructor exhaustive validation, not just comment:\n{}", models.content);
 }
 
 #[test]
-fn swift_exhaustive_generates_doc_comment() {
+fn swift_exhaustive_generates_validate_method() {
     let model = parser::parse(
         "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
     ).unwrap();
     let ir_val = ir::lower(&model).unwrap();
     let files = oxidtr::backend::swift::generate(&ir_val);
     let models = files.iter().find(|f| f.path.contains("Models")).unwrap();
-    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
-        "Swift should generate exhaustive doc comment:\n{}", models.content);
+    // Must generate actual validation code, not just a doc comment
+    assert!(models.content.contains("func validate") && models.content.contains("must belong to"),
+        "Swift should generate validate() method with exhaustive check:\n{}", models.content);
 }
 
 #[test]
-fn go_exhaustive_generates_doc_comment() {
+fn go_exhaustive_generates_validate_func() {
     let model = parser::parse(
         "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
     ).unwrap();
     let ir_val = ir::lower(&model).unwrap();
     let files = oxidtr::backend::go::generate(&ir_val);
     let models = files.iter().find(|f| f.path.contains("models")).unwrap();
-    assert!(models.content.contains("exhaustive") || models.content.contains("must belong to"),
-        "Go should generate exhaustive doc comment:\n{}", models.content);
+    // Must generate actual validation code, not just a doc comment
+    assert!(models.content.contains("Validate") && models.content.contains("must belong to"),
+        "Go should generate Validate() function with exhaustive check:\n{}", models.content);
+}
+
+#[test]
+fn swift_validate_generates_disjoint_check() {
+    let model = parser::parse(
+        "sig Schedule { morning: set Task, evening: set Task }\nsig Task {}\nfact NoOverlap { no (Schedule.morning & Schedule.evening) }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::swift::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("Models")).unwrap();
+    assert!(models.content.contains("func validate") && models.content.contains("must not overlap"),
+        "Swift should generate validate() method with disjoint check:\n{}", models.content);
+}
+
+#[test]
+fn go_validate_generates_disjoint_check() {
+    let model = parser::parse(
+        "sig Schedule { morning: set Task, evening: set Task }\nsig Task {}\nfact NoOverlap { no (Schedule.morning & Schedule.evening) }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::go::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("models")).unwrap();
+    assert!(models.content.contains("Validate") && models.content.contains("must not overlap"),
+        "Go should generate Validate() function with disjoint check:\n{}", models.content);
+}
+
+#[test]
+fn csharp_generates_disjoint_check() {
+    let model = parser::parse(
+        "sig Schedule { morning: set Task, evening: set Task }\nsig Task {}\nfact NoOverlap { no (Schedule.morning & Schedule.evening) }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::csharp::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("Models")).unwrap();
+    assert!(models.content.contains("must not overlap"),
+        "C# should generate disjoint validation:\n{}", models.content);
+}
+
+#[test]
+fn csharp_generates_exhaustive_check() {
+    let model = parser::parse(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\nsig Premium extends Category {}\nsig Budget extends Category {}\nfact Cover { all i: Item | i in Premium.items or i in Budget.items }"
+    ).unwrap();
+    let ir_val = ir::lower(&model).unwrap();
+    let files = oxidtr::backend::csharp::generate(&ir_val);
+    let models = files.iter().find(|f| f.path.contains("Models")).unwrap();
+    assert!(models.content.contains("must belong to"),
+        "C# should generate exhaustive validation:\n{}", models.content);
 }
 
 #[test]

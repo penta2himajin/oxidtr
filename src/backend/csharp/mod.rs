@@ -125,6 +125,46 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         let type_str = mult_to_cs_type(&f.target, &f.mult);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
     }
+
+    // Generate Validate() method for Disjoint and Exhaustive constraints
+    let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+    let has_validation = sig_constraints.iter().any(|c| matches!(c,
+        analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
+    ));
+    if has_validation {
+        writeln!(out).unwrap();
+        writeln!(out, "    public List<string> Validate()").unwrap();
+        writeln!(out, "    {{").unwrap();
+        writeln!(out, "        var errors = new List<string>();").unwrap();
+        for c in &sig_constraints {
+            match c {
+                analyze::ConstraintInfo::Disjoint { left, right, .. } => {
+                    let left_field = capitalize(left.rsplit('.').next().unwrap_or(left));
+                    let right_field = capitalize(right.rsplit('.').next().unwrap_or(right));
+                    writeln!(out, "        if ({left_field}.Any(e => {right_field}.Contains(e)))").unwrap();
+                    writeln!(out, "            errors.Add(\"{left_field} and {right_field} must not overlap (disjoint constraint)\");").unwrap();
+                }
+                analyze::ConstraintInfo::Exhaustive { categories, .. } => {
+                    let cats = categories.join(", ");
+                    let checks: Vec<String> = categories.iter().map(|cat| {
+                        let parts: Vec<&str> = cat.split('.').collect();
+                        if parts.len() == 2 {
+                            format!("{}.{}.Contains(this)", parts[0], capitalize(parts[1]))
+                        } else {
+                            format!("{cat}.Contains(this)")
+                        }
+                    }).collect();
+                    let condition = checks.join(" || ");
+                    writeln!(out, "        if (!({condition}))").unwrap();
+                    writeln!(out, "            errors.Add(\"must belong to one of [{cats}] (exhaustive constraint)\");").unwrap();
+                }
+                _ => {}
+            }
+        }
+        writeln!(out, "        return errors;").unwrap();
+        writeln!(out, "    }}").unwrap();
+    }
+
     writeln!(out, "}}").unwrap();
 }
 

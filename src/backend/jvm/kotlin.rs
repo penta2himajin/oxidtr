@@ -249,7 +249,16 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                 }
                 analyze::ConstraintInfo::Exhaustive { categories, .. } => {
                     let cats = categories.join(", ");
-                    init_checks.push(format!("// exhaustive: must belong to one of [{cats}]"));
+                    let checks: Vec<String> = categories.iter().map(|cat| {
+                        let parts: Vec<&str> = cat.split('.').collect();
+                        if parts.len() == 2 {
+                            format!("this in {}.{}", parts[0], parts[1])
+                        } else {
+                            format!("this in {cat}")
+                        }
+                    }).collect();
+                    let condition = checks.join(" || ");
+                    init_checks.push(format!("require({condition}) {{ \"must belong to one of [{cats}] (exhaustive constraint)\" }}"));
                 }
                 _ => {}
             }
