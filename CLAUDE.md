@@ -33,6 +33,7 @@ mise exec rust -- cargo run -- generate models/oxidtr.als --target kt --output g
 mise exec rust -- cargo run -- generate models/oxidtr.als --target java --output generated-java
 mise exec rust -- cargo run -- generate models/oxidtr.als --target swift --output generated-swift
 mise exec rust -- cargo run -- generate models/oxidtr.als --target go --output generated-go
+mise exec rust -- cargo run -- generate models/oxidtr.als --target cs --output generated-cs
 mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated
 mise exec rust -- cargo run -- extract generated/
 mise exec rust -- cargo run -- extract src/ --lang rust
@@ -61,6 +62,7 @@ src/
     jvm/            共通JVM層 + Kotlin/Java backends + expr_translator
     swift/          Swift backend + expr_translator
     go/             Go backend + expr_translator
+    csharp/         C# backend + expr_translator
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
   check/            構造的整合性検証 (differ, impl_parser)
@@ -79,7 +81,7 @@ src/
 - **モデルが唯一の信頼源** — 型・テスト・検証は全てAlloyモデルから導出
 - **保証の総量は一定** — 型が強い言語はテスト減、弱い言語はテスト増
 - **最小依存** — oxidtr自身がAlloyモデルでセルフホスト可能であること
-- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整 (Rust > Swift ≈ Kotlin > Go ≈ Java > TypeScript)
+- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整 (Rust > Swift ≈ Kotlin ≈ C# > Go ≈ Java > TypeScript)
 
 ## 開発ワークフロー
 
@@ -124,7 +126,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `parser_sig`, `parser_expr` | Alloyパーサー |
 | `lowering` | AST→IR変換 |
 | `expr_translator` | 式変換 (Rust, prime/temporal含む) |
-| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go` | 各言語コード生成 |
+| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp` | 各言語コード生成 |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `check` | 構造的整合性検証 (var field差分検出含む) |
@@ -159,7 +161,8 @@ cargo run -- extract generated/ -o /tmp/mined.als
 
 主要な未実装:
 - Phase 8: Go backend ✅ (完了)
-- Phase 9-10: C# / Lean backends
+- Phase 9: C# backend ✅ (完了)
+- Phase 10: Lean backend
 - Phase 11: Alloy 6 時相パーサー ✅ (完了: var field, prime operator, temporal unary operators)
 - Phase 12-13: Alloy 6 時相コード生成 ✅ (完了: prime式変換, temporal invariant/transition validators, var field check差分検出)
 - explore: Alloyインスタンス異常パターン検出
