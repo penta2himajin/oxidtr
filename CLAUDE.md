@@ -173,20 +173,19 @@ cargo run -- extract generated/ -o /tmp/mined.als
 
 現在の実装状況と残課題:
 
-**実装済み（テスト生成 + ランタイム検証コード）:**
-- NoSelfRef: Rust TryFrom / TS validator / Kotlin・Java注釈
-- Acyclic: Rust TryFrom（チェーン走査） / TS validator（Setベース）
-- Disj一意性: Rust TryFrom（HashSet） / TS validator（Set.size）
-- FieldOrdering: Rust TryFrom / TS validator / Kotlin init block / Java compact constructor
-- Implication: TS validator（translate_validator_expr） / Kotlin・Java コメント
-- Iff / Prohibition: TS validator（translate_validator_expr）
-
 **実装済み（全7言語でバリデーションコード生成）:**
+- NoSelfRef: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Acyclic: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Disj一意性: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- FieldOrdering: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Implication: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Iff: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
+- Prohibition: Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
 - Disjoint (`no (A & B)`): Rust TryFrom / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
 - Exhaustive (`all x | x in A or x in B or ...`): Rust validate_exhaustive関数 / TS validator / Kotlin require / Java constructor / Swift validate() / Go Validate() / C# Validate()
 
-**パーサー拡張済み・活用余地あり:**
-- `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。solidionのドメインモデルでimpliesパターンの記述が可能に
+**パーサー拡張済み:**
+- `some expr`/`no expr`フォーミュラ: パーサーとexpr_translatorは対応済み。各バックエンドのtranslate_validator_exprでnull/nil/None判定に変換
 
 **Alloy 6 時相式（実装済み）:**
 - Prime (`x'`): 全バックエンドで `next_x` パラメータ付き遷移関数として変換
