@@ -38,6 +38,8 @@ jobs:
         run: cargo run -- generate models/oxidtr.als --target java --output generated-java
       - name: Generate Swift
         run: cargo run -- generate models/oxidtr.als --target swift --output generated-swift
+      - name: Generate C#
+        run: cargo run -- generate models/oxidtr.als --target cs --output generated-cs
 
       # Check structural consistency (all targets)
       - name: Check Rust
@@ -50,6 +52,8 @@ jobs:
         run: cargo run -- check --model models/oxidtr.als --impl generated-java
       - name: Check Swift
         run: cargo run -- check --model models/oxidtr.als --impl generated-swift
+      - name: Check C#
+        run: cargo run -- check --model models/oxidtr.als --impl generated-cs
 
       # Extract round-trip (each language → Alloy)
       - name: Extract Rust back to Alloy
@@ -62,6 +66,8 @@ jobs:
         run: cargo run -- extract generated-java/ -o /tmp/mined-java.als
       - name: Extract Swift back to Alloy
         run: cargo run -- extract generated-swift/ -o /tmp/mined-swift.als
+      - name: Extract C# back to Alloy
+        run: cargo run -- extract generated-cs/ -o /tmp/mined-cs.als
 
       # Verify enrichment (no invariants, no @alloy comments)
       - name: Verify enriched output
@@ -72,6 +78,7 @@ jobs:
           grep -q 'static ' generated-java/Fixtures.java
           grep -q '@NotNull' generated-java/Models.java
           grep -q 'func default' generated-swift/Fixtures.swift
+          grep -q 'public static' generated-cs/Fixtures.cs
 
       # Verify no invariants files (removed by design)
       - name: Verify no invariants files
@@ -81,6 +88,7 @@ jobs:
           test ! -f generated-kt/Invariants.kt
           test ! -f generated-java/Invariants.java
           test ! -f generated-swift/Invariants.swift
+          test ! -f generated-cs/Invariants.cs
 
       # Verify helpers (TC functions) exist where needed
       - name: Verify helpers files
