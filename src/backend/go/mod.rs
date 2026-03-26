@@ -860,6 +860,95 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
+    // --- Anomaly tests ---
+    let anomalies = analyze::detect_anomalies(ir);
+    if !anomalies.is_empty() {
+        writeln!(out, "// --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        let has_fixture: HashSet<String> = ir.structures.iter()
+            .filter(|s| !s.fields.is_empty() && !s.is_enum)
+            .map(|s| s.name.clone())
+            .collect();
+
+        let mut anomaly_sigs: HashMap<String, Vec<&analyze::AnomalyPattern>> = HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        let upper = expr_translator::capitalize(field_name);
+                        writeln!(out, "func TestAnomaly_{sig_name}_{upper}_Unconstrained(t *testing.T) {{").unwrap();
+                        writeln!(out, "\tinstance := Default{sig_name}()").unwrap();
+                        writeln!(out, "\t_ = instance.{upper}").unwrap();
+                        writeln!(out, "}}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        let upper = expr_translator::capitalize(field_name);
+                        writeln!(out, "func TestAnomaly_{sig_name}_{upper}_Empty(t *testing.T) {{").unwrap();
+                        writeln!(out, "\tinstance := AnomalyEmpty{sig_name}()").unwrap();
+                        writeln!(out, "\t_ = instance.{upper}").unwrap();
+                        writeln!(out, "}}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        let upper = expr_translator::capitalize(field_name);
+                        writeln!(out, "func TestAnomaly_{sig_name}_{upper}_SelfRef(t *testing.T) {{").unwrap();
+                        writeln!(out, "\tinstance := Default{sig_name}()").unwrap();
+                        writeln!(out, "\t_ = instance.{upper}").unwrap();
+                        writeln!(out, "}}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "// --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        let has_fixture: HashSet<String> = ir.structures.iter()
+            .filter(|s| !s.fields.is_empty() && !s.is_enum)
+            .map(|s| s.name.clone())
+            .collect();
+
+        for pair in &coverage.pairwise {
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+            let snake_a = to_snake_case(&pair.fact_a);
+            let snake_b = to_snake_case(&pair.fact_b);
+
+            let body_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            let body_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+
+            writeln!(out, "func TestCover_{snake_a}_x_{snake_b}(t *testing.T) {{").unwrap();
+            writeln!(out, "\t{snake_a}s := []{}{{{{{}}}}}", pair.sig_name, format!("Default{}()", pair.sig_name)).unwrap();
+            if let (Some(a), Some(b)) = (&body_a, &body_b) {
+                writeln!(out, "\tif !({a}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_a).unwrap();
+                writeln!(out, "\tif !({b}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_b).unwrap();
+            }
+            writeln!(out, "\t_ = {snake_a}s").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     out
 }
 
@@ -977,6 +1066,36 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                     go_default_value(&f.target, &f.mult)
                 };
                 writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
+            }
+            writeln!(out, "\t}}").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
+    // Anomaly fixtures
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: HashSet<String> = HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if ctx.variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            writeln!(out, "// AnomalyEmpty{sig_name} creates a {sig_name} with all collections empty.").unwrap();
+            writeln!(out, "func AnomalyEmpty{sig_name}() {sig_name} {{").unwrap();
+            writeln!(out, "\treturn {sig_name}{{").unwrap();
+            for f in &s.fields {
+                let val = match &f.mult {
+                    Multiplicity::Set | Multiplicity::Seq => "nil".to_string(),
+                    _ => go_default_value(&f.target, &f.mult),
+                };
+                let upper = expr_translator::capitalize(&f.name);
+                writeln!(out, "\t\t{upper}: {},", val).unwrap();
             }
             writeln!(out, "\t}}").unwrap();
             writeln!(out, "}}").unwrap();

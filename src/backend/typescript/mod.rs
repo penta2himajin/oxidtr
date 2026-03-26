@@ -775,6 +775,80 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         }
     }
 
+    // --- Anomaly tests ---
+    let anomalies = analyze::detect_anomalies(ir);
+    if !anomalies.is_empty() {
+        writeln!(out, "  // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        let mut anomaly_sigs: std::collections::HashMap<String, Vec<&analyze::AnomalyPattern>> = std::collections::HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        writeln!(out, "  it('anomaly: {sig_name}.{field_name} is unconstrained', () => {{").unwrap();
+                        writeln!(out, "    const instance = fix.default{sig_name}();").unwrap();
+                        writeln!(out, "    expect(instance.{field_name}).toBeDefined();").unwrap();
+                        writeln!(out, "  }});").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        writeln!(out, "  it('anomaly: {sig_name}.{field_name} empty edge case', () => {{").unwrap();
+                        writeln!(out, "    const instance = fix.anomalyEmpty{sig_name}();").unwrap();
+                        writeln!(out, "    expect(instance.{field_name}).toBeDefined();").unwrap();
+                        writeln!(out, "  }});").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        writeln!(out, "  it('anomaly: {sig_name}.{field_name} self-referential without guard', () => {{").unwrap();
+                        writeln!(out, "    const instance = fix.default{sig_name}();").unwrap();
+                        writeln!(out, "    expect(instance.{field_name}).toBeDefined();").unwrap();
+                        writeln!(out, "  }});").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests: pairwise fact combinations ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "  // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        for pair in &coverage.pairwise {
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+            let camel = to_camel_case(&pair.sig_name);
+
+            let body_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            let body_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+
+            writeln!(out, "  it('cover: {} × {}', () => {{", pair.fact_a, pair.fact_b).unwrap();
+            writeln!(out, "    const {camel}s: M.{}[] = [fix.default{}()];", pair.sig_name, pair.sig_name).unwrap();
+            if let (Some(a), Some(b)) = (&body_a, &body_b) {
+                writeln!(out, "    expect({a}).toBe(true);").unwrap();
+                writeln!(out, "    expect({b}).toBe(true);").unwrap();
+            }
+            writeln!(out, "  }});").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}});").unwrap();
 
     out
@@ -954,6 +1028,40 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                     }
                 } else {
                     ts_default_value(&f.target, &f.mult)
+                };
+                writeln!(out, "    {}: {},", f.name, val).unwrap();
+            }
+            writeln!(out, "  }};").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
+    // Anomaly fixtures: empty collections for unbounded set/seq fields
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            writeln!(out, "/** Anomaly fixture: all collections empty (edge case) */").unwrap();
+            writeln!(out, "export function anomalyEmpty{}(): M.{} {{", sig_name, sig_name).unwrap();
+            writeln!(out, "  return {{").unwrap();
+            for f in &s.fields {
+                let val = if f.value_type.is_some() {
+                    "new Map()".to_string()
+                } else {
+                    match &f.mult {
+                        Multiplicity::Set => "new Set()".to_string(),
+                        Multiplicity::Seq => "[]".to_string(),
+                        _ => ts_default_value(&f.target, &f.mult),
+                    }
                 };
                 writeln!(out, "    {}: {},", f.name, val).unwrap();
             }

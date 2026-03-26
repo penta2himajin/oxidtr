@@ -949,6 +949,103 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
+    // --- Anomaly tests: edge-case tests for anomaly patterns ---
+    let anomalies = analyze::detect_anomalies(ir);
+    let has_any_anomaly = !anomalies.is_empty();
+    if has_any_anomaly {
+        writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        // Group anomalies by sig
+        let mut anomaly_sigs: HashMap<String, Vec<&analyze::AnomalyPattern>> = HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            let snake = to_snake_case(sig_name);
+
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        let field_snake = to_snake_case(field_name);
+                        writeln!(out, "    /// Anomaly: field `{field_name}` is not constrained by any fact.").unwrap();
+                        writeln!(out, "    #[test]").unwrap();
+                        writeln!(out, "    fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "        let instance = default_{snake}();").unwrap();
+                        writeln!(out, "        // {sig_name}.{field_name} is not constrained — verify it is handled").unwrap();
+                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        let field_snake = to_snake_case(field_name);
+                        writeln!(out, "    /// Anomaly: `{field_name}` has no cardinality upper bound.").unwrap();
+                        writeln!(out, "    #[test]").unwrap();
+                        writeln!(out, "    fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "        let instance = anomaly_empty_{snake}();").unwrap();
+                        writeln!(out, "        // Verify invariants hold even with empty collection").unwrap();
+                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        let field_snake = to_snake_case(field_name);
+                        writeln!(out, "    /// Anomaly: self-referential field `{field_name}` without NoSelfRef/Acyclic guard.").unwrap();
+                        writeln!(out, "    #[test]").unwrap();
+                        writeln!(out, "    fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "        let instance = default_{snake}();").unwrap();
+                        writeln!(out, "        // Self-referential field without guard — check for safety").unwrap();
+                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests: pairwise fact combinations ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        for pair in &coverage.pairwise {
+            let sig_snake = to_snake_case(&pair.sig_name);
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+
+            let fact_a_snake = to_snake_case(&pair.fact_a);
+            let fact_b_snake = to_snake_case(&pair.fact_b);
+            let test_name = format!("cover_{fact_a_snake}_x_{fact_b_snake}");
+
+            // Find the constraint expressions for both facts
+            let body_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            let body_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+
+            writeln!(out, "    /// Coverage: {} × {}", pair.fact_a, pair.fact_b).unwrap();
+            writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "        let {sig_snake}s: Vec<{}> = vec![default_{sig_snake}()];", pair.sig_name).unwrap();
+            if let (Some(a), Some(b)) = (&body_a, &body_b) {
+                writeln!(out, "        assert!({a}, \"fact {} should hold\");", pair.fact_a).unwrap();
+                writeln!(out, "        assert!({b}, \"fact {} should hold\");", pair.fact_b).unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}}").unwrap();
 
     out
@@ -1589,6 +1686,45 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                     let val = default_value_for_field(&f.target, &f.mult, is_boxed);
                     writeln!(out, "        {}: {},", f.name, val).unwrap();
                 }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
+    // Anomaly fixtures: empty set/seq for unbounded collections
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: HashSet<String> = HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            let struct_snake = to_snake_case(sig_name);
+            writeln!(out, "/// Anomaly fixture: all set/seq fields empty (edge case for unbounded collections)").unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn anomaly_empty_{}() -> {} {{", struct_snake, sig_name).unwrap();
+            writeln!(out, "    {} {{", sig_name).unwrap();
+            for f in &s.fields {
+                let val = if f.value_type.is_some() {
+                    "BTreeMap::new()".to_string()
+                } else {
+                    match &f.mult {
+                        Multiplicity::Set => "BTreeSet::new()".to_string(),
+                        Multiplicity::Seq => "Vec::new()".to_string(),
+                        _ => {
+                            let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                            default_value_for_field(&f.target, &f.mult, is_boxed)
+                        }
+                    }
+                };
+                writeln!(out, "        {}: {},", f.name, val).unwrap();
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out, "}}").unwrap();

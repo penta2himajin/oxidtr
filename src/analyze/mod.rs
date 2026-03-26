@@ -5,6 +5,7 @@ pub mod guarantee;
 
 use crate::parser::ast::*;
 use crate::ir::nodes::*;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// A structured constraint extracted from an Alloy fact expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1132,6 +1133,310 @@ fn collect_set_ops_in_body(
         }
         _ => {}
     }
+}
+
+// --- Anomaly detection ---
+
+/// An anomaly pattern detected in the model that warrants edge-case testing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AnomalyPattern {
+    /// Field not referenced by any fact — unconstrained.
+    UnconstrainedField { sig_name: String, field_name: String },
+    /// Set/seq field with no cardinality upper bound — potentially unbounded growth.
+    UnboundedCollection { sig_name: String, field_name: String },
+    /// Self-referential field (target == sig or transitive) without NoSelfRef or Acyclic guard.
+    UnguardedSelfRef { sig_name: String, field_name: String },
+}
+
+/// Detect anomaly patterns in the IR that warrant edge-case testing.
+pub fn detect_anomalies(ir: &OxidtrIR) -> Vec<AnomalyPattern> {
+    let mut results = Vec::new();
+    let all_constraints = analyze(ir);
+
+    // Collect all (sig, field) pairs referenced by any constraint
+    let mut constrained_fields: HashSet<(String, String)> = HashSet::new();
+    for c in &ir.constraints {
+        collect_referenced_fields(&c.expr, &mut constrained_fields);
+    }
+
+    // Collect self-ref guards (NoSelfRef or Acyclic)
+    let mut guarded_self_refs: HashSet<(String, String)> = HashSet::new();
+    for c in &all_constraints {
+        match c {
+            ConstraintInfo::NoSelfRef { sig_name, field_name }
+            | ConstraintInfo::Acyclic { sig_name, field_name } => {
+                guarded_self_refs.insert((sig_name.clone(), field_name.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    // Collect fields with cardinality upper bounds
+    let mut bounded_fields: HashSet<(String, String)> = HashSet::new();
+    for c in &all_constraints {
+        if let ConstraintInfo::CardinalityBound { sig_name, field_name, bound } = c {
+            if matches!(bound, BoundKind::Exact(_) | BoundKind::AtMost(_)) {
+                bounded_fields.insert((sig_name.clone(), field_name.clone()));
+            }
+        }
+    }
+
+    // Build sig name set and parent→children map for excluding enum variants
+    let enum_parents: HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.as_str()).collect();
+    let variant_names: HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p.as_str())))
+        .map(|s| s.name.as_str()).collect();
+
+    // Build a map from sig name to whether it's a "real" self-ref target
+    // (considering inheritance: if a field targets the sig itself, or a child/parent)
+    let sig_names: HashSet<&str> = ir.structures.iter().map(|s| s.name.as_str()).collect();
+
+    for s in &ir.structures {
+        if s.is_enum || variant_names.contains(s.name.as_str()) { continue; }
+
+        for f in &s.fields {
+            let key = (s.name.clone(), f.name.clone());
+
+            // 1. Unconstrained field
+            if !constrained_fields.contains(&key) {
+                results.push(AnomalyPattern::UnconstrainedField {
+                    sig_name: s.name.clone(),
+                    field_name: f.name.clone(),
+                });
+            }
+
+            // 2. Unbounded collection
+            if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
+                && !bounded_fields.contains(&key)
+            {
+                results.push(AnomalyPattern::UnboundedCollection {
+                    sig_name: s.name.clone(),
+                    field_name: f.name.clone(),
+                });
+            }
+
+            // 3. Unguarded self-reference
+            if f.target == s.name && !guarded_self_refs.contains(&key) && sig_names.contains(f.target.as_str()) {
+                results.push(AnomalyPattern::UnguardedSelfRef {
+                    sig_name: s.name.clone(),
+                    field_name: f.name.clone(),
+                });
+            }
+        }
+    }
+
+    results
+}
+
+/// Collect all (sig_name, field_name) pairs referenced in a constraint expression.
+fn collect_referenced_fields(expr: &Expr, fields: &mut HashSet<(String, String)>) {
+    match expr {
+        Expr::Quantifier { kind: QuantKind::All, bindings, body } => {
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                if let Expr::VarRef(sig_name) = &bindings[0].domain {
+                    let var = &bindings[0].vars[0];
+                    collect_field_refs_in_body(body, sig_name, var, fields);
+                }
+            }
+            // Also recurse into body for nested quantifiers
+            collect_referenced_fields(body, fields);
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            if bindings.len() == 1 && bindings[0].vars.len() == 1 {
+                if let Expr::VarRef(sig_name) = &bindings[0].domain {
+                    let var = &bindings[0].vars[0];
+                    collect_field_refs_in_body(body, sig_name, var, fields);
+                }
+            }
+            collect_referenced_fields(body, fields);
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            collect_referenced_fields(left, fields);
+            collect_referenced_fields(right, fields);
+        }
+        Expr::Not(inner) | Expr::MultFormula { expr: inner, .. } => {
+            collect_referenced_fields(inner, fields);
+        }
+        Expr::TemporalUnary { expr: inner, .. } => {
+            collect_referenced_fields(inner, fields);
+        }
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_referenced_fields(left, fields);
+            collect_referenced_fields(right, fields);
+        }
+        _ => {}
+    }
+}
+
+/// Collect field references in the body of a quantifier `all var: sig_name | body`.
+fn collect_field_refs_in_body(
+    expr: &Expr,
+    sig_name: &str,
+    var: &str,
+    fields: &mut HashSet<(String, String)>,
+) {
+    match expr {
+        Expr::FieldAccess { base, field } => {
+            if let Expr::VarRef(v) = base.as_ref() {
+                if v == var {
+                    fields.insert((sig_name.to_string(), field.clone()));
+                }
+            }
+            collect_field_refs_in_body(base, sig_name, var, fields);
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_field_refs_in_body(left, sig_name, var, fields);
+            collect_field_refs_in_body(right, sig_name, var, fields);
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::Prime(inner) => {
+            collect_field_refs_in_body(inner, sig_name, var, fields);
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                collect_field_refs_in_body(&b.domain, sig_name, var, fields);
+            }
+            collect_field_refs_in_body(body, sig_name, var, fields);
+        }
+        Expr::TemporalUnary { expr: inner, .. } => {
+            collect_field_refs_in_body(inner, sig_name, var, fields);
+        }
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_field_refs_in_body(left, sig_name, var, fields);
+            collect_field_refs_in_body(right, sig_name, var, fields);
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                collect_field_refs_in_body(r, sig_name, var, fields);
+            }
+            for arg in args {
+                collect_field_refs_in_body(arg, sig_name, var, fields);
+            }
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
+    }
+}
+
+// --- Fact coverage analysis ---
+
+/// A pairwise combination of facts constraining the same sig.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairwiseCoverage {
+    pub sig_name: String,
+    pub fact_a: String,
+    pub fact_b: String,
+}
+
+/// Fact coverage analysis result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactCoverage {
+    /// For each sig, the names of facts that constrain it.
+    pub sig_facts: BTreeMap<String, Vec<String>>,
+    /// (sig, field) pairs not referenced by any fact.
+    pub uncovered_fields: Vec<(String, String)>,
+    /// Pairwise fact combinations for sigs with ≥2 facts.
+    pub pairwise: Vec<PairwiseCoverage>,
+}
+
+/// Analyze fact coverage across the IR.
+pub fn fact_coverage(ir: &OxidtrIR) -> FactCoverage {
+    let mut sig_facts: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    // Map each named fact to the sigs it constrains
+    for c in &ir.constraints {
+        let fact_name = match &c.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+        let sigs = referenced_sigs_in_expr(&c.expr);
+        for sig in sigs {
+            sig_facts.entry(sig).or_default().insert(fact_name.clone());
+        }
+    }
+
+    // Convert BTreeSet to Vec
+    let sig_facts_vec: BTreeMap<String, Vec<String>> = sig_facts.iter()
+        .map(|(k, v)| (k.clone(), v.iter().cloned().collect()))
+        .collect();
+
+    // Uncovered fields: fields not referenced by any constraint
+    let mut constrained_fields: HashSet<(String, String)> = HashSet::new();
+    for c in &ir.constraints {
+        collect_referenced_fields(&c.expr, &mut constrained_fields);
+    }
+
+    let enum_parents: HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.as_str()).collect();
+    let variant_names: HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p.as_str())))
+        .map(|s| s.name.as_str()).collect();
+
+    let mut uncovered_fields = Vec::new();
+    for s in &ir.structures {
+        if s.is_enum || variant_names.contains(s.name.as_str()) { continue; }
+        for f in &s.fields {
+            if !constrained_fields.contains(&(s.name.clone(), f.name.clone())) {
+                uncovered_fields.push((s.name.clone(), f.name.clone()));
+            }
+        }
+    }
+
+    // Pairwise combinations for sigs with ≥2 facts
+    let mut pairwise = Vec::new();
+    for (sig, facts) in &sig_facts_vec {
+        if facts.len() >= 2 {
+            for i in 0..facts.len() {
+                for j in (i + 1)..facts.len() {
+                    pairwise.push(PairwiseCoverage {
+                        sig_name: sig.clone(),
+                        fact_a: facts[i].clone(),
+                        fact_b: facts[j].clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    FactCoverage {
+        sig_facts: sig_facts_vec,
+        uncovered_fields,
+        pairwise,
+    }
+}
+
+/// Extract sig names referenced in a constraint expression (via quantifier domains).
+fn referenced_sigs_in_expr(expr: &Expr) -> Vec<String> {
+    let mut sigs = Vec::new();
+    match expr {
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                if let Expr::VarRef(name) = &b.domain {
+                    sigs.push(name.clone());
+                }
+            }
+            sigs.extend(referenced_sigs_in_expr(body));
+        }
+        Expr::TemporalUnary { expr: inner, .. } => {
+            sigs.extend(referenced_sigs_in_expr(inner));
+        }
+        Expr::TemporalBinary { left, right, .. } => {
+            sigs.extend(referenced_sigs_in_expr(left));
+            sigs.extend(referenced_sigs_in_expr(right));
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            sigs.extend(referenced_sigs_in_expr(left));
+            sigs.extend(referenced_sigs_in_expr(right));
+        }
+        Expr::Not(inner) | Expr::MultFormula { expr: inner, .. } => {
+            sigs.extend(referenced_sigs_in_expr(inner));
+        }
+        _ => {}
+    }
+    sigs.sort();
+    sigs.dedup();
+    sigs
 }
 
 fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {

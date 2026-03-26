@@ -743,6 +743,90 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
+    // --- Anomaly tests ---
+    let anomalies = analyze::detect_anomalies(ir);
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.is_some())
+        .map(|s| s.name.clone()).collect();
+    let has_fixture: HashSet<String> = ir.structures.iter()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .map(|s| s.name.clone()).collect();
+    if !anomalies.is_empty() {
+        writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out).unwrap();
+
+        let mut anomaly_sigs: std::collections::HashMap<String, Vec<&analyze::AnomalyPattern>> = std::collections::HashMap::new();
+        for a in &anomalies {
+            let sig = match a {
+                analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } => sig_name,
+                analyze::AnomalyPattern::UnguardedSelfRef { sig_name, .. } => sig_name,
+            };
+            anomaly_sigs.entry(sig.clone()).or_default().push(a);
+        }
+
+        for (sig_name, patterns) in &anomaly_sigs {
+            if !has_fixture.contains(sig_name) { continue; }
+            let snake = to_snake_case(sig_name);
+            for pattern in patterns {
+                match pattern {
+                    analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
+                        writeln!(out, "    func testAnomaly_{snake}_{field_name}_unconstrained() {{").unwrap();
+                        writeln!(out, "        let instance = Fixtures.default{sig_name}()").unwrap();
+                        writeln!(out, "        _ = instance.{field_name}").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
+                        writeln!(out, "    func testAnomaly_{snake}_{field_name}_empty() {{").unwrap();
+                        writeln!(out, "        let instance = Fixtures.anomalyEmpty{sig_name}()").unwrap();
+                        writeln!(out, "        _ = instance.{field_name}").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                    analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
+                        writeln!(out, "    func testAnomaly_{snake}_{field_name}_selfRef() {{").unwrap();
+                        writeln!(out, "        let instance = Fixtures.default{sig_name}()").unwrap();
+                        writeln!(out, "        _ = instance.{field_name}").unwrap();
+                        writeln!(out, "    }}").unwrap();
+                        writeln!(out).unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Coverage tests ---
+    let coverage = analyze::fact_coverage(ir);
+    if !coverage.pairwise.is_empty() {
+        writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out).unwrap();
+
+        for pair in &coverage.pairwise {
+            if !has_fixture.contains(&pair.sig_name) { continue; }
+            let snake = to_snake_case(&pair.sig_name);
+            let fact_a_snake = to_snake_case(&pair.fact_a);
+            let fact_b_snake = to_snake_case(&pair.fact_b);
+
+            let body_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            let body_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
+                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+
+            let sig_name = &pair.sig_name;
+            writeln!(out, "    func testCover_{fact_a_snake}_x_{fact_b_snake}() {{").unwrap();
+            writeln!(out, "        let {snake}s: [{}] = [Fixtures.default{sig_name}()]", pair.sig_name).unwrap();
+            if let (Some(a), Some(b)) = (&body_a, &body_b) {
+                writeln!(out, "        XCTAssertTrue({a})").unwrap();
+                writeln!(out, "        XCTAssertTrue({b})").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     writeln!(out, "}}").unwrap();
     out
 }
@@ -876,6 +960,38 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
                     swift_default_value(&f.target, &f.mult)
                 };
                 writeln!(out, "        {}: {val}{comma}", to_swift_field_name(&f.name)).unwrap();
+            }
+            writeln!(out, "    )").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
+    // Anomaly fixtures
+    let anomalies = analyze::detect_anomalies(ir);
+    let mut anomaly_sigs_done: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for anomaly in &anomalies {
+        if let analyze::AnomalyPattern::UnboundedCollection { sig_name, .. } = anomaly {
+            if anomaly_sigs_done.contains(sig_name) { continue; }
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if ctx.is_variant(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+            anomaly_sigs_done.insert(sig_name.clone());
+
+            let _snake = to_snake_case(sig_name);
+            writeln!(out, "/// Anomaly fixture: all collections empty").unwrap();
+            writeln!(out, "static func anomalyEmpty{sig_name}() -> {sig_name} {{").unwrap();
+            writeln!(out, "    {sig_name}(").unwrap();
+            for (i, f) in s.fields.iter().enumerate() {
+                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+                let val = match &f.mult {
+                    Multiplicity::Set => "Set()".to_string(),
+                    Multiplicity::Seq => "[]".to_string(),
+                    _ => swift_default_value(&f.target, &f.mult),
+                };
+                writeln!(out, "        {}: {}{}", f.name, val, comma).unwrap();
             }
             writeln!(out, "    )").unwrap();
             writeln!(out, "}}").unwrap();

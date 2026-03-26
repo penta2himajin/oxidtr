@@ -324,6 +324,30 @@ sig MinMax extends BeanValidation {
   mmFact: one SigDecl
 }
 
+abstract sig AnomalyPattern {}
+sig UnconstrainedField extends AnomalyPattern {
+  ucSigName:   one SigDecl,
+  ucFieldName: one SigDecl
+}
+sig UnboundedCollection extends AnomalyPattern {
+  ubSigName:   one SigDecl,
+  ubFieldName: one SigDecl
+}
+sig UnguardedSelfRef extends AnomalyPattern {
+  usSigName:   one SigDecl,
+  usFieldName: one SigDecl
+}
+
+sig PairwiseCoverage {
+  pcSigName: one SigDecl,
+  pcFactA:   one SigDecl,
+  pcFactB:   one SigDecl
+}
+
+sig FactCoverage {
+  pairwise: set PairwiseCoverage
+}
+
 -------------------------------------------------------------------------------
 -- Internal structural facts
 -------------------------------------------------------------------------------
@@ -348,6 +372,7 @@ fact MergeResultConflictsCardinality { all mr: MergeResult | #mr.conflicts = #mr
 fact ExtractedImplCardinality { all ei: ExtractedImpl | #ei.exStructs = #ei.exStructs }
 fact ExtractedImplFnsCardinality { all ei: ExtractedImpl | #ei.exFns = #ei.exFns }
 fact ExtractedStructFieldsCardinality { all es: ExtractedStruct | #es.exStructFields = #es.exStructFields }
+fact FactCoveragePairwiseCardinality { all fc: FactCoverage | #fc.pairwise = #fc.pairwise }
 
 -------------------------------------------------------------------------------
 -- Safety assertions
