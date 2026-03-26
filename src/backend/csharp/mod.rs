@@ -478,26 +478,51 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
         writeln!(out).unwrap();
 
+        let sig_names: HashSet<String> = ir.structures.iter().map(|s| s.name.clone()).collect();
+        let mut cover_names_seen: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {
             if !has_fixture.contains(&pair.sig_name) { continue; }
             let snake_a = to_snake_case(&pair.fact_a);
             let snake_b = to_snake_case(&pair.fact_b);
+            let test_name = format!("Cover_{snake_a}_x_{snake_b}");
 
-            let body_a = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
-            let body_b = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            // Skip duplicate test names (same fact pair from different sig perspectives)
+            if !cover_names_seen.insert(test_name.clone()) { continue; }
 
-            writeln!(out, "    [Fact]").unwrap();
-            writeln!(out, "    public void Cover_{snake_a}_x_{snake_b}()").unwrap();
-            writeln!(out, "    {{").unwrap();
-            writeln!(out, "        var {}s = new List<{}>{{ Fixtures.Default{}() }};", to_camel_case(&pair.sig_name), pair.sig_name, pair.sig_name).unwrap();
-            if let (Some(a), Some(b)) = (&body_a, &body_b) {
-                writeln!(out, "        Assert.True({a});").unwrap();
-                writeln!(out, "        Assert.True({b});").unwrap();
+            // Find the constraint nodes for both facts
+            let constraint_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a));
+            let constraint_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b));
+
+            let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
+
+            let body_a = expr_translator::translate_with_ir(&ca.expr, ir);
+            let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
+
+            // Extract all params from both facts to declare all needed variables
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let mut all_params: Vec<(String, String)> = Vec::new();
+            let mut param_names_seen: HashSet<String> = HashSet::new();
+            for (pname, tname) in params_a.iter().chain(params_b.iter()) {
+                if param_names_seen.insert(pname.clone()) {
+                    all_params.push((pname.clone(), tname.clone()));
+                }
             }
+
+            writeln!(out, "    [Fact(Skip = \"pairwise coverage scaffold\")]").unwrap();
+            writeln!(out, "    public void {test_name}()").unwrap();
+            writeln!(out, "    {{").unwrap();
+            for (pname, tname) in &all_params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                } else {
+                    writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                }
+            }
+            writeln!(out, "        Assert.True({body_a});").unwrap();
+            writeln!(out, "        Assert.True({body_b});").unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         }

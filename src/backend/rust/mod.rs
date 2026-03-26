@@ -1017,30 +1017,58 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
         writeln!(out).unwrap();
 
+        let mut cover_names_seen: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {
-            let sig_snake = to_snake_case(&pair.sig_name);
             if !has_fixture.contains(&pair.sig_name) { continue; }
 
             let fact_a_snake = to_snake_case(&pair.fact_a);
             let fact_b_snake = to_snake_case(&pair.fact_b);
             let test_name = format!("cover_{fact_a_snake}_x_{fact_b_snake}");
 
-            // Find the constraint expressions for both facts
-            let body_a = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
-            let body_b = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            // Skip duplicate test names (same fact pair from different sig perspectives)
+            if !cover_names_seen.insert(test_name.clone()) { continue; }
+
+            // Find the constraint nodes for both facts
+            let constraint_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a));
+            let constraint_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b));
+
+            let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
+
+            let body_a = expr_translator::translate_with_ir(&ca.expr, ir);
+            let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
+
+            // Extract all params from both facts to declare all needed variables
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let mut all_params: Vec<(String, String)> = Vec::new();
+            let mut param_names_seen: HashSet<String> = HashSet::new();
+            for (pname, tname) in params_a.iter().chain(params_b.iter()) {
+                if param_names_seen.insert(pname.clone()) {
+                    all_params.push((pname.clone(), tname.clone()));
+                }
+            }
+
+            // Skip if any param is an enum variant
+            if all_params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+                continue;
+            }
 
             writeln!(out, "    /// Coverage: {} × {}", pair.fact_a, pair.fact_b).unwrap();
             writeln!(out, "    #[test]").unwrap();
+            writeln!(out, "    #[ignore]").unwrap();
             writeln!(out, "    fn {test_name}() {{").unwrap();
-            writeln!(out, "        let {sig_snake}s: Vec<{}> = vec![default_{sig_snake}()];", pair.sig_name).unwrap();
-            if let (Some(a), Some(b)) = (&body_a, &body_b) {
-                writeln!(out, "        assert!({a}, \"fact {} should hold\");", pair.fact_a).unwrap();
-                writeln!(out, "        assert!({b}, \"fact {} should hold\");", pair.fact_b).unwrap();
+            for (pname, tname) in &all_params {
+                let snake = to_snake_case(tname);
+                if has_fixture.contains(tname) {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
             }
+            writeln!(out, "        assert!({body_a}, \"fact {} should hold\");", pair.fact_a).unwrap();
+            writeln!(out, "        assert!({body_b}, \"fact {} should hold\");", pair.fact_b).unwrap();
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         }

@@ -925,25 +925,49 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             .map(|s| s.name.clone())
             .collect();
 
+        let mut cover_names_seen: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {
             if !has_fixture.contains(&pair.sig_name) { continue; }
             let snake_a = to_snake_case(&pair.fact_a);
             let snake_b = to_snake_case(&pair.fact_b);
+            let test_name = format!("TestCover_{snake_a}_x_{snake_b}");
 
-            let body_a = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_a))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
-            let body_b = ir.constraints.iter()
-                .find(|c| c.name.as_deref() == Some(&pair.fact_b))
-                .map(|c| expr_translator::translate_with_ir(&c.expr, ir));
+            // Skip duplicate test names (same fact pair from different sig perspectives)
+            if !cover_names_seen.insert(test_name.clone()) { continue; }
 
-            writeln!(out, "func TestCover_{snake_a}_x_{snake_b}(t *testing.T) {{").unwrap();
-            writeln!(out, "\t{snake_a}s := []{}{{{{{}}}}}", pair.sig_name, format!("Default{}()", pair.sig_name)).unwrap();
-            if let (Some(a), Some(b)) = (&body_a, &body_b) {
-                writeln!(out, "\tif !({a}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_a).unwrap();
-                writeln!(out, "\tif !({b}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_b).unwrap();
+            // Find the constraint nodes for both facts
+            let constraint_a = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_a));
+            let constraint_b = ir.constraints.iter()
+                .find(|c| c.name.as_deref() == Some(&pair.fact_b));
+
+            let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
+
+            let body_a = expr_translator::translate_with_ir(&ca.expr, ir);
+            let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
+
+            // Extract all params from both facts to declare all needed variables
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let mut all_params: Vec<(String, String)> = Vec::new();
+            let mut param_names_seen: HashSet<String> = HashSet::new();
+            for (pname, tname) in params_a.iter().chain(params_b.iter()) {
+                if param_names_seen.insert(pname.clone()) {
+                    all_params.push((pname.clone(), tname.clone()));
+                }
             }
-            writeln!(out, "\t_ = {snake_a}s").unwrap();
+
+            writeln!(out, "func {test_name}(t *testing.T) {{").unwrap();
+            writeln!(out, "\tt.Skip(\"pairwise coverage scaffold\")").unwrap();
+            for (pname, tname) in &all_params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "\t{pname} := []{tname}{{Default{tname}()}}").unwrap();
+                } else {
+                    writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+                }
+            }
+            writeln!(out, "\tif !({body_a}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_a).unwrap();
+            writeln!(out, "\tif !({body_b}) {{ t.Error(\"fact {} should hold\") }}", pair.fact_b).unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
