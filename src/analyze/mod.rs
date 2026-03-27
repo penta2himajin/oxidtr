@@ -431,31 +431,45 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                 }
             }
         }
-        // no s: Sig | ... → Acyclic or Prohibition
+        // no s: Sig | ... → Acyclic, NoSelfRef, or Prohibition
         Expr::Quantifier { kind: QuantKind::No, bindings, body } => {
             if bindings.len() == 1 && bindings[0].vars.len() == 1 {
                 let var = &bindings[0].vars[0];
                 let domain = &bindings[0].domain;
                 if let Expr::VarRef(sig_name) = domain {
-                    let mut is_acyclic = false;
-                    // s in s.^field → Acyclic
+                    let mut is_specialized = false;
                     if let Expr::Comparison { op: CompareOp::In, left, right } = body.as_ref() {
                         if let Expr::VarRef(v) = left.as_ref() {
                             if v == var {
+                                // s in s.^field → Acyclic
                                 if let Expr::TransitiveClosure(inner) = right.as_ref() {
                                     if let Expr::FieldAccess { field, .. } = inner.as_ref() {
                                         results.push(ConstraintInfo::Acyclic {
                                             sig_name: sig_name.clone(),
                                             field_name: field.clone(),
                                         });
-                                        is_acyclic = true;
+                                        is_specialized = true;
+                                    }
+                                }
+                                // s in s.field → NoSelfRef
+                                if !is_specialized {
+                                    if let Expr::FieldAccess { base, field } = right.as_ref() {
+                                        if let Expr::VarRef(base_var) = base.as_ref() {
+                                            if base_var == var {
+                                                results.push(ConstraintInfo::NoSelfRef {
+                                                    sig_name: sig_name.clone(),
+                                                    field_name: field.clone(),
+                                                });
+                                                is_specialized = true;
+                                            }
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                     // Other no-quantifier patterns → Prohibition
-                    if !is_acyclic {
+                    if !is_specialized {
                         results.push(ConstraintInfo::Prohibition {
                             sig_name: sig_name.clone(),
                             condition: substitute_var(body, var, sig_name),

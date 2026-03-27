@@ -92,14 +92,20 @@ fn collect_struct_fields(
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
+        // Track depth before processing the line
+        let depth_before = depth;
         for ch in trimmed.chars() {
             match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
         }
         if depth == 0 { break; }
 
-        // "let name: Type" or "var name: Type"
-        if let Some(field) = parse_swift_property(trimmed) {
-            fields.push(field);
+        // Only parse fields at top level of the struct (depth 1),
+        // not inside nested blocks (func validate(), closures, etc.)
+        if depth_before == 1 {
+            // "let name: Type" or "var name: Type"
+            if let Some(field) = parse_swift_property(trimmed) {
+                fields.push(field);
+            }
         }
     }
 
