@@ -155,7 +155,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `target_validation::rust_self_hosted_tests_pass` | Rustテスト実行 | cargo |
 | `target_validation::ts_self_hosted_tests_pass` | TSテスト実行 | bun |
 | `target_validation::kotlin_self_hosted_tests_pass` | Kotlinテスト実行 | gradle |
-| `target_validation::java_self_hosted_tests_pass` | Javaテスト実行 (ignore) | gradle |
+| `target_validation::java_self_hosted_tests_pass` | Javaテスト実行 | gradle |
 
 ## ロードマップ
 
@@ -170,6 +170,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - explore: Alloyインスタンス異常パターン検出 ✅ (完了: detect_anomalies — UnconstrainedField/UnboundedCollection/UnguardedSelfRef、generateパイプラインに統合済み)
 - cover: カバレッジ×fact直交テスト生成 ✅ (完了: fact_coverage — sig_facts/uncovered_fields/pairwise、全7バックエンドでテストスキャフォールド生成)
 - Phase 14: 派生フィールド (fun Sig.name 構文 → computed property生成)
+- Phase 15: テスト実体化・sorry撲滅・enum/module ✅ (完了: C#/Kotlin テスト実体化, Lean sorry自動証明, Java target validation有効化, enum構文, module/open宣言)
 
 ### fact本体式の活用における伸びしろ
 

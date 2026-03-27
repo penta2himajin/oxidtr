@@ -26,6 +26,9 @@ pub enum Token {
     Check,
     Run,
     Disj,
+    Enum,
+    Module,
+    Open,
     Var, // Alloy 6: mutable field
     // Alloy 6: temporal keywords
     Always,
@@ -256,6 +259,9 @@ impl<'a> Lexer<'a> {
                 "check" => Token::Check,
                 "run" => Token::Run,
                 "disj" => Token::Disj,
+                "enum" => Token::Enum,
+                "module" => Token::Module,
+                "open" => Token::Open,
                 "var" => Token::Var,
                 "always" => Token::Always,
                 "eventually" => Token::Eventually,

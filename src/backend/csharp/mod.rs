@@ -505,31 +505,157 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "public class ModelsTest").unwrap();
     writeln!(out, "{{").unwrap();
 
-    for c in &ir.constraints {
-        let name = c.name.as_deref().unwrap_or("Unnamed");
-        writeln!(out, "    [Fact]").unwrap();
-        writeln!(out, "    public void {}()", name).unwrap();
-        writeln!(out, "    {{").unwrap();
-        writeln!(out, "        // constraint: {}", analyze::describe_expr(&c.expr)).unwrap();
-        writeln!(out, "        Assert.True(true); // TODO: implement").unwrap();
-        writeln!(out, "    }}").unwrap();
-        writeln!(out).unwrap();
-    }
-
-    for p in &ir.properties {
-        writeln!(out, "    [Fact]").unwrap();
-        writeln!(out, "    public void {}()", p.name).unwrap();
-        writeln!(out, "    {{").unwrap();
-        writeln!(out, "        // property: {}", analyze::describe_expr(&p.expr)).unwrap();
-        writeln!(out, "        Assert.True(true); // TODO: implement").unwrap();
-        writeln!(out, "    }}").unwrap();
-        writeln!(out).unwrap();
-    }
-
+    let sig_names: HashSet<String> = ir.structures.iter().map(|s| s.name.clone()).collect();
     let has_fixture: HashSet<String> = ir.structures.iter()
         .filter(|s| !s.is_enum && !s.fields.is_empty())
         .map(|s| s.name.clone())
         .collect();
+    let all_constraints = analyze::analyze(ir);
+
+    // --- Constraint tests (facts) ---
+    for constraint in &ir.constraints {
+        let fact_name = match &constraint.name {
+            Some(name) => name.clone(),
+            None => continue,
+        };
+
+        // Temporal facts with prime → transition test
+        if analyze::expr_contains_prime(&constraint.expr) {
+            let test_name = format!("Transition_{}", capitalize(&fact_name));
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let desc = analyze::describe_expr(&constraint.expr);
+
+            writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
+            writeln!(out, "    /// Verifies: pre→post state relationship ({desc})").unwrap();
+            writeln!(out, "    [Fact]").unwrap();
+            writeln!(out, "    public void {test_name}()").unwrap();
+            writeln!(out, "    {{").unwrap();
+            for (pname, tname) in &params {
+                if has_fixture.contains(tname) {
+                    writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                } else {
+                    writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                }
+                writeln!(out, "        var next{cap} = new List<{tname}>({pname});", cap = capitalize(pname)).unwrap();
+            }
+            if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+                let rewritten_body = analyze::rewrite_prime_as_post_state(inner_body);
+                let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
+                let bind_vars: Vec<String> = bindings.iter()
+                    .flat_map(|b| b.vars.clone())
+                    .collect();
+                if bind_vars.len() == 1 {
+                    let v = &bind_vars[0];
+                    let pname = &params[0].0;
+                    let cap = capitalize(pname);
+                    writeln!(out, "        foreach (var ({v}, next{ucv}) in {pname}.Zip(next{cap}))", ucv = capitalize(v)).unwrap();
+                    writeln!(out, "        {{").unwrap();
+                    writeln!(out, "            Assert.True({body_str});").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                } else {
+                    writeln!(out, "        Assert.True({body_str});").unwrap();
+                }
+            } else {
+                let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
+                let body = expr_translator::translate_with_ir(&rewritten, ir);
+                writeln!(out, "        Assert.True({body});").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
+        let test_name = match temporal_kind {
+            Some(analyze::TemporalKind::Liveness) => format!("Liveness_{}", capitalize(&fact_name)),
+            Some(analyze::TemporalKind::PastInvariant) => format!("PastInvariant_{}", capitalize(&fact_name)),
+            Some(analyze::TemporalKind::PastLiveness) => format!("PastLiveness_{}", capitalize(&fact_name)),
+            Some(analyze::TemporalKind::Step) => format!("Step_{}", capitalize(&fact_name)),
+            Some(analyze::TemporalKind::Binary) => format!("Temporal_{}", capitalize(&fact_name)),
+            _ => format!("Invariant_{}", capitalize(&fact_name)),
+        };
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&constraint.expr, ir);
+
+        // Check guarantee level — skip type-guaranteed constraints
+        let sig_constraints: Vec<&analyze::ConstraintInfo> = params.iter()
+            .flat_map(|(_, tname)| {
+                all_constraints.iter().filter(move |c| match c {
+                    analyze::ConstraintInfo::Presence { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::CardinalityBound { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::NoSelfRef { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::Acyclic { sig_name, .. } => sig_name == tname,
+                    analyze::ConstraintInfo::Membership { sig_name, .. } => sig_name == tname,
+                    _ => false,
+                })
+            })
+            .collect();
+
+        use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};
+
+        let all_fully = !sig_constraints.is_empty() && sig_constraints.iter().all(|c| {
+            can_guarantee_by_type(c, TargetLang::CSharp) == Guarantee::FullyByType
+        });
+
+        if all_fully {
+            writeln!(out, "    // Type-guaranteed: {} — no test needed", fact_name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        // Binary temporal / liveness: cannot assert with single snapshot
+        if temporal_kind == Some(analyze::TemporalKind::Binary) || matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
+            writeln!(out, "    [Fact]").unwrap();
+            writeln!(out, "    public void {test_name}()").unwrap();
+            writeln!(out, "    {{").unwrap();
+            writeln!(out, "        // temporal: requires trace-based verification").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        let any_partial = sig_constraints.iter().any(|c| {
+            can_guarantee_by_type(c, TargetLang::CSharp) == Guarantee::PartiallyByType
+        });
+
+        writeln!(out, "    [Fact]").unwrap();
+        if any_partial {
+            writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
+        }
+        writeln!(out, "    public void {test_name}()").unwrap();
+        writeln!(out, "    {{").unwrap();
+        for (pname, tname) in &params {
+            if has_fixture.contains(tname) {
+                writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+            } else {
+                writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+            }
+        }
+        writeln!(out, "        Assert.True({body});").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    // --- Property tests ---
+    for prop in &ir.properties {
+        let test_name = capitalize(&prop.name);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let body = expr_translator::translate_with_ir(&prop.expr, ir);
+
+        writeln!(out, "    [Fact]").unwrap();
+        writeln!(out, "    public void {test_name}()").unwrap();
+        writeln!(out, "    {{").unwrap();
+        for (pname, tname) in &params {
+            if has_fixture.contains(tname) {
+                writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+            } else {
+                writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+            }
+        }
+        writeln!(out, "        Assert.True({body});").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+    }
 
     // --- Anomaly tests ---
     let anomalies = analyze::detect_anomalies(ir);

@@ -267,7 +267,6 @@ rootProject.name = "oxidtr-kt-test"
 
 /// Generate Java code from oxidtr.als and run gradle test.
 #[test]
-#[ignore]
 fn java_self_hosted_tests_pass() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
