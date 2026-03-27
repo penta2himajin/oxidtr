@@ -32,6 +32,9 @@ one sig Check    extends Token {}
 one sig Run      extends Token {}
 one sig Disj     extends Token {}
 one sig Var      extends Token {}
+one sig Enum     extends Token {}
+one sig Module   extends Token {}
+one sig Open     extends Token {}
 one sig LBrace   extends Token {}
 one sig RBrace   extends Token {}
 one sig LBracket extends Token {}

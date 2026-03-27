@@ -296,3 +296,84 @@ fn parse_no_intersection_comment() {
     let model = parser::parse("sig Foo {}").unwrap();
     assert!(model.sigs[0].intersection_of.is_empty());
 }
+
+// ── Alloy module/open declarations ───────────────────────────────────────────
+
+#[test]
+fn parse_module_declaration_is_skipped() {
+    let model = parser::parse("module my/model\nsig Foo {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Foo");
+}
+
+#[test]
+fn parse_open_declaration_is_skipped() {
+    let model = parser::parse("open util/ordering[Time]\nsig Time {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Time");
+}
+
+#[test]
+fn parse_module_and_open_together() {
+    let input = r#"
+module my/model
+open util/ordering[Time]
+open util/boolean
+sig Time {}
+sig Foo { val: one Int }
+"#;
+    let model = parser::parse(input).unwrap();
+    assert_eq!(model.sigs.len(), 2);
+    assert_eq!(model.sigs[0].name, "Time");
+    assert_eq!(model.sigs[1].name, "Foo");
+}
+
+#[test]
+fn parse_open_with_as_alias() {
+    let model = parser::parse("open util/ordering[Time] as TO\nsig Time {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Time");
+}
+
+// ── Alloy enum syntax ────────────────────────────────────────────────────────
+
+#[test]
+fn parse_enum_desugars_to_abstract_sig_plus_one_sigs() {
+    let model = parser::parse("enum Status { Pending, Active, Complete }").unwrap();
+    // Should desugar to: abstract sig Status {} + one sig Pending/Active/Complete extends Status {}
+    assert_eq!(model.sigs.len(), 4);
+    let parent = &model.sigs[0];
+    assert_eq!(parent.name, "Status");
+    assert!(parent.is_abstract);
+    assert!(parent.fields.is_empty());
+
+    for (i, name) in ["Pending", "Active", "Complete"].iter().enumerate() {
+        let child = &model.sigs[i + 1];
+        assert_eq!(child.name, *name);
+        assert_eq!(child.multiplicity, SigMultiplicity::One);
+        assert_eq!(child.parent.as_deref(), Some("Status"));
+        assert!(child.fields.is_empty());
+    }
+}
+
+#[test]
+fn parse_enum_two_variants() {
+    let model = parser::parse("enum Bool { True, False }").unwrap();
+    assert_eq!(model.sigs.len(), 3);
+    assert_eq!(model.sigs[0].name, "Bool");
+    assert!(model.sigs[0].is_abstract);
+    assert_eq!(model.sigs[1].name, "True");
+    assert_eq!(model.sigs[2].name, "False");
+}
+
+#[test]
+fn parse_enum_with_other_sigs() {
+    let model = parser::parse("sig Foo {} enum Color { Red, Blue } sig Bar {}").unwrap();
+    assert_eq!(model.sigs.len(), 5); // Foo + Color + Red + Blue + Bar
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[1].name, "Color");
+    assert!(model.sigs[1].is_abstract);
+    assert_eq!(model.sigs[2].name, "Red");
+    assert_eq!(model.sigs[3].name, "Blue");
+    assert_eq!(model.sigs[4].name, "Bar");
+}

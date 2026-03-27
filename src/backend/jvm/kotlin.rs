@@ -130,7 +130,14 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
             };
 
             writeln!(out, "fun {sig}.{}({params}){return_str} {{", op.name).unwrap();
-            writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
+            if !op.body.is_empty() {
+                let lang = KotlinLang;
+                let body_expr = &op.body[op.body.len() - 1];
+                let body_str = expr_translator::translate_with_ir(body_expr, ir, &lang);
+                writeln!(out, "    return {body_str}").unwrap();
+            } else {
+                writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
@@ -831,21 +838,30 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
-    // Cross-tests — inline expressions
+    // Cross-tests — verify constraints are preserved after operations
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
         writeln!(out, "    // --- Cross-tests: fact x operation ---").unwrap();
         writeln!(out).unwrap();
         for constraint in &ir.constraints {
             let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
             let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
             for op in &ir.operations {
-                writeln!(out, "    @Disabled(\"oxidtr: implement cross-test\")").unwrap();
+                writeln!(out, "    @Disabled(\"cross-test: operation stub not yet implemented\")").unwrap();
                 writeln!(out, "    @Test").unwrap();
                 writeln!(out, "    fun `{fact_name} preserved after {}`() {{", op.name).unwrap();
-                writeln!(out, "        // pre: assertTrue({body})").unwrap();
-                writeln!(out, "        // {}(...)", op.name).unwrap();
-                writeln!(out, "        // post: assertTrue({body})").unwrap();
-                writeln!(out, "        TODO(\"oxidtr: implement cross-test\")").unwrap();
+                for (pname, tname) in &params {
+                    if has_fixture.contains(tname) {
+                        writeln!(out, "        val {pname}: List<{tname}> = listOf(default{tname}())").unwrap();
+                    } else {
+                        writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+                    }
+                }
+                writeln!(out, "        // pre: constraint holds before operation").unwrap();
+                writeln!(out, "        assertTrue({body})").unwrap();
+                writeln!(out, "        // operation: {}(...)", op.name).unwrap();
+                writeln!(out, "        // post: constraint still holds").unwrap();
+                writeln!(out, "        assertTrue({body})").unwrap();
                 writeln!(out, "    }}").unwrap();
                 writeln!(out).unwrap();
             }

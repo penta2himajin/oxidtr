@@ -142,6 +142,15 @@ impl<'a> Parser<'a> {
                     self.expect(&Token::Sig)?;
                     model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?);
                 }
+                Token::Module => {
+                    self.skip_to_eol();
+                }
+                Token::Open => {
+                    self.skip_to_eol();
+                }
+                Token::Enum => {
+                    model.sigs.extend(self.parse_enum()?);
+                }
                 Token::Fact => {
                     model.facts.push(self.parse_fact()?);
                 }
@@ -168,6 +177,46 @@ impl<'a> Parser<'a> {
         }
 
         Ok(model)
+    }
+
+    /// Parse `enum Name { Variant1, Variant2, ... }` and desugar to abstract sig + one sigs.
+    fn parse_enum(&mut self) -> Result<Vec<SigDecl>, ParseError> {
+        self.expect(&Token::Enum)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::LBrace)?;
+
+        let mut variants = Vec::new();
+        while self.peek() != Token::RBrace {
+            variants.push(self.expect_ident()?);
+            if self.peek() == Token::Comma {
+                self.next();
+            }
+        }
+        self.expect(&Token::RBrace)?;
+
+        // Desugar: abstract sig Name {} + one sig Variant extends Name {} for each variant
+        let mut sigs = Vec::new();
+        sigs.push(SigDecl {
+            name: name.clone(),
+            is_abstract: true,
+            is_var: false,
+            multiplicity: SigMultiplicity::Default,
+            parent: None,
+            fields: Vec::new(),
+            intersection_of: Vec::new(),
+        });
+        for variant in variants {
+            sigs.push(SigDecl {
+                name: variant,
+                is_abstract: false,
+                is_var: false,
+                multiplicity: SigMultiplicity::One,
+                parent: Some(name.clone()),
+                fields: Vec::new(),
+                intersection_of: Vec::new(),
+            });
+        }
+        Ok(sigs)
     }
 
     fn parse_sig(&mut self, is_abstract: bool, is_var: bool) -> Result<SigDecl, ParseError> {
@@ -782,10 +831,22 @@ impl<'a> Parser<'a> {
 
     fn skip_command(&mut self) {
         self.next(); // consume check/run
+        self.skip_to_next_toplevel();
+    }
+
+    /// Skip `module path` or `open path[params] as alias` declaration.
+    /// Consumes the leading keyword then skips to the next top-level token.
+    fn skip_to_eol(&mut self) {
+        self.next(); // consume module/open
+        self.skip_to_next_toplevel();
+    }
+
+    fn skip_to_next_toplevel(&mut self) {
         loop {
             match self.peek() {
                 Token::Eof | Token::Sig | Token::Abstract | Token::One
-                | Token::Some_ | Token::Lone
+                | Token::Some_ | Token::Lone | Token::Var | Token::Enum
+                | Token::Module | Token::Open
                 | Token::Fact | Token::Pred | Token::Fun | Token::Assert
                 | Token::Check | Token::Run => break,
                 _ => { self.next(); }

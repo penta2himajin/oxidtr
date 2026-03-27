@@ -155,14 +155,22 @@ fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
         if s.fields.is_empty() {
             writeln!(out, "  {}.mk", s.name).unwrap();
         } else {
-            // Generate concrete values for primitives, sorry for complex types
-            let all_primitive = s.fields.iter().all(|f| {
-                f.mult == Multiplicity::One && is_lean_defaultable(&f.target)
+            // Generate concrete values: primitives get defaults, collections get empty
+            let can_default = s.fields.iter().all(|f| {
+                match f.mult {
+                    Multiplicity::One => is_lean_defaultable(&f.target),
+                    Multiplicity::Lone | Multiplicity::Set | Multiplicity::Seq => true,
+                }
             });
-            if all_primitive {
+            if can_default {
                 write!(out, "  {{ ").unwrap();
                 let field_inits: Vec<String> = s.fields.iter().map(|f| {
-                    format!("{} := {}", expr_translator::to_lower_camel(&f.name), lean_default_value(&f.target))
+                    let val = match f.mult {
+                        Multiplicity::One => lean_default_value(&f.target).to_string(),
+                        Multiplicity::Lone => "none".to_string(),
+                        Multiplicity::Set | Multiplicity::Seq => "[]".to_string(),
+                    };
+                    format!("{} := {}", expr_translator::to_lower_camel(&f.name), val)
                 }).collect();
                 write!(out, "{}", field_inits.join(", ")).unwrap();
                 writeln!(out, " }}").unwrap();
@@ -348,7 +356,7 @@ fn generate_constraints(ir: &OxidtrIR, _ctx: &LeanContext) -> String {
                 writeln!(out, "theorem field_ordering_{sig_name}_{left_field}_{right_field} :").unwrap();
                 writeln!(out, "    ∀ (x : {sig_name}), x.{lf} {lean_op} x.{rf} := by").unwrap();
                 writeln!(out, "  intro x").unwrap();
-                writeln!(out, "  sorry -- Hint: omega after establishing field relationship").unwrap();
+                writeln!(out, "  omega").unwrap();
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
@@ -399,7 +407,7 @@ fn generate_constraints(ir: &OxidtrIR, _ctx: &LeanContext) -> String {
                 writeln!(out, "theorem exhaustive_{sig_name}_{theorem_idx} :").unwrap();
                 writeln!(out, "    ∀ (x : {sig_name}), {cats} := by").unwrap();
                 writeln!(out, "  intro x").unwrap();
-                writeln!(out, "  sorry -- Hint: cases x <;> simp").unwrap();
+                writeln!(out, "  cases x <;> simp").unwrap();
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
@@ -414,7 +422,7 @@ fn generate_constraints(ir: &OxidtrIR, _ctx: &LeanContext) -> String {
                 writeln!(out, "    ∀ (x : {sig_name}), {bound_str} := by").unwrap();
                 writeln!(out, "  intro x").unwrap();
                 writeln!(out, "  simp [List.length]").unwrap();
-                writeln!(out, "  sorry -- Hint: omega after establishing bounds").unwrap();
+                writeln!(out, "  omega").unwrap();
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
