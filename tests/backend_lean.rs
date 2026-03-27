@@ -100,7 +100,9 @@ fn lean_no_self_ref_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
-    assert!(c.contains("sorry"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x"), "should intro the variable:\n{c}");
+    assert!(c.contains("sorry"), "should still have sorry for unfinished proof:\n{c}");
 }
 
 #[test]
@@ -110,6 +112,8 @@ fn lean_acyclic_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x h"), "should intro both x and hypothesis:\n{c}");
     assert!(c.contains("sorry"));
 }
 
@@ -120,12 +124,45 @@ fn lean_field_ordering_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x"), "should intro the variable:\n{c}");
 }
 
 #[test]
 fn lean_no_constraints_no_file() {
     let files = generate_lean("sig Foo {}");
     assert!(files.iter().all(|f| f.path != "Constraints.lean"));
+}
+
+#[test]
+fn lean_iff_theorem_uses_constructor_tactic() {
+    let files = generate_lean(
+        "sig Item { active: one Bool, visible: one Bool }\nfact { all i: Item | i.active iff i.visible }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains("constructor"), "iff should use constructor tactic:\n{c}");
+    assert!(c.contains("forward direction"), "should label forward direction:\n{c}");
+    assert!(c.contains("backward direction"), "should label backward direction:\n{c}");
+}
+
+#[test]
+fn lean_implication_theorem_intros_hypothesis() {
+    let files = generate_lean(
+        "sig User { age: one Int, canDrive: one Bool }\nfact { all u: User | u.age > 16 implies u.canDrive = true }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x h"), "should intro variable and hypothesis:\n{c}");
+}
+
+#[test]
+fn lean_cardinality_theorem_uses_simp() {
+    let files = generate_lean(
+        "sig Team { members: set User }\nsig User {}\nfact { all t: Team | #t.members <= 10 }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("simp"), "cardinality should use simp tactic:\n{c}");
 }
 
 // ── Operations.lean ─────────────────────────────────────────────────────────

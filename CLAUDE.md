@@ -207,13 +207,16 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Lean: `def Sig.name (self : Sig) : Type := sorry`
 
 **Lean backend (Phase 10, 実装済み):**
-- structure/inductive型生成、fact→theorem+sorry変換、expr_translator(∀/∃/∧/∨/→/↔等)
+- structure/inductive型生成、fact→theorem with tactic blocks変換、expr_translator(∀/∃/∧/∨/→/↔等)
 - Lean extract: structure/inductive/theoremをMinedModelとして抽出
 - Guarantee: TargetLang::Lean追加（Presence→FullyByType、他はRequiresTest）
 - 生成ファイル: Types.lean, Constraints.lean, Operations.lean
+- Tactic自動生成: 制約型に応じた `by` ブロック（intro/constructor/simp/omega等）
 
-**未到達の領域:**
-- Lean tactic自動生成: sorry→実際の証明戦略を生成（将来課題）
+**Temporal transition テスト実体化 (実装済み):**
+- `rewrite_prime_as_post_state`: prime参照をpost-state変数アクセスに書き換えるAST変換
+- 全6バックエンド (Rust/TS/Kotlin/Java/Swift/Go) で遷移テストを実体化
+- zip-based pre/post iteration でpre→post状態関係を検証
 
 ## Alloyモデルへのフィードバック
 

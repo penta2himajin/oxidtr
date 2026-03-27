@@ -316,10 +316,12 @@ fn ts_temporal_prime_fact_generates_transition_test() {
     let tests = find_file(&files, "tests.ts");
     assert!(tests.contains("transition"),
         "should generate transition test for prime-containing fact:\n{tests}");
-    assert!(tests.contains("TODO: apply transition"),
-        "transition test should be a scaffold with TODO:\n{tests}");
-    assert!(!tests.contains("next_value"),
-        "transition test should NOT reference ghost field next_value:\n{tests}");
+    assert!(tests.contains("next_counters"),
+        "transition test should define post-state collection:\n{tests}");
+    assert!(tests.contains("next_c"),
+        "transition test should reference post-state element:\n{tests}");
+    assert!(!tests.contains("TODO: apply transition"),
+        "transition test should be materialized, not a TODO scaffold:\n{tests}");
 }
 
 // ── Binary temporal static test ──────────────────────────────────────────────
