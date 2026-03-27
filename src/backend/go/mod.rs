@@ -602,20 +602,44 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
 
-        // Alloy 6: temporal facts with prime → generate scaffold test
-        // Prime references (x') require before/after state capture; emit scaffold.
+        // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "// @temporal Transition constraint: {fact_name}").unwrap();
-            writeln!(out, "// Scaffold: prime (next-state) references require a before/after transition mechanism.").unwrap();
+            writeln!(out, "// Verifies: pre→post state relationship ({desc})").unwrap();
             writeln!(out, "func Test_transition_{}(t *testing.T) {{", fact_name).unwrap();
-            writeln!(out, "\t// TODO: apply transition, then assert post-condition").unwrap();
-            writeln!(out, "\t// Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                writeln!(out, "\t// pre: capture {pname}: []{tname} before transition").unwrap();
-                writeln!(out, "\t// post: assert condition on {pname} after transition").unwrap();
+                writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+                writeln!(out, "\tnext_{pname} := make([]{tname}, len({pname}))").unwrap();
+                writeln!(out, "\tcopy(next_{pname}, {pname})").unwrap();
+            }
+            if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+                let rewritten_body = analyze::rewrite_prime_as_post_state(inner_body);
+                let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
+                let bind_vars: Vec<String> = bindings.iter()
+                    .flat_map(|b| b.vars.clone()).collect();
+                if bind_vars.len() == 1 {
+                    let v = &bind_vars[0];
+                    let pname = &params[0].0;
+                    writeln!(out, "\tfor i, {v} := range {pname} {{").unwrap();
+                    writeln!(out, "\t\tnext_{v} := next_{pname}[i]").unwrap();
+                    writeln!(out, "\t\tif !({body_str}) {{").unwrap();
+                    writeln!(out, "\t\t\tt.Errorf(\"transition constraint {fact_name} violated at index %d\", i)").unwrap();
+                    writeln!(out, "\t\t}}").unwrap();
+                    writeln!(out, "\t}}").unwrap();
+                } else {
+                    writeln!(out, "\tif !({body_str}) {{").unwrap();
+                    writeln!(out, "\t\tt.Error(\"transition constraint {fact_name} violated\")").unwrap();
+                    writeln!(out, "\t}}").unwrap();
+                }
+            } else {
+                let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
+                let body = expr_translator::translate_with_ir(&rewritten, ir);
+                writeln!(out, "\tif !({body}) {{").unwrap();
+                writeln!(out, "\t\tt.Error(\"transition constraint {fact_name} violated\")").unwrap();
+                writeln!(out, "\t}}").unwrap();
             }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();

@@ -134,6 +134,86 @@ pub fn expr_is_temporal(expr: &Expr) -> bool {
     matches!(expr, Expr::TemporalUnary { .. } | Expr::TemporalBinary { .. })
 }
 
+/// Rewrite prime references to post-state variable access.
+///
+/// Transforms `x.field'` into `next_x.field` and `x'` into `next_x`,
+/// enabling transition tests to reference pre/post state variables directly.
+/// Also strips outer temporal unary wrappers (always/eventually/etc).
+pub fn rewrite_prime_as_post_state(expr: &Expr) -> Expr {
+    match expr {
+        // Strip temporal wrappers — transition test asserts the body directly
+        Expr::TemporalUnary { expr: inner, .. } => rewrite_prime_as_post_state(inner),
+
+        // Prime(FieldAccess { base: VarRef(x), field }) → FieldAccess { base: VarRef(next_x), field }
+        Expr::Prime(inner) => match inner.as_ref() {
+            Expr::FieldAccess { base, field } => {
+                if let Expr::VarRef(name) = base.as_ref() {
+                    Expr::FieldAccess {
+                        base: Box::new(Expr::VarRef(format!("next_{name}"))),
+                        field: field.clone(),
+                    }
+                } else {
+                    Expr::FieldAccess {
+                        base: Box::new(rewrite_prime_as_post_state(base)),
+                        field: field.clone(),
+                    }
+                }
+            }
+            Expr::VarRef(name) => Expr::VarRef(format!("next_{name}")),
+            _ => rewrite_prime_as_post_state(inner),
+        },
+
+        // Recurse into all structural variants
+        Expr::Quantifier { kind, bindings, body } => Expr::Quantifier {
+            kind: kind.clone(),
+            bindings: bindings.clone(),
+            body: Box::new(rewrite_prime_as_post_state(body)),
+        },
+        Expr::BinaryLogic { op, left, right } => Expr::BinaryLogic {
+            op: op.clone(),
+            left: Box::new(rewrite_prime_as_post_state(left)),
+            right: Box::new(rewrite_prime_as_post_state(right)),
+        },
+        Expr::Comparison { op, left, right } => Expr::Comparison {
+            op: op.clone(),
+            left: Box::new(rewrite_prime_as_post_state(left)),
+            right: Box::new(rewrite_prime_as_post_state(right)),
+        },
+        Expr::Not(inner) => Expr::Not(Box::new(rewrite_prime_as_post_state(inner))),
+        Expr::FieldAccess { base, field } => Expr::FieldAccess {
+            base: Box::new(rewrite_prime_as_post_state(base)),
+            field: field.clone(),
+        },
+        Expr::Cardinality(inner) => Expr::Cardinality(Box::new(rewrite_prime_as_post_state(inner))),
+        Expr::TransitiveClosure(inner) => Expr::TransitiveClosure(Box::new(rewrite_prime_as_post_state(inner))),
+        Expr::SetOp { op, left, right } => Expr::SetOp {
+            op: *op,
+            left: Box::new(rewrite_prime_as_post_state(left)),
+            right: Box::new(rewrite_prime_as_post_state(right)),
+        },
+        Expr::Product { left, right } => Expr::Product {
+            left: Box::new(rewrite_prime_as_post_state(left)),
+            right: Box::new(rewrite_prime_as_post_state(right)),
+        },
+        Expr::MultFormula { kind, expr: inner } => Expr::MultFormula {
+            kind: kind.clone(),
+            expr: Box::new(rewrite_prime_as_post_state(inner)),
+        },
+        Expr::TemporalBinary { op, left, right } => Expr::TemporalBinary {
+            op: *op,
+            left: Box::new(rewrite_prime_as_post_state(left)),
+            right: Box::new(rewrite_prime_as_post_state(right)),
+        },
+        Expr::FunApp { name, receiver, args } => Expr::FunApp {
+            name: name.clone(),
+            receiver: receiver.as_ref().map(|r| Box::new(rewrite_prime_as_post_state(r))),
+            args: args.iter().map(rewrite_prime_as_post_state).collect(),
+        },
+        // Leaves — pass through unchanged
+        Expr::VarRef(_) | Expr::IntLiteral(_) => expr.clone(),
+    }
+}
+
 /// Temporal operator classification for test generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TemporalKind {

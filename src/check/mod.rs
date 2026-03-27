@@ -88,6 +88,10 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "Models.cs", "Operations.cs", extract::csharp_extractor::extract)?;
         let validation_sources = collect_validation_sources_cs(impl_dir)?;
         differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
+    } else if impl_dir.join("Types.lean").exists() {
+        let extracted = extract_mined_lean(impl_dir)?;
+        let validation_sources = collect_validation_sources_lean(impl_dir)?;
+        differ::diff_lean_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
@@ -102,7 +106,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
             }
             Err(_) => {
                 return Err(CheckError::ImplNotFound(
-                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, Models.cs, and general extract)".to_string()
+                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, models.go, Models.cs, Types.lean, and general extract)".to_string()
                 ));
             }
         }
@@ -195,6 +199,67 @@ fn collect_validation_sources_cs(impl_dir: &Path) -> Result<Vec<String>, CheckEr
         sources.push(std::fs::read_to_string(&tests_path)?);
     }
     Ok(sources)
+}
+
+/// Collect validation source texts from Lean impl directory.
+fn collect_validation_sources_lean(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let constraints_path = impl_dir.join("Constraints.lean");
+    if constraints_path.exists() {
+        sources.push(std::fs::read_to_string(&constraints_path)?);
+    }
+    Ok(sources)
+}
+
+/// Extract Lean implementation from Types.lean + Operations.lean.
+fn extract_mined_lean(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
+    let types_src = std::fs::read_to_string(impl_dir.join("Types.lean"))?;
+    let ops_path = impl_dir.join("Operations.lean");
+    let ops_src = if ops_path.exists() {
+        std::fs::read_to_string(&ops_path)?
+    } else {
+        String::new()
+    };
+    let combined = format!("{types_src}\n{ops_src}");
+    let mined = extract::lean_extractor::extract(&combined);
+
+    let structs = mined.sigs.iter().map(|s| {
+        ExtractedStruct {
+            name: s.name.clone(),
+            fields: s.fields.iter().map(|f| {
+                let mult = match f.mult {
+                    extract::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
+                    extract::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
+                    extract::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    extract::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
+                };
+                ExtractedField { name: f.name.clone(), mult, target: f.target.clone(), is_var: f.is_var }
+            }).collect(),
+            is_enum: s.is_abstract,
+            is_var: s.is_var,
+        }
+    }).collect();
+
+    // Extract `def name` function definitions from Lean source
+    let fns = extract_lean_defs(&combined);
+
+    Ok(ExtractedImpl { structs, fns })
+}
+
+/// Extract function names from Lean `def` declarations.
+/// Skips derived fields (`def Sig.method`) which are receiver-based.
+fn extract_lean_defs(src: &str) -> Vec<ExtractedFn> {
+    src.lines().filter_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("def ")?;
+        let name: String = rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        if name.is_empty() { return None; }
+        // Skip receiver-based defs (derived fields): "def Sig.method"
+        if name.contains('.') { return None; }
+        Some(ExtractedFn { name })
+    }).collect()
 }
 
 /// Extract using an extractor function, then convert MinedModel → ExtractedImpl.

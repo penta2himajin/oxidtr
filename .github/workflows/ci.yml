@@ -40,6 +40,10 @@ jobs:
         run: cargo run -- generate models/oxidtr.als --target swift --output generated-swift
       - name: Generate C#
         run: cargo run -- generate models/oxidtr.als --target cs --output generated-cs
+      - name: Generate Go
+        run: cargo run -- generate models/oxidtr.als --target go --output generated-go
+      - name: Generate Lean
+        run: cargo run -- generate models/oxidtr.als --target lean --output generated-lean
 
       # Check structural consistency (all targets)
       - name: Check Rust
@@ -54,6 +58,10 @@ jobs:
         run: cargo run -- check --model models/oxidtr.als --impl generated-swift
       - name: Check C#
         run: cargo run -- check --model models/oxidtr.als --impl generated-cs
+      - name: Check Go
+        run: cargo run -- check --model models/oxidtr.als --impl generated-go
+      - name: Check Lean
+        run: cargo run -- check --model models/oxidtr.als --impl generated-lean
 
       # Extract round-trip (each language → Alloy)
       - name: Extract Rust back to Alloy
@@ -68,6 +76,10 @@ jobs:
         run: cargo run -- extract generated-swift/ -o /tmp/mined-swift.als
       - name: Extract C# back to Alloy
         run: cargo run -- extract generated-cs/ -o /tmp/mined-cs.als
+      - name: Extract Go back to Alloy
+        run: cargo run -- extract generated-go/ -o /tmp/mined-go.als
+      - name: Extract Lean back to Alloy
+        run: cargo run -- extract generated-lean/ -o /tmp/mined-lean.als
 
       # Verify enrichment (no invariants, no @alloy comments)
       - name: Verify enriched output

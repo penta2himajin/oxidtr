@@ -73,7 +73,8 @@ fn lean_abstract_with_fields_uses_structure_and_inductive() {
     // Abstract with variant fields → inductive
     assert!(t.contains("inductive Expr where"));
     assert!(t.contains("| literal : Expr"));
-    assert!(t.contains("| binOp : Expr → Expr → Expr"));
+    assert!(t.contains("| binOp (left : Expr) (right : Expr) : Expr"),
+        "should use named constructor params:\n{t}");
 }
 
 #[test]
@@ -100,7 +101,9 @@ fn lean_no_self_ref_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
-    assert!(c.contains("sorry"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x"), "should intro the variable:\n{c}");
+    assert!(c.contains("sorry"), "should still have sorry for unfinished proof:\n{c}");
 }
 
 #[test]
@@ -110,6 +113,8 @@ fn lean_acyclic_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x h"), "should intro both x and hypothesis:\n{c}");
     assert!(c.contains("sorry"));
 }
 
@@ -120,12 +125,45 @@ fn lean_field_ordering_theorem() {
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains("theorem"));
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x"), "should intro the variable:\n{c}");
 }
 
 #[test]
 fn lean_no_constraints_no_file() {
     let files = generate_lean("sig Foo {}");
     assert!(files.iter().all(|f| f.path != "Constraints.lean"));
+}
+
+#[test]
+fn lean_iff_theorem_uses_constructor_tactic() {
+    let files = generate_lean(
+        "sig Item { active: one Bool, visible: one Bool }\nfact { all i: Item | i.active iff i.visible }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains("constructor"), "iff should use constructor tactic:\n{c}");
+    assert!(c.contains("forward direction"), "should label forward direction:\n{c}");
+    assert!(c.contains("backward direction"), "should label backward direction:\n{c}");
+}
+
+#[test]
+fn lean_implication_theorem_intros_hypothesis() {
+    let files = generate_lean(
+        "sig User { age: one Int, canDrive: one Bool }\nfact { all u: User | u.age > 16 implies u.canDrive = true }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("intro x h"), "should intro variable and hypothesis:\n{c}");
+}
+
+#[test]
+fn lean_cardinality_theorem_uses_simp() {
+    let files = generate_lean(
+        "sig Team { members: set User }\nsig User {}\nfact { all t: Team | #t.members <= 10 }",
+    );
+    let c = find_file(&files, "Constraints.lean");
+    assert!(c.contains(":= by"), "should use tactic block:\n{c}");
+    assert!(c.contains("simp"), "cardinality should use simp tactic:\n{c}");
 }
 
 // ── Operations.lean ─────────────────────────────────────────────────────────
@@ -264,6 +302,23 @@ inductive Color where
     assert_eq!(model.sigs.len(), 3); // Color + Red + Blue
     assert!(model.sigs[0].is_abstract);
     assert_eq!(model.sigs[1].parent, Some("Color".to_string()));
+}
+
+#[test]
+fn lean_extract_inductive_named_params() {
+    let source = r#"
+inductive Expr where
+  | literal : Expr
+  | binOp (left : Expr) (right : Expr) : Expr
+  deriving Repr, BEq, DecidableEq
+"#;
+    let model = oxidtr::extract::lean_extractor::extract(source);
+    assert_eq!(model.sigs.len(), 3); // Expr + Literal + BinOp
+    let bin_op = &model.sigs[2];
+    assert_eq!(bin_op.name, "BinOp");
+    assert_eq!(bin_op.fields.len(), 2, "should extract named constructor params:\n{:?}", bin_op.fields);
+    assert_eq!(bin_op.fields[0].name, "left");
+    assert_eq!(bin_op.fields[1].name, "right");
 }
 
 #[test]

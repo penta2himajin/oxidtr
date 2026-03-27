@@ -598,9 +598,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
 
-        // Alloy 6: temporal facts with prime → generate scaffold test
-        // Prime references (x') require before/after state capture which cannot be
-        // expressed as a simple field access; emit a scaffold with TODO comments.
+        // Alloy 6: temporal facts with prime → generate transition test
+        // Strips quantifier, rewrites prime refs (x') to post-state variables (next_x),
+        // and generates zip-based pre/post assertion.
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("transition_{}", to_snake_case(&fact_name));
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
@@ -610,14 +610,39 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
-            writeln!(out, "    /// Scaffold: prime (next-state) references require a before/after transition mechanism.").unwrap();
+            writeln!(out, "    /// Verifies: pre→post state relationship ({desc})").unwrap();
             writeln!(out, "    #[test]").unwrap();
             writeln!(out, "    fn {test_name}() {{").unwrap();
-            writeln!(out, "        // TODO: apply transition, then assert post-condition").unwrap();
-            writeln!(out, "        // Alloy constraint: {desc}").unwrap();
             for (pname, tname) in &params {
-                writeln!(out, "        // pre: capture {pname}: Vec<{tname}> before transition").unwrap();
-                writeln!(out, "        // post: assert condition on {pname} after transition").unwrap();
+                if has_fixture.contains(tname) {
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                }
+                writeln!(out, "        let next_{pname}: Vec<{tname}> = {pname}.clone();").unwrap();
+            }
+            // Strip quantifier, rewrite body, generate zip assertion
+            if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+                let rewritten_body = analyze::rewrite_prime_as_post_state(inner_body);
+                let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
+                // Generate zip-based iteration over pre/post pairs
+                let bind_vars: Vec<String> = bindings.iter()
+                    .flat_map(|b| b.vars.clone())
+                    .collect();
+                if bind_vars.len() == 1 {
+                    let v = &bind_vars[0];
+                    let pname = &params[0].0;
+                    writeln!(out, "        for ({v}, next_{v}) in {pname}.iter().zip(next_{pname}.iter()) {{").unwrap();
+                    writeln!(out, "            assert!({body_str});").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                } else {
+                    writeln!(out, "        assert!({body_str});").unwrap();
+                }
+            } else {
+                let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
+                let body = expr_translator::translate_with_ir(&rewritten, ir);
+                writeln!(out, "        assert!({body});").unwrap();
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();

@@ -66,6 +66,7 @@ The parser handles the full Alloy structural grammar:
 | Swift | `--target swift` | struct, Set, Array, enum w/ associated values | XCTest + boundary | factory + boundary + violation | Swift doc comments | CaseIterable, Equatable |
 | Go | `--target go` | struct, iota enum, interface sum type | testing + boundary | factory + boundary + violation | Go doc comments | *T for optional, []T for collections |
 | C# | `--target cs` | class, enum, abstract class hierarchy | xUnit + boundary | factory + boundary + violation | XML doc comments | T? for nullable, List\<T> for collections |
+| Lean | `--target lean` | structure, inductive | theorem + sorry | — | — | fact → theorem, expr translator (∀/∃/∧/∨/→/↔) |
 
 ## Commands
 
@@ -81,6 +82,7 @@ oxidtr generate model.als --target java --output generated-java/
 oxidtr generate model.als --target swift --output generated-swift/
 oxidtr generate model.als --target go --output generated-go/
 oxidtr generate model.als --target cs --output generated-cs/
+oxidtr generate model.als --target lean --output generated-lean/
 oxidtr generate model.als --target rust --output generated/ --features serde
 ```
 
@@ -98,7 +100,7 @@ Detects 7 structural warnings during generation:
 
 ### `oxidtr check`
 
-Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence (`models.rs` / `models.ts` / `Models.kt` / `Models.java` / `Models.swift` / `models.go` / `Models.cs`).
+Verify structural consistency between an Alloy model and implementation. Auto-detects language by file presence (`models.rs` / `models.ts` / `Models.kt` / `Models.java` / `Models.swift` / `models.go` / `Models.cs` / `Types.lean`).
 
 ```
 oxidtr check --model model.als --impl src/
@@ -117,7 +119,7 @@ oxidtr extract src/ --lang rust              # explicit language override
 oxidtr extract src/ --conflict error         # fail on cross-language conflicts
 ```
 
-Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.swift` (Swift), `.go` (Go), `.cs` (C#), `.json` (JSON Schema).
+Supports: `.rs` (Rust), `.ts` (TypeScript), `.kt` (Kotlin), `.java` (Java), `.swift` (Swift), `.go` (Go), `.cs` (C#), `.lean` (Lean), `.json` (JSON Schema).
 
 Multi-language directories are merged: same-name sigs are unified, missing fields are supplemented, and conflicts (multiplicity/target type mismatches) are reported.
 
@@ -132,7 +134,7 @@ Produces Alloy `.als` text with:
 oxidtr's own domain is modeled in `models/oxidtr.als`. The full round-trip is verified for all targets:
 
 ```
-oxidtr.als → generate (Rust/TS/Kotlin/Java/Swift/Go/C#) → check → 0 diffs
+oxidtr.als → generate (Rust/TS/Kotlin/Java/Swift/Go/C#/Lean) → check → 0 diffs
 oxidtr.als → generate → extract → structural + expression match with original
 oxidtr.als → generate (all languages) → extract (multi-lang merge) → unified Alloy model
 ```
@@ -145,48 +147,6 @@ cargo run -- generate models/oxidtr.als --target rust --output generated
 cargo run -- check --model models/oxidtr.als --impl generated
 cargo run -- extract generated/
 ```
-
-## Roadmap
-
-### Completed
-
-| Phase | Description |
-|---|---|
-| 1 | Parser + IR + Rust backend (type generation) |
-| 2 | Expression translation + test generation + TC type inference + self-hosting |
-| 3 | check command + all 7 generate warnings |
-| 4 | TypeScript backend + extract (Rust/TS) + round-trip verification |
-| 5 | Kotlin/Java backends (shared JVM layer) + extract extractors |
-| 6 | Enrichment: fixtures, doc comments, JSON Schema, Bean Validation, schema extract |
-| 6+ | Full Alloy parser (integers, set ops, product, fun, multi-var quantifiers, disj) |
-| 6+ | Complete conversion: Set/Seq distinction, singletons, concrete values, maps, boundaries, @alloy lossless round-trip |
-| 6+ | Multi-language extract merge with conflict detection |
-| 7 | Swift backend (struct/enum, XCTest, allSatisfy/contains, extract extractor) |
-| 8 | Go backend (struct/iota/interface, testing, extract extractor) |
-| 11 | Alloy 6 temporal parser (var, prime, always/eventually/after/historically/once/before) |
-| 12-13 | Alloy 6 temporal code generation (prime expr, temporal validators, var check) |
-| 9 | C# backend (class, enum, abstract class, xUnit, LINQ expr translator) |
-
-### Planned
-
-| Phase | Description | Target platforms |
-|---|---|---|
-| 10 | **Lean backend** (polarstar) | High-assurance domains |
-| — | explore | Alloy instance anomaly detection |
-| — | cover | Coverage × fact orthogonal test generation |
-
-### Language guarantee spectrum
-
-```
-More tests ← ─────────────────────────────── → More proofs
-  TypeScript   Go   Java   C#   Kotlin   Swift   Rust   Lean
-     △          △     ○      ○     ◎       ◎      ◎      ◎ ← type safety
-     ✕          △     △      △     △       ○      ○      ◎ ← effect control
-     △          △     △      △     △       ○      ○      ◎ ← invariant encoding
-     ✕          ✕     ✕      ✕     ✕       ✕      ✕      ◎ ← theorem proving
-```
-
-The Lean backend (polarstar) is the endpoint of oxidtr's roadmap — where Alloy facts become Lean theorems, and verification shifts from runtime testing to static proof.
 
 ## License
 
