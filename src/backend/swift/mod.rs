@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity, TemporalBinaryOp};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -241,17 +241,81 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
             writeln!(out, "    {let_or_var} {}: {type_str}", to_swift_field_name(&f.name)).unwrap();
         }
 
-        // Generate validate() method for Disjoint and Exhaustive constraints
+        // Generate validate() method for constraint validation
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let disj = analyze::disj_fields(ir);
         let has_validation = sig_constraints.iter().any(|c| matches!(c,
             analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
-        ));
+            | analyze::ConstraintInfo::NoSelfRef { .. } | analyze::ConstraintInfo::Acyclic { .. }
+            | analyze::ConstraintInfo::FieldOrdering { .. }
+            | analyze::ConstraintInfo::Implication { .. } | analyze::ConstraintInfo::Iff { .. }
+            | analyze::ConstraintInfo::Prohibition { .. }
+        )) || disj.iter().any(|(dsig, _)| dsig == &s.name);
         if has_validation {
             writeln!(out).unwrap();
             writeln!(out, "    func validate() -> [String] {{").unwrap();
             writeln!(out, "        var errors: [String] = []").unwrap();
             for c in &sig_constraints {
                 match c {
+                    analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
+                        let fname = to_swift_field_name(field_name);
+                        writeln!(out, "        if {fname} as AnyObject === self as AnyObject {{").unwrap();
+                        writeln!(out, "            errors.append(\"{fname} must not reference self\")").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                        let fname = to_swift_field_name(field_name);
+                        writeln!(out, "        do {{").unwrap();
+                        writeln!(out, "            var seen = Set<ObjectIdentifier>()").unwrap();
+                        writeln!(out, "            var cur: {type_name}? = self", type_name = s.name).unwrap();
+                        writeln!(out, "            while let node = cur {{").unwrap();
+                        writeln!(out, "                let id = ObjectIdentifier(node as AnyObject)").unwrap();
+                        writeln!(out, "                if seen.contains(id) {{").unwrap();
+                        writeln!(out, "                    errors.append(\"{fname} must not form a cycle\")").unwrap();
+                        writeln!(out, "                    break").unwrap();
+                        writeln!(out, "                }}").unwrap();
+                        writeln!(out, "                seen.insert(id)").unwrap();
+                        writeln!(out, "                cur = node.{fname}").unwrap();
+                        writeln!(out, "            }}").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                        let lf = to_swift_field_name(left_field);
+                        let rf = to_swift_field_name(right_field);
+                        let (swift_op, negated_op) = match op {
+                            CompareOp::Lt => ("<", ">="),
+                            CompareOp::Gt => (">", "<="),
+                            CompareOp::Lte => ("<=", ">"),
+                            CompareOp::Gte => (">=", "<"),
+                            _ => continue,
+                        };
+                        writeln!(out, "        if {lf} {negated_op} {rf} {{").unwrap();
+                        writeln!(out, "            errors.append(\"{lf} must be {swift_op} {rf}\")").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                        let cond = translate_validator_expr_swift(condition, &s.name);
+                        let cons = translate_validator_expr_swift(consequent, &s.name);
+                        let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                        writeln!(out, "        if {cond} && !({cons}) {{").unwrap();
+                        writeln!(out, "            errors.append(\"{}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Iff { left, right, .. } => {
+                        let l = translate_validator_expr_swift(left, &s.name);
+                        let r = translate_validator_expr_swift(right, &s.name);
+                        let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                        writeln!(out, "        if ({l}) != ({r}) {{").unwrap();
+                        writeln!(out, "            errors.append(\"{}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                        let cond = translate_validator_expr_swift(condition, &s.name);
+                        let desc = analyze::describe_expr(condition);
+                        writeln!(out, "        if {cond} {{").unwrap();
+                        writeln!(out, "            errors.append(\"prohibited: {}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
                     analyze::ConstraintInfo::Disjoint { left, right, .. } => {
                         let left_field = to_swift_field_name(left.rsplit('.').next().unwrap_or(left));
                         let right_field = to_swift_field_name(right.rsplit('.').next().unwrap_or(right));
@@ -275,6 +339,19 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
                         writeln!(out, "        }}").unwrap();
                     }
                     _ => {}
+                }
+            }
+            // Disj uniqueness checks for seq fields
+            for (dsig, dfield) in &disj {
+                if dsig == &s.name {
+                    if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                        if f.mult == Multiplicity::Seq {
+                            let fname = to_swift_field_name(dfield);
+                            writeln!(out, "        if Set({fname}).count != {fname}.count {{").unwrap();
+                            writeln!(out, "            errors.append(\"{fname} must not contain duplicates (disj constraint)\")").unwrap();
+                            writeln!(out, "        }}").unwrap();
+                        }
+                    }
                 }
             }
             writeln!(out, "        return errors").unwrap();
@@ -1169,5 +1246,56 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         }
         Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(false, |r| expr_uses_tc(r)) || args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Translate an Alloy expression to Swift for single-instance validator context.
+fn translate_validator_expr_swift(expr: &crate::parser::ast::Expr, sig_name: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { "self".to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr_swift(base, sig_name), to_swift_field_name(field))
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr_swift(left, sig_name);
+            let r = translate_validator_expr_swift(right, sig_name);
+            let o = match op {
+                CompareOp::Eq => "==",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => return format!("{r}.contains({l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr_swift(left, sig_name);
+            let r = translate_validator_expr_swift(right, sig_name);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) == ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_swift(inner, sig_name)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr_swift(inner, sig_name);
+            match kind {
+                QuantKind::Some => format!("{e} != nil"),
+                QuantKind::No => format!("{e} == nil"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.count", translate_validator_expr_swift(inner, sig_name))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
     }
 }

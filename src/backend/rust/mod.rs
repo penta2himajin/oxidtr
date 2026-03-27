@@ -1402,6 +1402,47 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             }
         }
 
+        // Implication checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Implication { sig_name: s, condition, consequent } = c {
+                if s == sig_name {
+                    let cond = translate_validator_expr_rust(condition, sig_name);
+                    let cons = translate_validator_expr_rust(consequent, sig_name);
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    writeln!(out, "        if {cond} && !({cons}) {{").unwrap();
+                    writeln!(out, "            return Err(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+            }
+        }
+
+        // Iff checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Iff { sig_name: s, left, right } = c {
+                if s == sig_name {
+                    let l = translate_validator_expr_rust(left, sig_name);
+                    let r = translate_validator_expr_rust(right, sig_name);
+                    let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                    writeln!(out, "        if ({l}) != ({r}) {{").unwrap();
+                    writeln!(out, "            return Err(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+            }
+        }
+
+        // Prohibition checks
+        for c in &all_constraints {
+            if let analyze::ConstraintInfo::Prohibition { sig_name: s, condition } = c {
+                if s == sig_name {
+                    let cond = translate_validator_expr_rust(condition, sig_name);
+                    let desc = analyze::describe_expr(condition);
+                    writeln!(out, "        if {cond} {{").unwrap();
+                    writeln!(out, "            return Err(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+            }
+        }
+
         // Inline the constraint expression directly instead of calling invariant function
         // Bind param names with type annotations for closure inference
         // Only the param matching sig_name gets value.clone(); others get empty Vec
@@ -1590,6 +1631,57 @@ pub fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
         }
     }
     result
+}
+
+/// Translate an Alloy expression to Rust for single-instance validator context.
+fn translate_validator_expr_rust(expr: &Expr, sig_name: &str) -> String {
+    use crate::parser::ast::{LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { "value".to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr_rust(base, sig_name), field)
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr_rust(left, sig_name);
+            let r = translate_validator_expr_rust(right, sig_name);
+            let o = match op {
+                CompareOp::Eq => "==",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => return format!("{r}.contains(&{l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr_rust(left, sig_name);
+            let r = translate_validator_expr_rust(right, sig_name);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) == ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_rust(inner, sig_name)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr_rust(inner, sig_name);
+            match kind {
+                QuantKind::Some => format!("{e}.is_some()"),
+                QuantKind::No => format!("{e}.is_none()"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.len()", translate_validator_expr_rust(inner, sig_name))
+        }
+        _ => format!("/* {} */true", analyze::describe_expr(expr)), // fallback
+    }
 }
 
 fn generate_fixtures(ir: &OxidtrIR) -> String {

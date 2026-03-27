@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
 use crate::backend;
 use std::collections::{HashMap, HashSet};
@@ -166,11 +166,16 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
     }
 
-    // Generate Validate() method for Disjoint and Exhaustive constraints
+    // Generate Validate() method for constraint validation
     let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+    let disj = analyze::disj_fields(ir);
     let has_validation = sig_constraints.iter().any(|c| matches!(c,
         analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
-    ));
+        | analyze::ConstraintInfo::NoSelfRef { .. } | analyze::ConstraintInfo::Acyclic { .. }
+        | analyze::ConstraintInfo::FieldOrdering { .. }
+        | analyze::ConstraintInfo::Implication { .. } | analyze::ConstraintInfo::Iff { .. }
+        | analyze::ConstraintInfo::Prohibition { .. }
+    )) || disj.iter().any(|(dsig, _)| dsig == &s.name);
     if has_validation {
         writeln!(out).unwrap();
         writeln!(out, "    public List<string> Validate()").unwrap();
@@ -178,6 +183,60 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         writeln!(out, "        var errors = new List<string>();").unwrap();
         for c in &sig_constraints {
             match c {
+                analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
+                    let fname = capitalize(field_name);
+                    writeln!(out, "        if (ReferenceEquals({fname}, this))").unwrap();
+                    writeln!(out, "            errors.Add(\"{fname} must not reference self\");").unwrap();
+                }
+                analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                    let fname = capitalize(field_name);
+                    writeln!(out, "        {{").unwrap();
+                    writeln!(out, "            var seen = new HashSet<object>(ReferenceEqualityComparer.Instance);").unwrap();
+                    writeln!(out, "            var cur = this;").unwrap();
+                    writeln!(out, "            while (cur != null)").unwrap();
+                    writeln!(out, "            {{").unwrap();
+                    writeln!(out, "                if (!seen.Add(cur))").unwrap();
+                    writeln!(out, "                {{").unwrap();
+                    writeln!(out, "                    errors.Add(\"{fname} must not form a cycle\");").unwrap();
+                    writeln!(out, "                    break;").unwrap();
+                    writeln!(out, "                }}").unwrap();
+                    writeln!(out, "                cur = cur.{fname};").unwrap();
+                    writeln!(out, "            }}").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                }
+                analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                    let lf = capitalize(left_field);
+                    let rf = capitalize(right_field);
+                    let (cs_op, negated_op) = match op {
+                        CompareOp::Lt => ("<", ">="),
+                        CompareOp::Gt => (">", "<="),
+                        CompareOp::Lte => ("<=", ">"),
+                        CompareOp::Gte => (">=", "<"),
+                        _ => continue,
+                    };
+                    writeln!(out, "        if ({lf} {negated_op} {rf})").unwrap();
+                    writeln!(out, "            errors.Add(\"{lf} must be {cs_op} {rf}\");").unwrap();
+                }
+                analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let cond = translate_validator_expr_cs(condition, &s.name);
+                    let cons = translate_validator_expr_cs(consequent, &s.name);
+                    let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                    writeln!(out, "        if ({cond} && !({cons}))").unwrap();
+                    writeln!(out, "            errors.Add(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                }
+                analyze::ConstraintInfo::Iff { left, right, .. } => {
+                    let l = translate_validator_expr_cs(left, &s.name);
+                    let r = translate_validator_expr_cs(right, &s.name);
+                    let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                    writeln!(out, "        if (({l}) != ({r}))").unwrap();
+                    writeln!(out, "            errors.Add(\"{}\");", desc.replace('"', "\\\"")).unwrap();
+                }
+                analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                    let cond = translate_validator_expr_cs(condition, &s.name);
+                    let desc = analyze::describe_expr(condition);
+                    writeln!(out, "        if ({cond})").unwrap();
+                    writeln!(out, "            errors.Add(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
+                }
                 analyze::ConstraintInfo::Disjoint { left, right, .. } => {
                     let left_field = capitalize(left.rsplit('.').next().unwrap_or(left));
                     let right_field = capitalize(right.rsplit('.').next().unwrap_or(right));
@@ -199,6 +258,18 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
                     writeln!(out, "            errors.Add(\"must belong to one of [{cats}] (exhaustive constraint)\");").unwrap();
                 }
                 _ => {}
+            }
+        }
+        // Disj uniqueness checks for seq fields
+        for (dsig, dfield) in &disj {
+            if dsig == &s.name {
+                if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                    if f.mult == Multiplicity::Seq {
+                        let fname = capitalize(dfield);
+                        writeln!(out, "        if ({fname}.Distinct().Count() != {fname}.Count)").unwrap();
+                        writeln!(out, "            errors.Add(\"{fname} must not contain duplicates (disj constraint)\");").unwrap();
+                    }
+                }
             }
         }
         writeln!(out, "        return errors;").unwrap();
@@ -623,5 +694,56 @@ fn cs_default_value(target: &str, mult: &Multiplicity) -> String {
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set => format!("new HashSet<{}>()", target),
         Multiplicity::Seq => format!("new List<{}>()", target),
+    }
+}
+
+/// Translate an Alloy expression to C# for single-instance validator context.
+fn translate_validator_expr_cs(expr: &crate::parser::ast::Expr, sig_name: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { "this".to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr_cs(base, sig_name), capitalize(field))
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr_cs(left, sig_name);
+            let r = translate_validator_expr_cs(right, sig_name);
+            let o = match op {
+                CompareOp::Eq => "==",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => return format!("{r}.Contains({l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr_cs(left, sig_name);
+            let r = translate_validator_expr_cs(right, sig_name);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) == ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_cs(inner, sig_name)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr_cs(inner, sig_name);
+            match kind {
+                QuantKind::Some => format!("{e} != null"),
+                QuantKind::No => format!("{e} == null"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.Count", translate_validator_expr_cs(inner, sig_name))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
     }
 }

@@ -2,7 +2,7 @@ pub mod expr_translator;
 
 use crate::backend::GeneratedFile;
 use crate::ir::nodes::*;
-use crate::parser::ast::{Multiplicity, SigMultiplicity, TemporalBinaryOp};
+use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
@@ -229,17 +229,80 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
         }
         writeln!(out, "}}").unwrap();
 
-        // Generate Validate() method for Disjoint and Exhaustive constraints
+        // Generate Validate() method for constraint validation
         let sig_constraints = analyze::constraints_for_sig(ir, &s.name);
+        let disj = analyze::disj_fields(ir);
         let has_validation = sig_constraints.iter().any(|c| matches!(c,
             analyze::ConstraintInfo::Disjoint { .. } | analyze::ConstraintInfo::Exhaustive { .. }
-        ));
+            | analyze::ConstraintInfo::NoSelfRef { .. } | analyze::ConstraintInfo::Acyclic { .. }
+            | analyze::ConstraintInfo::FieldOrdering { .. }
+            | analyze::ConstraintInfo::Implication { .. } | analyze::ConstraintInfo::Iff { .. }
+            | analyze::ConstraintInfo::Prohibition { .. }
+        )) || disj.iter().any(|(dsig, _)| dsig == &s.name);
         if has_validation {
             writeln!(out).unwrap();
             writeln!(out, "func (s {}) Validate() []string {{", s.name).unwrap();
             writeln!(out, "\tvar errors []string").unwrap();
             for c in &sig_constraints {
                 match c {
+                    analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
+                        let fname = expr_translator::capitalize(field_name);
+                        writeln!(out, "\tif &s == s.{fname} {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"{fname} must not reference self\")").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                        let fname = expr_translator::capitalize(field_name);
+                        writeln!(out, "\t{{").unwrap();
+                        writeln!(out, "\t\tseen := make(map[*{}]bool)", s.name).unwrap();
+                        writeln!(out, "\t\tcur := &s").unwrap();
+                        writeln!(out, "\t\tfor cur != nil {{").unwrap();
+                        writeln!(out, "\t\t\tif seen[cur] {{").unwrap();
+                        writeln!(out, "\t\t\t\terrors = append(errors, \"{fname} must not form a cycle\")").unwrap();
+                        writeln!(out, "\t\t\t\tbreak").unwrap();
+                        writeln!(out, "\t\t\t}}").unwrap();
+                        writeln!(out, "\t\t\tseen[cur] = true").unwrap();
+                        writeln!(out, "\t\t\tcur = cur.{fname}").unwrap();
+                        writeln!(out, "\t\t}}").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::FieldOrdering { left_field, op, right_field, .. } => {
+                        let lf = expr_translator::capitalize(left_field);
+                        let rf = expr_translator::capitalize(right_field);
+                        let (go_op, negated_op) = match op {
+                            CompareOp::Lt => ("<", ">="),
+                            CompareOp::Gt => (">", "<="),
+                            CompareOp::Lte => ("<=", ">"),
+                            CompareOp::Gte => (">=", "<"),
+                            _ => continue,
+                        };
+                        writeln!(out, "\tif s.{lf} {negated_op} s.{rf} {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"{lf} must be {go_op} {rf}\")").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                        let cond = translate_validator_expr_go(condition, &s.name);
+                        let cons = translate_validator_expr_go(consequent, &s.name);
+                        let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
+                        writeln!(out, "\tif {cond} && !({cons}) {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"{}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Iff { left, right, .. } => {
+                        let l = translate_validator_expr_go(left, &s.name);
+                        let r = translate_validator_expr_go(right, &s.name);
+                        let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                        writeln!(out, "\tif ({l}) != ({r}) {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"{}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                        let cond = translate_validator_expr_go(condition, &s.name);
+                        let desc = analyze::describe_expr(condition);
+                        writeln!(out, "\tif {cond} {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"prohibited: {}\"))", desc.replace('"', "\\\"")).unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
                     analyze::ConstraintInfo::Disjoint { left, right, .. } => {
                         let left_field = expr_translator::capitalize(left.rsplit('.').next().unwrap_or(left));
                         let right_field = expr_translator::capitalize(right.rsplit('.').next().unwrap_or(right));
@@ -254,11 +317,40 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
                     }
                     analyze::ConstraintInfo::Exhaustive { categories, .. } => {
                         let cats = categories.join(", ");
-                        writeln!(out, "\t// exhaustive: must belong to one of [{cats}]").unwrap();
-                        writeln!(out, "\t// Validate at integration level with category collections").unwrap();
-                        writeln!(out, "\t_ = \"must belong to one of [{cats}] (exhaustive constraint)\"").unwrap();
+                        let checks: Vec<String> = categories.iter().map(|cat| {
+                            let parts: Vec<&str> = cat.split('.').collect();
+                            if parts.len() == 2 {
+                                format!("contains{}{}(s)", expr_translator::capitalize(parts[0]), expr_translator::capitalize(parts[1]))
+                            } else {
+                                format!("contains{cat}(s)")
+                            }
+                        }).collect();
+                        let condition = checks.join(" || ");
+                        writeln!(out, "\tif !({condition}) {{").unwrap();
+                        writeln!(out, "\t\terrors = append(errors, \"must belong to one of [{cats}] (exhaustive constraint)\")").unwrap();
+                        writeln!(out, "\t}}").unwrap();
                     }
                     _ => {}
+                }
+            }
+            // Disj uniqueness checks for seq fields
+            for (dsig, dfield) in &disj {
+                if dsig == &s.name {
+                    if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                        if f.mult == Multiplicity::Seq {
+                            let fname = expr_translator::capitalize(dfield);
+                            writeln!(out, "\t{{").unwrap();
+                            writeln!(out, "\t\tseen := make(map[interface{{}}]bool)").unwrap();
+                            writeln!(out, "\t\tfor _, v := range s.{fname} {{").unwrap();
+                            writeln!(out, "\t\t\tif seen[v] {{").unwrap();
+                            writeln!(out, "\t\t\t\terrors = append(errors, \"{fname} must not contain duplicates (disj constraint)\")").unwrap();
+                            writeln!(out, "\t\t\t\tbreak").unwrap();
+                            writeln!(out, "\t\t\t}}").unwrap();
+                            writeln!(out, "\t\t\tseen[v] = true").unwrap();
+                            writeln!(out, "\t\t}}").unwrap();
+                            writeln!(out, "\t}}").unwrap();
+                        }
+                    }
                 }
             }
             writeln!(out, "\treturn errors").unwrap();
@@ -1237,5 +1329,56 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
         }
         Expr::FunApp { receiver, args, .. } => receiver.as_ref().map_or(false, |r| expr_uses_tc(r)) || args.iter().any(|a| expr_uses_tc(a)),
         Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Translate an Alloy expression to Go for single-instance validator context.
+fn translate_validator_expr_go(expr: &crate::parser::ast::Expr, sig_name: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { "s".to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr_go(base, sig_name), expr_translator::capitalize(field))
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr_go(left, sig_name);
+            let r = translate_validator_expr_go(right, sig_name);
+            let o = match op {
+                CompareOp::Eq => "==",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => return format!("contains({r}, {l})"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr_go(left, sig_name);
+            let r = translate_validator_expr_go(right, sig_name);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) == ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_go(inner, sig_name)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr_go(inner, sig_name);
+            match kind {
+                QuantKind::Some => format!("{e} != nil"),
+                QuantKind::No => format!("{e} == nil"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("len({})", translate_validator_expr_go(inner, sig_name))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
     }
 }

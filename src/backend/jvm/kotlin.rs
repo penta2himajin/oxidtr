@@ -262,9 +262,28 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                     };
                     init_checks.push(format!("require({left_field} {op_str} {right_field}) {{ \"{left_field} must be {op_str} {right_field}\" }}"));
                 }
+                analyze::ConstraintInfo::NoSelfRef { field_name, .. } => {
+                    init_checks.push(format!("require({field_name} !== this) {{ \"{field_name} must not reference self\" }}"));
+                }
+                analyze::ConstraintInfo::Acyclic { field_name, .. } => {
+                    init_checks.push(format!("run {{ val seen = mutableSetOf<Any>(); var cur: Any? = this; while (cur != null) {{ require(seen.add(cur)) {{ \"{field_name} must not form a cycle\" }}; cur = (cur as? {sig_name})?.{field_name} }} }}", sig_name = s.name));
+                }
                 analyze::ConstraintInfo::Implication { condition, consequent, .. } => {
+                    let cond = translate_validator_expr_kt(condition, &s.name);
+                    let cons = translate_validator_expr_kt(consequent, &s.name);
                     let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
-                    init_checks.push(format!("// {desc}"));
+                    init_checks.push(format!("require(!({cond}) || ({cons})) {{ \"{}\" }}", desc.replace('"', "\\\"")));
+                }
+                analyze::ConstraintInfo::Iff { left, right, .. } => {
+                    let l = translate_validator_expr_kt(left, &s.name);
+                    let r = translate_validator_expr_kt(right, &s.name);
+                    let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
+                    init_checks.push(format!("require(({l}) == ({r})) {{ \"{}\" }}", desc.replace('"', "\\\"")));
+                }
+                analyze::ConstraintInfo::Prohibition { condition, .. } => {
+                    let cond = translate_validator_expr_kt(condition, &s.name);
+                    let desc = analyze::describe_expr(condition);
+                    init_checks.push(format!("require(!({cond})) {{ \"prohibited: {}\" }}", desc.replace('"', "\\\"")));
                 }
                 analyze::ConstraintInfo::Disjoint { left, right, .. } => {
                     let left_field = left.rsplit('.').next().unwrap_or(left);
@@ -285,6 +304,17 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                     init_checks.push(format!("require({condition}) {{ \"must belong to one of [{cats}] (exhaustive constraint)\" }}"));
                 }
                 _ => {}
+            }
+        }
+        // Disj uniqueness checks for seq fields
+        let disj = analyze::disj_fields(ir);
+        for (dsig, dfield) in &disj {
+            if dsig == &s.name {
+                if let Some(f) = s.fields.iter().find(|f| f.name == *dfield) {
+                    if f.mult == Multiplicity::Seq {
+                        init_checks.push(format!("require({dfield}.toSet().size == {dfield}.size) {{ \"{dfield} must not contain duplicates (disj constraint)\" }}"));
+                    }
+                }
             }
         }
         if init_checks.is_empty() {
@@ -948,6 +978,57 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         None => String::new(),
         Some(f) => f.to_uppercase().to_string() + c.as_str(),
+    }
+}
+
+/// Translate an Alloy expression to Kotlin for single-instance validator context.
+fn translate_validator_expr_kt(expr: &crate::parser::ast::Expr, sig_name: &str) -> String {
+    use crate::parser::ast::{Expr, LogicOp, QuantKind};
+    match expr {
+        Expr::VarRef(name) => {
+            if name == sig_name { "this".to_string() } else { name.clone() }
+        }
+        Expr::IntLiteral(n) => n.to_string(),
+        Expr::FieldAccess { base, field } => {
+            format!("{}.{}", translate_validator_expr_kt(base, sig_name), field)
+        }
+        Expr::Comparison { op, left, right } => {
+            let l = translate_validator_expr_kt(left, sig_name);
+            let r = translate_validator_expr_kt(right, sig_name);
+            let o = match op {
+                CompareOp::Eq => "==",
+                CompareOp::NotEq => "!=",
+                CompareOp::In => return format!("{l} in {r}"),
+                CompareOp::Lt => "<",
+                CompareOp::Gt => ">",
+                CompareOp::Lte => "<=",
+                CompareOp::Gte => ">=",
+            };
+            format!("{l} {o} {r}")
+        }
+        Expr::BinaryLogic { op, left, right } => {
+            let l = translate_validator_expr_kt(left, sig_name);
+            let r = translate_validator_expr_kt(right, sig_name);
+            match op {
+                LogicOp::And => format!("{l} && {r}"),
+                LogicOp::Or => format!("{l} || {r}"),
+                LogicOp::Implies => format!("!({l}) || {r}"),
+                LogicOp::Iff => format!("({l}) == ({r})"),
+            }
+        }
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_kt(inner, sig_name)),
+        Expr::MultFormula { kind, expr: inner } => {
+            let e = translate_validator_expr_kt(inner, sig_name);
+            match kind {
+                QuantKind::Some => format!("{e} != null"),
+                QuantKind::No => format!("{e} == null"),
+                _ => e,
+            }
+        }
+        Expr::Cardinality(inner) => {
+            format!("{}.size", translate_validator_expr_kt(inner, sig_name))
+        }
+        _ => analyze::describe_expr(expr), // fallback: human-readable
     }
 }
 
