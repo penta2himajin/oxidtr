@@ -73,7 +73,8 @@ fn lean_abstract_with_fields_uses_structure_and_inductive() {
     // Abstract with variant fields → inductive
     assert!(t.contains("inductive Expr where"));
     assert!(t.contains("| literal : Expr"));
-    assert!(t.contains("| binOp : Expr → Expr → Expr"));
+    assert!(t.contains("| binOp (left : Expr) (right : Expr) : Expr"),
+        "should use named constructor params:\n{t}");
 }
 
 #[test]
@@ -301,6 +302,23 @@ inductive Color where
     assert_eq!(model.sigs.len(), 3); // Color + Red + Blue
     assert!(model.sigs[0].is_abstract);
     assert_eq!(model.sigs[1].parent, Some("Color".to_string()));
+}
+
+#[test]
+fn lean_extract_inductive_named_params() {
+    let source = r#"
+inductive Expr where
+  | literal : Expr
+  | binOp (left : Expr) (right : Expr) : Expr
+  deriving Repr, BEq, DecidableEq
+"#;
+    let model = oxidtr::extract::lean_extractor::extract(source);
+    assert_eq!(model.sigs.len(), 3); // Expr + Literal + BinOp
+    let bin_op = &model.sigs[2];
+    assert_eq!(bin_op.name, "BinOp");
+    assert_eq!(bin_op.fields.len(), 2, "should extract named constructor params:\n{:?}", bin_op.fields);
+    assert_eq!(bin_op.fields[0].name, "left");
+    assert_eq!(bin_op.fields[1].name, "right");
 }
 
 #[test]

@@ -44,8 +44,8 @@ pub fn extract(source: &str) -> MinedModel {
             });
             for v in variants {
                 sigs.push(MinedSig {
-                    name: v,
-                    fields: vec![],
+                    name: v.sig_name,
+                    fields: v.fields,
                     is_abstract: false,
                     is_var: false,
                     parent: Some(name.clone()),
@@ -159,10 +159,16 @@ fn parse_lean_inductive(line: &str) -> Option<String> {
     Some(name)
 }
 
+/// Parsed inductive variant: name + optional named fields.
+struct InductiveVariant {
+    sig_name: String,
+    fields: Vec<MinedField>,
+}
+
 fn collect_lean_inductive_variants(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
     _parent_name: &str,
-) -> Vec<String> {
+) -> Vec<InductiveVariant> {
     let mut variants = Vec::new();
 
     while let Some(&(_, next_line)) = lines.peek() {
@@ -172,20 +178,54 @@ fn collect_lean_inductive_variants(
         }
         lines.next();
 
-        if trimmed.starts_with("--") { continue; }
+        if trimmed.starts_with("--") || trimmed.starts_with("deriving") { continue; }
 
-        // "| variantName : ParentType" or "| variantName : Arg → ParentType"
+        // "| variantName (field : Type) ... : ParentType"
+        // or "| variantName : ParentType"
         if let Some(rest) = trimmed.strip_prefix("| ") {
             let vname: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             if !vname.is_empty() {
-                // Capitalize first letter for sig name
                 let sig_name = capitalize_first(&vname);
-                variants.push(sig_name);
+                let after_name = rest[vname.len()..].trim();
+                let fields = parse_named_constructor_params(after_name);
+                variants.push(InductiveVariant { sig_name, fields });
             }
         }
     }
 
     variants
+}
+
+/// Parse named constructor parameters from `(name : Type) (name2 : Type2) : Parent`.
+fn parse_named_constructor_params(s: &str) -> Vec<MinedField> {
+    let mut fields = Vec::new();
+    let mut rest = s;
+
+    while let Some(open) = rest.find('(') {
+        let close = match rest[open..].find(')') {
+            Some(pos) => open + pos,
+            None => break,
+        };
+        let inner = &rest[open + 1..close];
+        // Parse "name : Type"
+        if let Some(colon) = inner.find(':') {
+            let name = inner[..colon].trim().to_string();
+            let type_str = inner[colon + 1..].trim();
+            if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_alphanumeric()) {
+                let (mult, target) = lean_type_to_mult(type_str);
+                fields.push(MinedField {
+                    name,
+                    is_var: false,
+                    mult,
+                    target,
+                    raw_union_type: None,
+                });
+            }
+        }
+        rest = &rest[close + 1..];
+    }
+
+    fields
 }
 
 fn capitalize_first(s: &str) -> String {

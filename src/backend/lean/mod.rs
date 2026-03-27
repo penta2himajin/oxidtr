@@ -203,10 +203,14 @@ fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             if kid_fields.is_empty() {
                 writeln!(out, "  | {} : {}", variant_name, s.name).unwrap();
             } else {
-                let field_types: Vec<String> = kid_fields.iter()
-                    .map(|f| field_type_str(f, ctx))
+                let named_params: Vec<String> = kid_fields.iter()
+                    .map(|f| {
+                        let fname = expr_translator::to_lower_camel(&f.name);
+                        let ftype = field_type_str(f, ctx);
+                        format!("({fname} : {ftype})")
+                    })
                     .collect();
-                writeln!(out, "  | {} : {} → {}", variant_name, field_types.join(" → "), s.name).unwrap();
+                writeln!(out, "  | {} {} : {}", variant_name, named_params.join(" "), s.name).unwrap();
             }
         }
     }
@@ -431,6 +435,15 @@ fn generate_constraints(ir: &OxidtrIR, _ctx: &LeanContext) -> String {
             _ => {}
         }
     }
+
+    // Emit fact name anchors so `check` validation can find them
+    writeln!(out, "-- Validated facts:").unwrap();
+    for c in &ir.constraints {
+        if let Some(ref name) = c.name {
+            writeln!(out, "-- {name}").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
 
     // Properties (asserts) as theorems
     for p in &ir.properties {

@@ -126,6 +126,19 @@ pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validat
     diffs
 }
 
+/// Diff with Lean lowerCamelCase normalization, treating Seq≈Set (both map to List in Lean).
+pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+    let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
+    // Remove Seq/Set mismatches — Lean maps both to List, so the extractor always returns Set
+    diffs.retain(|d| !matches!(d,
+        DiffItem::MultiplicityMismatch { expected, actual, .. }
+            if (*expected == Multiplicity::Seq && *actual == Multiplicity::Set)
+                || (*expected == Multiplicity::Set && *actual == Multiplicity::Seq)
+    ));
+    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs
+}
+
 fn to_pascal_case(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {

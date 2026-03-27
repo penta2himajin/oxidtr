@@ -91,7 +91,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
     } else if impl_dir.join("Types.lean").exists() {
         let extracted = extract_mined_lean(impl_dir)?;
         let validation_sources = collect_validation_sources_lean(impl_dir)?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_lean_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
@@ -222,8 +222,44 @@ fn extract_mined_lean(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
     };
     let combined = format!("{types_src}\n{ops_src}");
     let mined = extract::lean_extractor::extract(&combined);
-    let extracted = mined_to_extracted(&mined);
-    Ok(extracted)
+
+    let structs = mined.sigs.iter().map(|s| {
+        ExtractedStruct {
+            name: s.name.clone(),
+            fields: s.fields.iter().map(|f| {
+                let mult = match f.mult {
+                    extract::MinedMultiplicity::One => crate::parser::ast::Multiplicity::One,
+                    extract::MinedMultiplicity::Lone => crate::parser::ast::Multiplicity::Lone,
+                    extract::MinedMultiplicity::Set => crate::parser::ast::Multiplicity::Set,
+                    extract::MinedMultiplicity::Seq => crate::parser::ast::Multiplicity::Seq,
+                };
+                ExtractedField { name: f.name.clone(), mult, target: f.target.clone(), is_var: f.is_var }
+            }).collect(),
+            is_enum: s.is_abstract,
+            is_var: s.is_var,
+        }
+    }).collect();
+
+    // Extract `def name` function definitions from Lean source
+    let fns = extract_lean_defs(&combined);
+
+    Ok(ExtractedImpl { structs, fns })
+}
+
+/// Extract function names from Lean `def` declarations.
+/// Skips derived fields (`def Sig.method`) which are receiver-based.
+fn extract_lean_defs(src: &str) -> Vec<ExtractedFn> {
+    src.lines().filter_map(|line| {
+        let trimmed = line.trim();
+        let rest = trimmed.strip_prefix("def ")?;
+        let name: String = rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.')
+            .collect();
+        if name.is_empty() { return None; }
+        // Skip receiver-based defs (derived fields): "def Sig.method"
+        if name.contains('.') { return None; }
+        Some(ExtractedFn { name })
+    }).collect()
 }
 
 /// Extract using an extractor function, then convert MinedModel → ExtractedImpl.
