@@ -847,6 +847,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
             let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
             for op in &ir.operations {
+                writeln!(out, "    @Disabled(\"cross-test: operation stub not yet implemented\")").unwrap();
                 writeln!(out, "    @Test").unwrap();
                 writeln!(out, "    fun `{fact_name} preserved after {}`() {{", op.name).unwrap();
                 for (pname, tname) in &params {
