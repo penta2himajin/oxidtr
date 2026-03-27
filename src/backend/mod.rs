@@ -4,6 +4,7 @@ pub mod jvm;
 pub mod swift;
 pub mod go;
 pub mod csharp;
+pub mod lean;
 pub mod schema;
 
 use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity};
