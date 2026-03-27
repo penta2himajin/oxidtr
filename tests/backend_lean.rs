@@ -137,7 +137,8 @@ fn lean_pred_as_def() {
     );
     let ops = find_file(&files, "Operations.lean");
     assert!(ops.contains("def changeRole"));
-    assert!(ops.contains("sorry"));
+    // Body is translated: u = u
+    assert!(ops.contains("u = u"));
 }
 
 #[test]
@@ -163,6 +164,77 @@ fn lean_map_field() {
     let t = find_file(&files, "Types.lean");
     // Map type should produce something reasonable
     assert!(t.contains("Key") && t.contains("Value"));
+}
+
+// ── Deriving ────────────────────────────────────────────────────────────────
+
+#[test]
+fn lean_structure_has_deriving() {
+    let files = generate_lean("sig User { name: one Role }\nsig Role {}");
+    let t = find_file(&files, "Types.lean");
+    assert!(t.contains("deriving Repr, BEq, DecidableEq"));
+}
+
+#[test]
+fn lean_inductive_has_deriving() {
+    let files = generate_lean(
+        "abstract sig Color {}\none sig Red extends Color {}\none sig Blue extends Color {}",
+    );
+    let t = find_file(&files, "Types.lean");
+    assert!(t.contains("deriving Repr, BEq, DecidableEq"));
+}
+
+// ── Body translation ────────────────────────────────────────────────────────
+
+#[test]
+fn lean_derived_field_body_translated() {
+    let files = generate_lean(
+        "sig User { age: one Int }\nfun User.displayAge[]: one Int { this.age }",
+    );
+    let t = find_file(&files, "Types.lean");
+    assert!(t.contains("def User.displayAge"));
+    // Body should be translated, not sorry
+    assert!(t.contains(".age"));
+    assert!(!t.contains("sorry"));
+}
+
+#[test]
+fn lean_pred_body_translated() {
+    let files = generate_lean(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+    assert!(ops.contains("u = u"));
+    assert!(!ops.contains("sorry"));
+}
+
+#[test]
+fn lean_empty_body_uses_sorry() {
+    // pred with no body should still have sorry
+    let files = generate_lean(
+        "sig User {}\npred doSomething[u: one User] {}",
+    );
+    let ops = find_file(&files, "Operations.lean");
+    assert!(ops.contains("def doSomething"));
+    assert!(ops.contains("sorry"));
+}
+
+// ── Singleton defaults ──────────────────────────────────────────────────────
+
+#[test]
+fn lean_singleton_primitive_fields_have_defaults() {
+    let files = generate_lean("one sig Config { maxRetries: one Int, debug: one Bool }");
+    let t = find_file(&files, "Types.lean");
+    assert!(t.contains("maxRetries := 0"));
+    assert!(t.contains("debug := false"));
+    assert!(!t.contains("sorry"));
+}
+
+#[test]
+fn lean_singleton_complex_fields_use_sorry() {
+    let files = generate_lean("sig Role {}\none sig Admin { role: one Role }");
+    let t = find_file(&files, "Types.lean");
+    assert!(t.contains("sorry"));
 }
 
 // ── Extract ─────────────────────────────────────────────────────────────────

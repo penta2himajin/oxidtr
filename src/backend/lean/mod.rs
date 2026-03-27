@@ -146,6 +146,7 @@ fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             writeln!(out, "  {} : {}", expr_translator::to_lower_camel(&f.name), type_str).unwrap();
         }
     }
+    writeln!(out, "  deriving Repr, BEq, DecidableEq").unwrap();
 
     // Singleton: generate instance
     if s.sig_multiplicity == SigMultiplicity::One {
@@ -154,7 +155,20 @@ fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
         if s.fields.is_empty() {
             writeln!(out, "  {}.mk", s.name).unwrap();
         } else {
-            writeln!(out, "  sorry -- provide concrete values").unwrap();
+            // Generate concrete values for primitives, sorry for complex types
+            let all_primitive = s.fields.iter().all(|f| {
+                f.mult == Multiplicity::One && is_lean_defaultable(&f.target)
+            });
+            if all_primitive {
+                write!(out, "  {{ ").unwrap();
+                let field_inits: Vec<String> = s.fields.iter().map(|f| {
+                    format!("{} := {}", expr_translator::to_lower_camel(&f.name), lean_default_value(&f.target))
+                }).collect();
+                write!(out, "{}", field_inits.join(", ")).unwrap();
+                writeln!(out, " }}").unwrap();
+            } else {
+                writeln!(out, "  sorry -- provide concrete values").unwrap();
+            }
         }
     }
 }
@@ -196,6 +210,7 @@ fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             }
         }
     }
+    writeln!(out, "  deriving Repr, BEq, DecidableEq").unwrap();
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
@@ -218,7 +233,13 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
             };
 
             writeln!(out, "def {sig}.{fn_name} (self : {sig}){params_str} : {return_str} :=").unwrap();
-            writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
+            if !op.body.is_empty() {
+                let body_expr = &op.body[op.body.len() - 1];
+                let body_str = expr_translator::translate_with_ir(body_expr, ir);
+                writeln!(out, "  {body_str}").unwrap();
+            } else {
+                writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
+            }
             writeln!(out).unwrap();
         }
     }
@@ -244,6 +265,20 @@ fn lean_mult_type(target: &str, mult: &Multiplicity) -> String {
 
 fn lean_type(type_name: &str, mult: &Multiplicity) -> String {
     lean_mult_type(type_name, mult)
+}
+
+fn is_lean_defaultable(name: &str) -> bool {
+    matches!(name, "Int" | "String" | "Bool" | "Nat")
+}
+
+fn lean_default_value(name: &str) -> &str {
+    match name {
+        "Int" => "0",
+        "Nat" => "0",
+        "String" => "\"\"",
+        "Bool" => "false",
+        _ => "sorry",
+    }
 }
 
 fn lean_primitive_type(name: &str) -> String {
@@ -367,7 +402,20 @@ fn generate_constraints(ir: &OxidtrIR, _ctx: &LeanContext) -> String {
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
-            // Presence, Membership, Named — skip or generate comments
+            // Presence: type-guaranteed in Lean (non-Option = required)
+            analyze::ConstraintInfo::Presence { sig_name, field_name, kind } => {
+                let fname = expr_translator::to_lower_camel(field_name);
+                match kind {
+                    analyze::PresenceKind::Required => {
+                        writeln!(out, "-- {sig_name}.{fname}: required (guaranteed by type — field is non-Option)").unwrap();
+                    }
+                    analyze::PresenceKind::Absent => {
+                        writeln!(out, "-- {sig_name}.{fname}: absent (guaranteed by type — field not present)").unwrap();
+                    }
+                }
+                writeln!(out).unwrap();
+            }
+            // Membership, Named — skip
             _ => {}
         }
     }
@@ -409,7 +457,13 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         };
 
         writeln!(out, "def {fn_name} {params_str} : {return_str} :=").unwrap();
-        writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
+        if !op.body.is_empty() {
+            let body_expr = &op.body[op.body.len() - 1];
+            let body_str = expr_translator::translate_with_ir(body_expr, ir);
+            writeln!(out, "  {body_str}").unwrap();
+        } else {
+            writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
+        }
         writeln!(out).unwrap();
     }
 
