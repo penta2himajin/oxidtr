@@ -88,6 +88,10 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "Models.cs", "Operations.cs", extract::csharp_extractor::extract)?;
         let validation_sources = collect_validation_sources_cs(impl_dir)?;
         differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
+    } else if impl_dir.join("Types.lean").exists() {
+        let extracted = extract_mined_lean(impl_dir)?;
+        let validation_sources = collect_validation_sources_lean(impl_dir)?;
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
         let (extracted, validation_sources) = extract_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
@@ -102,7 +106,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
             }
             Err(_) => {
                 return Err(CheckError::ImplNotFound(
-                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, Models.cs, and general extract)".to_string()
+                    "no recognized source files found (tried models.rs, models.ts, Models.kt, Models.java, Models.swift, models.go, Models.cs, Types.lean, and general extract)".to_string()
                 ));
             }
         }
@@ -195,6 +199,31 @@ fn collect_validation_sources_cs(impl_dir: &Path) -> Result<Vec<String>, CheckEr
         sources.push(std::fs::read_to_string(&tests_path)?);
     }
     Ok(sources)
+}
+
+/// Collect validation source texts from Lean impl directory.
+fn collect_validation_sources_lean(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
+    let constraints_path = impl_dir.join("Constraints.lean");
+    if constraints_path.exists() {
+        sources.push(std::fs::read_to_string(&constraints_path)?);
+    }
+    Ok(sources)
+}
+
+/// Extract Lean implementation from Types.lean + Operations.lean.
+fn extract_mined_lean(impl_dir: &Path) -> Result<ExtractedImpl, CheckError> {
+    let types_src = std::fs::read_to_string(impl_dir.join("Types.lean"))?;
+    let ops_path = impl_dir.join("Operations.lean");
+    let ops_src = if ops_path.exists() {
+        std::fs::read_to_string(&ops_path)?
+    } else {
+        String::new()
+    };
+    let combined = format!("{types_src}\n{ops_src}");
+    let mined = extract::lean_extractor::extract(&combined);
+    let extracted = mined_to_extracted(&mined);
+    Ok(extracted)
 }
 
 /// Extract using an extractor function, then convert MinedModel → ExtractedImpl.
