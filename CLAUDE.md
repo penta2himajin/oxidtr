@@ -34,6 +34,7 @@ mise exec rust -- cargo run -- generate models/oxidtr.als --target java --output
 mise exec rust -- cargo run -- generate models/oxidtr.als --target swift --output generated-swift
 mise exec rust -- cargo run -- generate models/oxidtr.als --target go --output generated-go
 mise exec rust -- cargo run -- generate models/oxidtr.als --target cs --output generated-cs
+mise exec rust -- cargo run -- generate models/oxidtr.als --target lean --output generated-lean
 mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated
 mise exec rust -- cargo run -- extract generated/
 mise exec rust -- cargo run -- extract src/ --lang rust
@@ -63,6 +64,7 @@ src/
     swift/          Swift backend + expr_translator
     go/             Go backend + expr_translator
     csharp/         C# backend + expr_translator
+    lean/           Lean 4 backend + expr_translator (theorems with sorry)
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
   check/            構造的整合性検証 (differ, impl_parser)
@@ -81,7 +83,7 @@ src/
 - **モデルが唯一の信頼源** — 型・テスト・検証は全てAlloyモデルから導出
 - **保証の総量は一定** — 型が強い言語はテスト減、弱い言語はテスト増
 - **最小依存** — oxidtr自身がAlloyモデルでセルフホスト可能であること
-- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整 (Rust > Swift ≈ Kotlin ≈ C# > Go ≈ Java > TypeScript)
+- **can_guarantee_by_type** — 言語の型の強さに応じてテスト生成量を自動調整 (Lean ≈ Rust > Swift ≈ Kotlin ≈ C# > Go ≈ Java > TypeScript)
 
 ## 開発ワークフロー
 
@@ -126,7 +128,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `parser_sig`, `parser_expr` | Alloyパーサー (派生フィールド `fun Sig.name` 構文含む) |
 | `lowering` | AST→IR変換 |
 | `expr_translator` | 式変換 (Rust, prime/temporal含む) |
-| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp` | 各言語コード生成 (派生フィールド含む) |
+| `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp`, `backend_lean` | 各言語コード生成 (派生フィールド含む) |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `check` | 構造的整合性検証 (var field差分検出含む) |
@@ -162,7 +164,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 主要な未実装:
 - Phase 8: Go backend ✅ (完了)
 - Phase 9: C# backend ✅ (完了)
-- Phase 10: Lean backend
+- Phase 10: Lean backend ✅ (完了: structure/inductive型, theorem+sorry制約, expr_translator, extract)
 - Phase 11: Alloy 6 時相パーサー ✅ (完了: var field, prime operator, temporal unary operators)
 - Phase 12-13: Alloy 6 時相コード生成 ✅ (完了: prime式変換, temporal invariant/transition validators, var field check差分検出)
 - explore: Alloyインスタンス異常パターン検出 ✅ (完了: detect_anomalies — UnconstrainedField/UnboundedCollection/UnguardedSelfRef、generateパイプラインに統合済み)
@@ -194,7 +196,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - var field: check差分でis_var不整合を検出 (VarMismatch)
 
 **派生フィールド (Phase 14, 実装済み):**
-- `fun Sig.name[params]: mult Type { body }` 構文: パーサー・AST・IR・全7バックエンドで対応
+- `fun Sig.name[params]: mult Type { body }` 構文: パーサー・AST・IR・全8バックエンドで対応
 - Rust: `impl Sig { pub fn name(&self) -> Type { body } }`
 - TypeScript: クラスメソッド `name(): Type { return body; }`
 - Kotlin: メソッド `fun name(): Type = body`
@@ -202,9 +204,16 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Swift: computed property `var name: Type { body }`
 - Go: メソッド `func (s *Sig) Name() Type { return body }`
 - C#: property `public Type Name => body;`
+- Lean: `def Sig.name (self : Sig) : Type := sorry`
+
+**Lean backend (Phase 10, 実装済み):**
+- structure/inductive型生成、fact→theorem+sorry変換、expr_translator(∀/∃/∧/∨/→/↔等)
+- Lean extract: structure/inductive/theoremをMinedModelとして抽出
+- Guarantee: TargetLang::Lean追加（Presence→FullyByType、他はRequiresTest）
+- 生成ファイル: Types.lean, Constraints.lean, Operations.lean
 
 **未到達の領域:**
-- Lean backend: fact本体式を定理として完全変換する最終目標。「制約を実行時に検証する」から「制約を証明する」への移行
+- Lean tactic自動生成: sorry→実際の証明戦略を生成（将来課題）
 
 ## Alloyモデルへのフィードバック
 

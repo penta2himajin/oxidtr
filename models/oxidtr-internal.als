@@ -268,6 +268,7 @@ one sig Java       extends TargetLang {}
 one sig Go         extends TargetLang {}
 one sig CSharp     extends TargetLang {}
 one sig TypeScript extends TargetLang {}
+one sig Lean       extends TargetLang {}
 
 -------------------------------------------------------------------------------
 -- Constraint analysis

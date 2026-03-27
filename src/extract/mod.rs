@@ -5,6 +5,7 @@ pub mod java_extractor;
 pub mod swift_extractor;
 pub mod go_extractor;
 pub mod csharp_extractor;
+pub mod lean_extractor;
 pub mod schema_extractor;
 pub mod renderer;
 
@@ -25,6 +26,7 @@ pub fn detect_lang(path: &Path) -> Option<String> {
         if path.join("Models.swift").exists() { return Some("swift".to_string()); }
         if path.join("models.go").exists() { return Some("go".to_string()); }
         if path.join("Models.cs").exists() { return Some("csharp".to_string()); }
+        if path.join("Types.lean").exists() { return Some("lean".to_string()); }
         if path.join("schemas.json").exists() { return Some("schema".to_string()); }
 
         // Scan for any matching extension
@@ -49,6 +51,7 @@ fn detect_lang_from_file(path: &Path) -> Option<String> {
         "swift" => Some("swift".to_string()),
         "go" => Some("go".to_string()),
         "cs" => Some("csharp".to_string()),
+        "lean" => Some("lean".to_string()),
         "json" => Some("schema".to_string()),
         _ => None,
     }
@@ -159,6 +162,9 @@ fn detect_all_langs(dir: &Path) -> Vec<(String, Vec<std::path::PathBuf>)> {
 
     let cs_files = collect_files(dir, "cs");
     if !cs_files.is_empty() { result.push(("csharp".to_string(), cs_files)); }
+
+    let lean_files = collect_files(dir, "lean");
+    if !lean_files.is_empty() { result.push(("lean".to_string(), lean_files)); }
 
     // JSON Schema as supplemental
     let schema_path = dir.join("schemas.json");
@@ -364,6 +370,7 @@ fn extract_with_lang(content: &str, lang: &str) -> Result<MinedModel, String> {
         "swift" => Ok(swift_extractor::extract(content)),
         "go" => Ok(go_extractor::extract(content)),
         "csharp" | "cs" => Ok(csharp_extractor::extract(content)),
+        "lean" => Ok(lean_extractor::extract(content)),
         "schema" | "json" => Ok(schema_extractor::extract(content)),
         other => Err(format!("unsupported language: {other}")),
     }
