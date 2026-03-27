@@ -170,7 +170,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - explore: Alloyインスタンス異常パターン検出 ✅ (完了: detect_anomalies — UnconstrainedField/UnboundedCollection/UnguardedSelfRef、generateパイプラインに統合済み)
 - cover: カバレッジ×fact直交テスト生成 ✅ (完了: fact_coverage — sig_facts/uncovered_fields/pairwise、全7バックエンドでテストスキャフォールド生成)
 - Phase 14: 派生フィールド (fun Sig.name 構文 → computed property生成)
-- Phase 15: テスト実体化・sorry撲滅・enum/module ✅ (完了: C#/Kotlin テスト実体化, Lean sorry自動証明, Java target validation有効化, enum構文, module/open宣言)
+- Phase 15: テスト実体化・sorry撲滅・enum/module ✅ (完了: C#/Kotlin テスト実体化, Lean sorry自動証明, enum構文, module/open宣言)
 
 ### fact本体式の活用における伸びしろ
 
