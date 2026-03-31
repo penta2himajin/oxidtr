@@ -17,6 +17,100 @@ pub struct GeneratedFile {
     pub content: String,
 }
 
+// ── Alloy native type aliases ───────────────────────────────────────────────
+//
+// Alloy has no primitive types — everything is a sig instance.  These marker
+// sig names are mapped to language-native primitives by each backend so that
+// `sig Str {}` is never emitted as `pub struct Str;` but instead the field
+// type becomes `String` (Rust), `string` (TS/Go), etc.
+
+/// Returns `true` if `name` is a well-known Alloy marker sig that should be
+/// mapped to a native primitive type rather than emitted as a struct/class.
+pub fn is_native_type_alias(name: &str) -> bool {
+    matches!(name, "Str" | "Int" | "Float" | "Bool")
+}
+
+/// Target-language enum for native type resolution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetLang {
+    Rust,
+    TypeScript,
+    Kotlin,
+    Java,
+    Swift,
+    Go,
+    CSharp,
+    Lean,
+}
+
+/// Map an Alloy native-alias sig name to the corresponding language primitive.
+/// Returns `None` if `name` is not a native alias.
+pub fn native_type_for(lang: TargetLang, name: &str) -> Option<&'static str> {
+    match name {
+        "Str" => Some(match lang {
+            TargetLang::Rust => "String",
+            TargetLang::TypeScript => "string",
+            TargetLang::Kotlin => "String",
+            TargetLang::Java => "String",
+            TargetLang::Swift => "String",
+            TargetLang::Go => "string",
+            TargetLang::CSharp => "string",
+            TargetLang::Lean => "String",
+        }),
+        "Int" => Some(match lang {
+            TargetLang::Rust => "i64",
+            TargetLang::TypeScript => "number",
+            TargetLang::Kotlin => "Long",
+            TargetLang::Java => "long",
+            TargetLang::Swift => "Int",
+            TargetLang::Go => "int64",
+            TargetLang::CSharp => "long",
+            TargetLang::Lean => "Int",
+        }),
+        "Float" => Some(match lang {
+            TargetLang::Rust => "f64",
+            TargetLang::TypeScript => "number",
+            TargetLang::Kotlin => "Double",
+            TargetLang::Java => "double",
+            TargetLang::Swift => "Double",
+            TargetLang::Go => "float64",
+            TargetLang::CSharp => "double",
+            TargetLang::Lean => "Float",
+        }),
+        "Bool" => Some(match lang {
+            TargetLang::Rust => "bool",
+            TargetLang::TypeScript => "boolean",
+            TargetLang::Kotlin => "Boolean",
+            TargetLang::Java => "boolean",
+            TargetLang::Swift => "Bool",
+            TargetLang::Go => "bool",
+            TargetLang::CSharp => "bool",
+            TargetLang::Lean => "Bool",
+        }),
+        _ => None,
+    }
+}
+
+/// Resolve a type name: if it's a native alias, return the mapped name;
+/// otherwise return the original name unchanged.
+pub fn resolve_type(lang: TargetLang, name: &str) -> String {
+    native_type_for(lang, name)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| name.to_string())
+}
+
+/// Reverse-map a language primitive back to the Alloy alias name.
+/// Used by `check` and `extract` to compare impl types against the model.
+pub fn reverse_native_type(lang: TargetLang, native: &str) -> Option<&'static str> {
+    // Check each alias
+    for alias in &["Str", "Int", "Float", "Bool"] {
+        if native_type_for(lang, alias) == Some(native) {
+            return Some(alias);
+        }
+    }
+    None
+}
+
 /// Detect direct ownership pattern: `all x: A | some y: B | x in y.field`
 /// Returns (owned_param_name, owner_param_name, field_name) using the
 /// provided name-transform function to build param names from type names.
@@ -81,7 +175,8 @@ pub fn collect_fixture_types(ir: &OxidtrIR) -> HashSet<String> {
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
     ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
+            && !is_native_type_alias(&s.name))
         .map(|s| s.name.clone())
         .collect()
 }

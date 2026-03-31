@@ -1,6 +1,6 @@
 use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
-use crate::backend::GeneratedFile;
+use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -104,6 +104,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             continue;
         }
         if ctx.is_variant(&s.name) { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
         if !constraint_names.is_empty() {
@@ -250,8 +251,10 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 } else {
                     format!("{} ", annotations.join(" "))
                 };
+                let resolved_target = resolve_type(TargetLang::Java, &f.target);
                 let java_type = if let Some(vt) = &f.value_type {
-                    format!("Map<{}, {}>", f.target, vt)
+                    let resolved_vt = resolve_type(TargetLang::Java, vt);
+                    format!("Map<{}, {}>", resolved_target, resolved_vt)
                 } else if let Some(_raw) = &f.raw_union_type {
                     // Union types → Object
                     match f.mult {
@@ -261,7 +264,7 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                         Multiplicity::One  => "Object".to_string(),
                     }
                 } else {
-                    mult_to_java_type(&f.target, &f.mult)
+                    mult_to_java_type(&resolved_target, &f.mult)
                 };
                 (annotation_str, java_type, f.is_var)
             })
@@ -424,12 +427,14 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
                 if !all_fields.is_empty() {
                     let params: Vec<String> = all_fields.iter()
                         .map(|f| {
+                            let resolved = resolve_type(TargetLang::Java, &f.target);
                             let t = if let Some(vt) = &f.value_type {
-                                format!("Map<{}, {}>", f.target, vt)
+                                let rv = resolve_type(TargetLang::Java, vt);
+                                format!("Map<{}, {}>", resolved, rv)
                             } else if let Some(_raw) = &f.raw_union_type {
                                 "Object".to_string()
                             } else {
-                                mult_to_java_type(&f.target, &f.mult)
+                                mult_to_java_type(&resolved, &f.mult)
                             };
                             format!("{} {}", t, f.name)
                         })

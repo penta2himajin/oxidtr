@@ -1,6 +1,6 @@
 pub mod expr_translator;
 
-use crate::backend::GeneratedFile;
+use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
@@ -106,6 +106,7 @@ fn generate_types(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
         if !constraint_names.is_empty() {
@@ -259,10 +260,13 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 
 fn field_type_str(f: &IRField, _ctx: &LeanContext) -> String {
     if let Some(vt) = &f.value_type {
+        let resolved_key = resolve_type(TargetLang::Lean, &f.target);
+        let resolved_val = resolve_type(TargetLang::Lean, vt);
         // Map type: Key → Value as List (Key × Value)
-        return format!("List ({} × {})", f.target, vt);
+        return format!("List ({} × {})", resolved_key, resolved_val);
     }
-    lean_mult_type(&f.target, &f.mult)
+    let resolved = resolve_type(TargetLang::Lean, &f.target);
+    lean_mult_type(&resolved, &f.mult)
 }
 
 fn lean_mult_type(target: &str, mult: &Multiplicity) -> String {

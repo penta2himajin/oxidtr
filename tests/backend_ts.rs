@@ -388,3 +388,40 @@ fn ts_derived_field_generates_method() {
     let models = find_file(&files, "models.ts");
     assert!(models.contains("balance(): M.Int"), "should generate method on class:\n{models}");
 }
+
+// ── Native type alias mapping ───────────────────────────────────────────────
+
+#[test]
+fn ts_native_str_maps_to_string() {
+    let files = generate_from(r#"
+        sig Str {}
+        sig User { name: one Str }
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(!models.contains("export interface Str"), "Str sig should not be emitted:\n{models}");
+    assert!(models.contains("name: string;"), "Str field should map to string:\n{models}");
+}
+
+#[test]
+fn ts_native_int_maps_to_number() {
+    let files = generate_from(r#"
+        sig Int {}
+        sig Counter { value: one Int, items: set Int }
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(!models.contains("export interface Int"), "Int sig should not be emitted:\n{models}");
+    assert!(models.contains("value: number;"), "Int field should map to number:\n{models}");
+    assert!(models.contains("items: Set<number>;"), "set Int → Set<number>:\n{models}");
+}
+
+#[test]
+fn ts_native_bool_maps_to_boolean() {
+    let files = generate_from(r#"
+        sig Bool {}
+        sig Flag { active: one Bool, flags: seq Bool }
+    "#);
+    let models = find_file(&files, "models.ts");
+    assert!(!models.contains("export interface Bool"), "Bool sig should not be emitted:\n{models}");
+    assert!(models.contains("active: boolean;"), "Bool field should map to boolean:\n{models}");
+    assert!(models.contains("flags: boolean[];"), "seq Bool → boolean[]:\n{models}");
+}

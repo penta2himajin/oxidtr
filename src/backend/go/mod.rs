@@ -1,6 +1,6 @@
 pub mod expr_translator;
 
-use crate::backend::GeneratedFile;
+use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -129,6 +129,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &GoContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
         if !constraint_names.is_empty() {
@@ -204,10 +205,12 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
     } else {
         writeln!(out, "type {} struct {{", s.name).unwrap();
         for f in &s.fields {
+            let resolved_target = resolve_type(TargetLang::Go, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
-                format!("map[{}]{}", f.target, vt)
+                let resolved_vt = resolve_type(TargetLang::Go, vt);
+                format!("map[{}]{}", resolved_target, resolved_vt)
             } else {
-                mult_to_go_type(&f.target, &f.mult, ctx.cyclic_fields.contains(&(s.name.clone(), f.name.clone())))
+                mult_to_go_type(&resolved_target, &f.mult, ctx.cyclic_fields.contains(&(s.name.clone(), f.name.clone())))
             };
 
             // Comments for special patterns

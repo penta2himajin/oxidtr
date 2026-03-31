@@ -1,6 +1,6 @@
 pub mod expr_translator;
 
-use super::GeneratedFile;
+use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -163,6 +163,10 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     for s in &ir.structures {
         // Skip variant sigs — they become enum variants
         if variant_names.contains(&s.name) {
+            continue;
+        }
+        // Skip native type aliases (Str, Int, Float, Bool)
+        if is_native_type_alias(&s.name) {
             continue;
         }
 
@@ -334,12 +338,14 @@ fn generate_struct(
             // Gap 1 & 3: annotations for sig multiplicity and disj constraints
             write_field_annotations_rust(out, ir, &s.name, f, "    ", disj_fields);
             let is_self_ref = self_ref_fields.contains(&(s.name.clone(), f.name.clone()));
+            let resolved_target = resolve_type(TargetLang::Rust, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
-                format!("BTreeMap<{}, {}>", f.target, vt)
+                let resolved_vt = resolve_type(TargetLang::Rust, vt);
+                format!("BTreeMap<{}, {}>", resolved_target, resolved_vt)
             } else if let Some(raw) = &f.raw_union_type {
                 rust_union_type(raw, &f.mult)
             } else {
-                multiplicity_to_type(&f.target, &f.mult, is_self_ref)
+                multiplicity_to_type(&resolved_target, &f.mult, is_self_ref)
             };
             if f.is_var {
                 writeln!(out, "    /// MUTABLE: this field changes across state transitions").unwrap();
@@ -543,7 +549,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
     let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
+            && !is_native_type_alias(&s.name))
         .map(|s| s.name.clone()).collect();
 
     // Check if any expression uses TC functions → need helpers import
@@ -1781,6 +1788,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
 
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         let struct_snake = to_snake_case(&s.name);
 
@@ -2007,6 +2015,21 @@ fn default_value_for_field_inner(
     target: &str, mult: &Multiplicity, is_boxed: bool,
     has_fixture: &HashSet<String>,
 ) -> String {
+    // Native type aliases get language-native default values
+    if let Some(native_default) = rust_native_default(target) {
+        return match mult {
+            Multiplicity::Lone => "None".to_string(),
+            Multiplicity::Set => format!("BTreeSet::from([{native_default}])"),
+            Multiplicity::Seq => format!("vec![{native_default}]"),
+            Multiplicity::One => {
+                if is_boxed {
+                    format!("Box::new({native_default})")
+                } else {
+                    native_default.to_string()
+                }
+            }
+        };
+    }
     match mult {
         Multiplicity::Lone => "None".to_string(),
         Multiplicity::Set => {
@@ -2030,6 +2053,17 @@ fn default_value_for_field_inner(
                 format!("default_{}()", to_snake_case(target))
             }
         }
+    }
+}
+
+/// Returns a Rust default value literal for a native type alias.
+fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
+    match alloy_name {
+        "Str" => Some("String::new()"),
+        "Int" => Some("0i64"),
+        "Float" => Some("0.0f64"),
+        "Bool" => Some("false"),
+        _ => None,
     }
 }
 
