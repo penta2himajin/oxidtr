@@ -1,10 +1,9 @@
 pub mod expr_translator;
 
-use crate::backend::GeneratedFile;
+use crate::backend::{self, GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
 use crate::analyze;
-use crate::backend;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -80,6 +79,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &CsContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         if s.is_enum {
             generate_enum(&mut out, s, ctx);
@@ -162,7 +162,8 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         if f.mult == Multiplicity::Seq {
             writeln!(out, "    // @alloy: seq").unwrap();
         }
-        let type_str = mult_to_cs_type(&f.target, &f.mult);
+        let resolved_target = resolve_type(TargetLang::CSharp, &f.target);
+        let type_str = mult_to_cs_type(&resolved_target, &f.mult);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
     }
 

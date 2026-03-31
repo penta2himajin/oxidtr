@@ -1,6 +1,6 @@
 pub mod expr_translator;
 
-use super::GeneratedFile;
+use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -113,6 +113,10 @@ fn generate_models(ir: &OxidtrIR) -> String {
         if variant_names.contains(&s.name) {
             continue;
         }
+        // Skip native type aliases (Str, Int, Float, Bool)
+        if is_native_type_alias(&s.name) {
+            continue;
+        }
 
         // Intersection type alias: type Foo = A & B & C
         if !s.intersection_of.is_empty() {
@@ -213,8 +217,10 @@ fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_f
         for f in &s.fields {
             // Gap 1 & 3: annotations for sig multiplicity and disj constraints
             write_field_annotations_ts(out, ir, &s.name, f, disj_fields);
+            let resolved_target = resolve_type(TargetLang::TypeScript, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
-                format!("Map<{}, {}>", f.target, vt)
+                let resolved_vt = resolve_type(TargetLang::TypeScript, vt);
+                format!("Map<{}, {}>", resolved_target, resolved_vt)
             } else if let Some(raw) = &f.raw_union_type {
                 // Preserve raw union type (e.g. "number | string") from source language
                 if f.mult == Multiplicity::Lone {
@@ -223,7 +229,7 @@ fn generate_interface(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_f
                     raw.clone()
                 }
             } else {
-                mult_to_ts_type(&f.target, &f.mult)
+                mult_to_ts_type(&resolved_target, &f.mult)
             };
             let readonly = if f.is_var { "" } else { "readonly " };
             if f.is_var {
@@ -299,8 +305,10 @@ fn generate_union_type(
             writeln!(out, "export interface {} {{", v).unwrap();
             writeln!(out, "  readonly kind: \"{}\";", v).unwrap();
             for f in &all_fields {
+                let resolved_target = resolve_type(TargetLang::TypeScript, &f.target);
                 let type_str = if let Some(vt) = &f.value_type {
-                    format!("Map<{}, {}>", f.target, vt)
+                    let resolved_vt = resolve_type(TargetLang::TypeScript, vt);
+                    format!("Map<{}, {}>", resolved_target, resolved_vt)
                 } else if let Some(raw) = &f.raw_union_type {
                     if f.mult == Multiplicity::Lone {
                         format!("{} | null", raw)
@@ -308,7 +316,7 @@ fn generate_union_type(
                         raw.clone()
                     }
                 } else {
-                    mult_to_ts_type(&f.target, &f.mult)
+                    mult_to_ts_type(&resolved_target, &f.mult)
                 };
                 let readonly = if f.is_var { "" } else { "readonly " };
                 writeln!(out, "  {readonly}{}: {};", f.name, type_str).unwrap();

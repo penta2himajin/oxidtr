@@ -1,6 +1,6 @@
 use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
-use crate::backend::GeneratedFile;
+use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -92,6 +92,7 @@ fn generate_models(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             continue;
         }
         if ctx.is_variant(&s.name) { continue; }
+        if is_native_type_alias(&s.name) { continue; }
 
         let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
         if !constraint_names.is_empty() {
@@ -184,8 +185,10 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
     {
         writeln!(out, "data class {}(", s.name).unwrap();
         for (i, f) in s.fields.iter().enumerate() {
+            let resolved_target = resolve_type(TargetLang::Kotlin, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
-                format!("Map<{}, {}>", f.target, vt)
+                let resolved_vt = resolve_type(TargetLang::Kotlin, vt);
+                format!("Map<{}, {}>", resolved_target, resolved_vt)
             } else if let Some(_raw) = &f.raw_union_type {
                 // Union types → Any (Kotlin lacks field-level union types without sealed classes)
                 match f.mult {
@@ -195,7 +198,7 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                     Multiplicity::One  => "Any".to_string(),
                 }
             } else {
-                mult_to_kt_type(&f.target, &f.mult)
+                mult_to_kt_type(&resolved_target, &f.mult)
             };
             let comma = if i < s.fields.len() - 1 { "," } else { "" };
             // Bean Validation annotations

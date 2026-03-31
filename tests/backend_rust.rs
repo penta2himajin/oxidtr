@@ -724,3 +724,66 @@ fn rust_non_receiver_fun_still_in_operations() {
     let ops = find_file(&files, "operations.rs");
     assert!(ops.contains("fn get_role("), "non-receiver fun should remain in operations.rs:\n{ops}");
 }
+
+// ── Native type alias mapping ───────────────────────────────────────────────
+
+#[test]
+fn rust_native_str_maps_to_string() {
+    let files = generate_from(r#"
+        sig Str {}
+        sig User { name: one Str }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(!models.contains("pub struct Str"), "Str sig should not be emitted as struct:\n{models}");
+    assert!(models.contains("pub name: String,"), "Str field should map to String:\n{models}");
+}
+
+#[test]
+fn rust_native_int_maps_to_i64() {
+    let files = generate_from(r#"
+        sig Int {}
+        sig Counter { value: one Int }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(!models.contains("pub struct Int"), "Int sig should not be emitted:\n{models}");
+    assert!(models.contains("pub value: i64,"), "Int field should map to i64:\n{models}");
+}
+
+#[test]
+fn rust_native_float_maps_to_f64() {
+    let files = generate_from(r#"
+        sig Float {}
+        sig Measurement { reading: one Float }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(!models.contains("pub struct Float"), "Float sig should not be emitted:\n{models}");
+    assert!(models.contains("pub reading: f64,"), "Float field should map to f64:\n{models}");
+}
+
+#[test]
+fn rust_native_bool_maps_to_bool() {
+    let files = generate_from(r#"
+        sig Bool {}
+        sig Flag { active: one Bool }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(!models.contains("pub struct Bool"), "Bool sig should not be emitted:\n{models}");
+    assert!(models.contains("pub active: bool,"), "Bool field should map to bool:\n{models}");
+}
+
+#[test]
+fn rust_native_type_with_multiplicities() {
+    let files = generate_from(r#"
+        sig Str {}
+        sig Int {}
+        sig Item {
+            tags: set Str,
+            label: lone Str,
+            scores: seq Int
+        }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("pub tags: BTreeSet<String>,"), "set Str → BTreeSet<String>:\n{models}");
+    assert!(models.contains("pub label: Option<String>,"), "lone Str → Option<String>:\n{models}");
+    assert!(models.contains("pub scores: Vec<i64>,"), "seq Int → Vec<i64>:\n{models}");
+}

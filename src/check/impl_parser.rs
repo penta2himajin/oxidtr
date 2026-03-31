@@ -1,6 +1,7 @@
 /// Parses oxidtr-generated Rust files to extract structural information.
 /// Uses format-specific lightweight parsing (not syn) since we know the output format.
 
+use crate::backend::{TargetLang, reverse_native_type};
 use crate::parser::ast::Multiplicity;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,24 +211,32 @@ fn extract_fn_name(line: &str) -> Option<String> {
 
 /// Reverse-maps a Rust type string to Multiplicity.
 /// e.g. "Option<Foo>" -> Lone, "Vec<Foo>" -> Set, "Foo" -> One
+/// Also reverse-maps native types: "String" -> "Str", "i64" -> "Int", etc.
 pub fn type_to_mult(rust_type: &str) -> (Multiplicity, String) {
     let t = rust_type.trim();
     if let Some(inner) = strip_wrapper(t, "BTreeSet<", ">") {
-        return (Multiplicity::Set, inner.to_string());
+        return (Multiplicity::Set, reverse_rust_native(inner));
     }
     if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
-        return (Multiplicity::Seq, inner.to_string());
+        return (Multiplicity::Seq, reverse_rust_native(inner));
     }
     if let Some(inner) = strip_wrapper(t, "Option<Box<", ">>") {
-        return (Multiplicity::Lone, inner.to_string());
+        return (Multiplicity::Lone, reverse_rust_native(inner));
     }
     if let Some(inner) = strip_wrapper(t, "Option<", ">") {
-        return (Multiplicity::Lone, inner.to_string());
+        return (Multiplicity::Lone, reverse_rust_native(inner));
     }
     if let Some(inner) = strip_wrapper(t, "Box<", ">") {
-        return (Multiplicity::One, inner.to_string());
+        return (Multiplicity::One, reverse_rust_native(inner));
     }
-    (Multiplicity::One, t.to_string())
+    (Multiplicity::One, reverse_rust_native(t))
+}
+
+/// Reverse-map a Rust native type back to the Alloy alias if applicable.
+fn reverse_rust_native(name: &str) -> String {
+    reverse_native_type(TargetLang::Rust, name)
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| name.to_string())
 }
 
 fn strip_wrapper<'a>(s: &'a str, prefix: &str, suffix: &str) -> Option<&'a str> {
