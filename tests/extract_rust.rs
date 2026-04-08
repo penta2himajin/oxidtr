@@ -380,7 +380,7 @@ fn resolve_external_types_filters_type_parameters() {
                 is_abstract: false,
                 parent: None,
                 source_location: "test".to_string(),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             },
         ],
         fact_candidates: vec![],

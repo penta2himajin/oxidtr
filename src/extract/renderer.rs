@@ -6,10 +6,39 @@ use std::fmt::Write;
 pub fn render(model: &MinedModel) -> String {
     let mut out = String::new();
 
-    // Render sigs
+    // Group sigs by module, preserving order within each group.
+    // Sigs with no module come first (ungrouped), then each module section.
+    let mut ungrouped: Vec<&MinedSig> = Vec::new();
+    let mut module_order: Vec<String> = Vec::new();
+    let mut by_module: std::collections::HashMap<String, Vec<&MinedSig>> = std::collections::HashMap::new();
+
     for sig in &model.sigs {
+        if let Some(m) = &sig.module {
+            by_module.entry(m.clone()).or_default().push(sig);
+            if !module_order.contains(m) {
+                module_order.push(m.clone());
+            }
+        } else {
+            ungrouped.push(sig);
+        }
+    }
+
+    // Render ungrouped sigs first
+    for sig in &ungrouped {
         render_sig(&mut out, sig);
         writeln!(out).unwrap();
+    }
+
+    // Render each module section
+    for module_name in &module_order {
+        writeln!(out, "module {module_name}").unwrap();
+        writeln!(out).unwrap();
+        if let Some(sigs) = by_module.get(module_name) {
+            for sig in sigs {
+                render_sig(&mut out, sig);
+                writeln!(out).unwrap();
+            }
+        }
     }
 
     // Render fact candidates (as comments with confidence)

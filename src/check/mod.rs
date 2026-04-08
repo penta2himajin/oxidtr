@@ -121,6 +121,22 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "models.rs", "operations.rs", extract::rust_extractor::extract)?;
         let validation_sources = collect_validation_sources_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
+    } else if impl_dir.join("lib.rs").exists() {
+        // Modular Rust layout: lib.rs + module subdirectories
+        match extract::run(config.impl_dir.as_str(), Some("rust")) {
+            Ok(mined) => {
+                let mut extracted = mined_to_extracted(&mined);
+                // Also extract functions from operations.rs if it exists
+                let ops_path = impl_dir.join("operations.rs");
+                if ops_path.exists() {
+                    let ops_src = std::fs::read_to_string(&ops_path)?;
+                    extracted.fns.extend(extract_fns_generic(&ops_src));
+                }
+                let validation_sources = collect_validation_sources_rust(impl_dir)?;
+                differ::diff_with_validation(&ir, &extracted, &validation_sources)
+            }
+            Err(e) => return Err(CheckError::ImplNotFound(e)),
+        }
     } else {
         // Fallback: use mine to extract from any code in the directory
         match extract::run(config.impl_dir.as_str(), None) {

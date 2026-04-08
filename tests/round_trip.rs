@@ -180,9 +180,28 @@ fn self_hosting_round_trip_rust() {
     let model = parser::parse(&source).unwrap();
     let ir_obj = ir::lower(&model).unwrap();
     let files = rust::generate(&ir_obj);
-    let models_rs = files.iter().find(|f| f.path == "models.rs").unwrap();
 
-    let mined = rust_extractor::extract(&models_rs.content);
+    // For modular layout: concatenate all .rs model files (excluding tests/fixtures/etc.)
+    // For flat layout: use models.rs directly
+    let models_content = if let Some(models_rs) = files.iter().find(|f| f.path == "models.rs") {
+        models_rs.content.clone()
+    } else {
+        // Modular layout: concatenate all per-concept .rs files
+        files.iter()
+            .filter(|f| f.path.ends_with(".rs")
+                && !f.path.ends_with("mod.rs")
+                && !f.path.ends_with("lib.rs")
+                && f.path != "tests.rs"
+                && f.path != "fixtures.rs"
+                && f.path != "helpers.rs"
+                && f.path != "operations.rs"
+                && f.path != "newtypes.rs")
+            .map(|f| f.content.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    let mined = rust_extractor::extract(&models_content);
 
     // Verify key structures survive the round-trip
     assert_sig_exists(&mined.sigs, "SigDecl");

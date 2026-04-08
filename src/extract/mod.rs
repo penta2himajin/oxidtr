@@ -23,6 +23,8 @@ pub fn detect_lang(path: &Path) -> Option<String> {
         if path.join("Models.kt").exists() { return Some("kt".to_string()); }
         if path.join("Models.java").exists() { return Some("java".to_string()); }
         if path.join("models.rs").exists() { return Some("rust".to_string()); }
+        // Modular layout: lib.rs at root with module subdirectories
+        if path.join("lib.rs").exists() { return Some("rust".to_string()); }
         if path.join("Models.swift").exists() { return Some("swift".to_string()); }
         if path.join("models.go").exists() { return Some("go".to_string()); }
         if path.join("Models.cs").exists() { return Some("csharp".to_string()); }
@@ -306,8 +308,18 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
         let content = std::fs::read_to_string(file)
             .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let mined = extract_with_lang(&content, lang)?;
+
+        // Infer module name from subdirectory relative to the base dir.
+        // e.g. dir/ast/sig_decl.rs → module "ast"
+        // e.g. dir/models.rs → module None
+        let inferred_module = infer_module_from_path(file, dir);
+
         // Dedup: merge same-name sigs (supplement missing fields, prefer more complete)
-        for sig in mined.sigs {
+        for mut sig in mined.sigs {
+            // Apply inferred module if not already set
+            if sig.module.is_none() {
+                sig.module = inferred_module.clone();
+            }
             if let Some(existing) = merged.sigs.iter_mut().find(|s| s.name == sig.name) {
                 // Supplement missing fields from the new source
                 for f in &sig.fields {
@@ -327,6 +339,10 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
                 if existing.intersection_of.is_empty() && !sig.intersection_of.is_empty() {
                     existing.intersection_of = sig.intersection_of.clone();
                 }
+                // Prefer module if either provides one
+                if existing.module.is_none() && sig.module.is_some() {
+                    existing.module = sig.module.clone();
+                }
             } else {
                 merged.sigs.push(sig);
             }
@@ -339,6 +355,35 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
     merged.fact_candidates.dedup_by(|a, b| a.alloy_text == b.alloy_text);
 
     Ok(merged)
+}
+
+/// Infer module name from file path relative to the base directory.
+/// e.g. base_dir/ast/sig_decl.rs → Some("ast")
+/// e.g. base_dir/models.rs → None
+/// e.g. base_dir/src/ir/nodes.rs → Some("ir") (innermost directory)
+fn infer_module_from_path(file: &Path, base_dir: &Path) -> Option<String> {
+    let relative = file.strip_prefix(base_dir).ok()?;
+    let parent = relative.parent()?;
+    // Only infer module if the file is in a subdirectory (not at root level)
+    if parent.as_os_str().is_empty() {
+        return None;
+    }
+    // Use the first path component as the module name
+    // e.g. "ast/sig_decl.rs" → "ast"
+    let module_name = parent.components().next()?;
+    let name = module_name.as_os_str().to_str()?;
+    // Skip common non-module directories
+    if name == "src" || name == "Sources" || name == "Tests" || name == "__tests__" {
+        // If there's a deeper component, use that instead
+        let rest: std::path::PathBuf = parent.components().skip(1).collect();
+        if !rest.as_os_str().is_empty() {
+            return rest.components().next()
+                .and_then(|c| c.as_os_str().to_str())
+                .map(|s| s.to_string());
+        }
+        return None;
+    }
+    Some(name.to_string())
 }
 
 fn collect_files(dir: &Path, ext: &str) -> Vec<std::path::PathBuf> {
@@ -412,6 +457,8 @@ pub struct MinedSig {
     pub source_location: String,
     /// Components for intersection type aliases (e.g. ["A", "B", "C"] for `type T = A & B & C`).
     pub intersection_of: Vec<String>,
+    /// Module grouping inferred from directory structure or package declarations.
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -545,7 +592,7 @@ pub fn resolve_external_types(model: &mut MinedModel) {
             is_var: false,
             parent: None,
             source_location: "external type".to_string(),
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
     }
 }
