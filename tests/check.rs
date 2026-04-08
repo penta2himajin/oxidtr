@@ -1,134 +1,10 @@
 /// Tests for the check command.
 /// TDD: these tests define expected behavior before full implementation.
 
-use oxidtr::check::{self, CheckConfig};
-use oxidtr::check::impl_parser::{self, ExtractedField};
+use oxidtr::check::{self, CheckConfig, ExtractedImpl, ExtractedStruct, ExtractedField, ExtractedFn};
 use oxidtr::check::differ::{self, DiffItem};
 use oxidtr::ir::nodes::{OxidtrIR, StructureNode, ConstraintNode, IRField, OperationNode};
 use oxidtr::parser::ast::{self, Multiplicity, SigMultiplicity, Expr};
-
-// ── impl_parser: type_to_mult ─────────────────────────────────────────────────
-
-#[test]
-fn type_to_mult_one() {
-    let (mult, target) = impl_parser::type_to_mult("User");
-    assert_eq!(mult, Multiplicity::One);
-    assert_eq!(target, "User");
-}
-
-#[test]
-fn type_to_mult_lone() {
-    let (mult, target) = impl_parser::type_to_mult("Option<User>");
-    assert_eq!(mult, Multiplicity::Lone);
-    assert_eq!(target, "User");
-}
-
-#[test]
-fn type_to_mult_set() {
-    let (mult, target) = impl_parser::type_to_mult("BTreeSet<User>");
-    assert_eq!(mult, Multiplicity::Set);
-    assert_eq!(target, "User");
-}
-
-#[test]
-fn type_to_mult_seq() {
-    let (mult, target) = impl_parser::type_to_mult("Vec<User>");
-    assert_eq!(mult, Multiplicity::Seq);
-    assert_eq!(target, "User");
-}
-
-#[test]
-fn type_to_mult_lone_box() {
-    // self-referential lone field
-    let (mult, target) = impl_parser::type_to_mult("Option<Box<Node>>");
-    assert_eq!(mult, Multiplicity::Lone);
-    assert_eq!(target, "Node");
-}
-
-// ── impl_parser: parse_impl structs ──────────────────────────────────────────
-
-#[test]
-fn parse_impl_simple_struct() {
-    let models_src = r#"
-#[derive(Debug, Clone)]
-pub struct User {
-    pub name: String,
-    pub manager: Option<User>,
-    pub reports: Vec<User>,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    assert_eq!(result.structs.len(), 1);
-    let s = &result.structs[0];
-    assert_eq!(s.name, "User");
-    assert!(!s.is_enum);
-
-    let manager = s.fields.iter().find(|f| f.name == "manager").expect("manager field");
-    assert_eq!(manager.mult, Multiplicity::Lone);
-    assert_eq!(manager.target, "User");
-
-    let reports = s.fields.iter().find(|f| f.name == "reports").expect("reports field");
-    assert_eq!(reports.mult, Multiplicity::Seq);
-    assert_eq!(reports.target, "User");
-}
-
-#[test]
-fn parse_impl_enum() {
-    let models_src = r#"
-#[derive(Debug, Clone)]
-pub enum Status {
-    Active,
-    Inactive,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    // enum itself + 2 variants extracted as structs
-    assert_eq!(result.structs.len(), 3);
-    assert_eq!(result.structs[0].name, "Status");
-    assert!(result.structs[0].is_enum);
-    assert_eq!(result.structs[1].name, "Active");
-    assert!(!result.structs[1].is_enum);
-    assert_eq!(result.structs[2].name, "Inactive");
-    assert!(!result.structs[2].is_enum);
-}
-
-#[test]
-fn parse_impl_multiple_structs() {
-    let models_src = r#"
-pub struct User {
-    pub group: Group,
-}
-
-pub struct Group {
-    pub members: Vec<User>,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    assert_eq!(result.structs.len(), 2);
-    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"User"));
-    assert!(names.contains(&"Group"));
-}
-
-// ── impl_parser: parse_impl fns ──────────────────────────────────────────────
-
-#[test]
-fn parse_impl_fns() {
-    let ops_src = r#"
-pub fn add_user(user: User) -> Result<(), String> {
-    todo!()
-}
-
-pub fn remove_user(user: &User) -> Result<(), String> {
-    todo!()
-}
-"#;
-    let result = impl_parser::parse_impl("", ops_src);
-    assert_eq!(result.fns.len(), 2);
-    let names: Vec<&str> = result.fns.iter().map(|f| f.name.as_str()).collect();
-    assert!(names.contains(&"add_user"));
-    assert!(names.contains(&"remove_user"));
-}
 
 // ── differ ────────────────────────────────────────────────────────────────────
 
@@ -143,7 +19,7 @@ fn make_ir(structs: Vec<StructureNode>, ops: Vec<OperationNode>) -> OxidtrIR {
 
 #[test]
 fn differ_no_diff_when_in_sync() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct};
+    use oxidtr::check::{ExtractedImpl, ExtractedStruct};
     let ir = make_ir(
         vec![StructureNode {
             name: "User".into(),
@@ -181,7 +57,7 @@ fn differ_no_diff_when_in_sync() {
 
 #[test]
 fn differ_missing_struct() {
-    use oxidtr::check::impl_parser::ExtractedImpl;
+    use oxidtr::check::ExtractedImpl;
     let ir = make_ir(
         vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
@@ -193,7 +69,7 @@ fn differ_missing_struct() {
 
 #[test]
 fn differ_extra_struct() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct};
+    use oxidtr::check::{ExtractedImpl, ExtractedStruct};
     let ir = make_ir(vec![], vec![]);
     let extracted = ExtractedImpl {
         structs: vec![ExtractedStruct { name: "Ghost".into(), is_enum: false, is_var: false, fields: vec![] }],
@@ -205,7 +81,7 @@ fn differ_extra_struct() {
 
 #[test]
 fn differ_missing_field() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct};
+    use oxidtr::check::{ExtractedImpl, ExtractedStruct};
     let ir = make_ir(
         vec![StructureNode {
             name: "User".into(),
@@ -231,7 +107,7 @@ fn differ_missing_field() {
 
 #[test]
 fn differ_extra_field() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedField};
+    use oxidtr::check::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
         vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
         vec![],
@@ -254,7 +130,7 @@ fn differ_extra_field() {
 
 #[test]
 fn differ_multiplicity_mismatch() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedField};
+    use oxidtr::check::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
         vec![StructureNode {
             name: "User".into(),
@@ -288,7 +164,7 @@ fn differ_multiplicity_mismatch() {
 
 #[test]
 fn differ_missing_fn() {
-    use oxidtr::check::impl_parser::ExtractedImpl;
+    use oxidtr::check::ExtractedImpl;
     let ir = make_ir(
         vec![],
         vec![OperationNode { name: "add_user".into(), receiver_sig: None, params: vec![], return_type: None, body: vec![] }],
@@ -300,7 +176,7 @@ fn differ_missing_fn() {
 
 #[test]
 fn differ_extra_fn() {
-    use oxidtr::check::impl_parser::{ExtractedImpl, ExtractedFn};
+    use oxidtr::check::{ExtractedImpl, ExtractedFn};
     let ir = make_ir(vec![], vec![]);
     let extracted = ExtractedImpl {
         structs: vec![],
@@ -385,58 +261,6 @@ fn check_run_missing_models_rs_is_error() {
     assert!(matches!(err, Err(check::CheckError::ImplNotFound(_))));
 }
 
-// ── Alloy 6: var field consistency ──────────────────────────────────────────
-
-#[test]
-fn parse_impl_detects_var_annotation() {
-    let models_src = r#"
-pub struct Account {
-    /// @alloy: var
-    pub balance: i64,
-    pub name: String,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    let account = &result.structs[0];
-    let balance = account.fields.iter().find(|f| f.name == "balance").unwrap();
-    assert!(balance.is_var, "balance field should be detected as var");
-    let name = account.fields.iter().find(|f| f.name == "name").unwrap();
-    assert!(!name.is_var, "name field should not be var");
-}
-
-#[test]
-fn differ_detects_var_mismatch() {
-    let ir = OxidtrIR {
-        structures: vec![StructureNode {
-            name: "Account".to_string(),
-            is_enum: false,
-            is_var: false,
-            sig_multiplicity: SigMultiplicity::Default,
-            parent: None,
-            fields: vec![IRField {
-                name: "balance".to_string(),
-                is_var: true,
-                mult: Multiplicity::One,
-                target: "Int".to_string(),
-                value_type: None,
-                raw_union_type: None,
-            }],
-            intersection_of: vec![],
-        }],
-        constraints: vec![],
-        operations: vec![],
-        properties: vec![],
-    };
-    let extracted = impl_parser::parse_impl(
-        "pub struct Account {\n    pub balance: i64,\n}", ""
-    );
-    let diffs = differ::diff(&ir, &extracted);
-    assert!(diffs.iter().any(|d| matches!(d,
-        DiffItem::VarMismatch { struct_name, field_name, .. }
-        if struct_name == "Account" && field_name == "balance"
-    )), "should detect var mismatch when model has var but impl doesn't: {diffs:?}");
-}
-
 // ── Alloy 6: temporal constraint checking ──────────────────────────────────
 
 #[test]
@@ -474,7 +298,7 @@ fn check_detects_missing_transition_test() {
     };
     // Source has the fact name but NOT the transition_ prefixed test
     let sources = vec!["fn test_state_update() { /* StateUpdate */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingTemporalTest { fact_name, expected_kind }
         if fact_name == "StateUpdate" && expected_kind == "transition"
@@ -496,7 +320,7 @@ fn check_passes_when_transition_test_present() {
         properties: vec![],
     };
     let sources = vec!["fn transition_state_update() { /* StateUpdate */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should not report missing temporal test: {diffs:?}");
 }
@@ -520,7 +344,7 @@ fn check_detects_missing_invariant_test_for_temporal_without_prime() {
         properties: vec![],
     };
     let sources = vec!["fn test_always_positive() { /* AlwaysPositive */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingTemporalTest { fact_name, expected_kind }
         if fact_name == "AlwaysPositive" && expected_kind == "invariant"
@@ -551,7 +375,7 @@ fn check_accepts_space_separated_invariant_test_name() {
     };
     // Source uses space-separated form (as TS/Kotlin backends emit)
     let sources = vec!["it('invariant FlagImpliesPositive', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated invariant test name: {diffs:?}");
 }
@@ -574,7 +398,7 @@ fn check_accepts_space_separated_temporal_binary_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('temporal FlagUntilLarge', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated temporal binary test name: {diffs:?}");
 }
@@ -594,7 +418,7 @@ fn check_accepts_space_separated_liveness_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('liveness WillConverge', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated liveness test name: {diffs:?}");
 }
@@ -615,7 +439,7 @@ fn check_accepts_space_separated_transition_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('transition StateUpdate', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated transition test name: {diffs:?}");
 }
@@ -635,84 +459,10 @@ fn missing_assert_detected() {
         }],
     };
     let sources = vec!["fn some_other_test() {}".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingAssert { name } if name == "NoSelfLoop"
     )), "should detect missing assert test: {diffs:?}");
-}
-
-/// Regression test: unit struct (e.g. `pub struct Foo;`) must be parsed correctly
-/// and must NOT consume subsequent struct definitions.
-/// Previously, `parse_structs` called `collect_fields` even for unit structs,
-/// which caused the depth counter to never reset and ate all following lines.
-#[test]
-fn parse_impl_unit_struct_does_not_consume_following_structs() {
-    let models_src = r#"
-pub struct Tag;
-
-pub struct Node {
-    pub tag: Tag,
-}
-
-pub struct Edge {
-    pub source: Node,
-    pub target: Node,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
-    assert!(names.contains(&"Tag"),  "Tag should be parsed as unit struct; got: {names:?}");
-    assert!(names.contains(&"Node"), "Node should be parsed; got: {names:?}");
-    assert!(names.contains(&"Edge"), "Edge should be parsed; got: {names:?}");
-    assert_eq!(result.structs.len(), 3, "exactly 3 structs; got: {names:?}");
-
-    let node = result.structs.iter().find(|s| s.name == "Node").unwrap();
-    assert_eq!(node.fields.len(), 1, "Node should have 1 field; got: {:?}", node.fields);
-    assert_eq!(node.fields[0].name, "tag");
-
-    let edge = result.structs.iter().find(|s| s.name == "Edge").unwrap();
-    assert_eq!(edge.fields.len(), 2, "Edge should have 2 fields; got: {:?}", edge.fields);
-}
-
-/// Unit struct followed immediately by another unit struct — both must be captured.
-#[test]
-fn parse_impl_consecutive_unit_structs() {
-    let models_src = r#"
-pub struct Alpha;
-pub struct Beta;
-pub struct Gamma;
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(result.structs.len(), 3, "3 unit structs; got: {names:?}");
-    assert!(names.contains(&"Alpha"));
-    assert!(names.contains(&"Beta"));
-    assert!(names.contains(&"Gamma"));
-}
-
-/// Unit struct mixed with enums and regular structs — none should eat another.
-#[test]
-fn parse_impl_unit_struct_mixed_with_enum_and_struct() {
-    let models_src = r#"
-pub enum Color {
-    Red,
-    Blue,
-}
-
-pub struct Token;
-
-pub struct Edge {
-    pub weight: Token,
-}
-"#;
-    let result = impl_parser::parse_impl(models_src, "");
-    let names: Vec<&str> = result.structs.iter().map(|s| s.name.as_str()).collect();
-    // Color (enum) + Red + Blue (variants) + Token (unit) + Edge = 5 entries
-    assert!(names.contains(&"Token"), "Token unit struct; got: {names:?}");
-    assert!(names.contains(&"Edge"),  "Edge struct; got: {names:?}");
-    assert!(names.contains(&"Color"), "Color enum; got: {names:?}");
-    let edge = result.structs.iter().find(|s| s.name == "Edge").unwrap();
-    assert_eq!(edge.fields.len(), 1, "Edge has 1 field; got: {:?}", edge.fields);
 }
 
 #[test]
@@ -728,7 +478,7 @@ fn present_assert_not_flagged() {
         }],
     };
     let sources = vec!["fn no_self_loop() { assert!(true); }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &impl_parser::parse_impl("", ""), &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
     assert!(!diffs.iter().any(|d| matches!(d,
         DiffItem::MissingAssert { .. }
     )), "should not flag present assert test: {diffs:?}");

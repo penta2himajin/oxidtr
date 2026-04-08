@@ -67,7 +67,7 @@ src/
     lean/           Lean 4 backend + expr_translator (theorems with sorry)
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
-  check/            構造的整合性検証 (differ, impl_parser)
+  check/            構造的整合性検証 (differ)
   extract/          逆抽出 (rust/ts/kotlin/java/swift/schema extractors, renderer)
 ```
 

@@ -1,5 +1,5 @@
 /// Extracts Alloy model candidates from Rust source code.
-/// Uses lightweight line-based parsing (same approach as check/impl_parser).
+/// Uses lightweight line-based parsing (no syn dependency).
 
 use super::*;
 

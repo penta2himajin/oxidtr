@@ -1,12 +1,37 @@
-// check module — diff Alloy IR vs implementation (Rust or TypeScript)
-pub mod impl_parser;
+// check module — diff Alloy IR vs implementation
 pub mod differ;
 
 use crate::parser;
 use crate::ir;
 use crate::extract;
 use differ::DiffItem;
-use impl_parser::{ExtractedImpl, ExtractedStruct, ExtractedFn, ExtractedField};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedField {
+    pub name: String,
+    pub mult: crate::parser::ast::Multiplicity,
+    pub target: String,
+    pub is_var: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedStruct {
+    pub name: String,
+    pub fields: Vec<ExtractedField>,
+    pub is_enum: bool,
+    pub is_var: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedFn {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtractedImpl {
+    pub structs: Vec<ExtractedStruct>,
+    pub fns: Vec<ExtractedFn>,
+}
 
 use std::path::Path;
 

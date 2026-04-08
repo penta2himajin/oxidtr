@@ -3,7 +3,7 @@
 use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
 use crate::analyze;
-use super::impl_parser::{ExtractedImpl, ExtractedStruct};
+use super::{ExtractedImpl, ExtractedStruct};
 
 fn to_snake_case(s: &str) -> String {
     let mut out = String::new();
@@ -169,7 +169,7 @@ fn remove_field_referenced_extras(extracted: &ExtractedImpl, diffs: &mut Vec<Dif
     use std::collections::{HashSet, HashMap};
 
     // Build variant→parent mapping from extraction order.
-    // impl_parser emits: enum (is_enum=true), then its variants, then next enum.
+    // Extractors emit: enum (is_enum=true), then its variants, then next enum.
     let mut variant_of: HashMap<&str, &str> = HashMap::new();
     let mut current_enum: Option<&str> = None;
     for s in &extracted.structs {
@@ -234,7 +234,7 @@ fn resolve_positional_fields(diffs: &mut Vec<DiffItem>) {
     let mut indices_to_remove: Vec<usize> = Vec::new();
     for (struct_name, extras) in &extra_by_struct {
         let all_positional = extras.iter().all(|(_, name)| {
-            // _0, _1, ... (impl_parser style)
+            // _0, _1, ... (positional naming convention)
             (name.starts_with('_') && name[1..].parse::<usize>().is_ok())
             // field0, field1, ... (rust_extractor style)
             || (name.starts_with("field") && name["field".len()..].parse::<usize>().is_ok())
