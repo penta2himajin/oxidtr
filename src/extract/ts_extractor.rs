@@ -65,7 +65,7 @@ pub fn extract(source: &str) -> MinedModel {
         if let Some((name, variants)) = parse_type_union(trimmed)
             .or_else(|| parse_multiline_type_union(trimmed, &mut lines))
         {
-            let is_string_literal = variants.iter().all(|v| v.starts_with('"'));
+            let is_string_literal = variants.iter().all(|v| v.starts_with('"') || v.starts_with('\''));
             if is_string_literal {
                 // String literal union → abstract sig + one sig per literal
                 sigs.push(MinedSig {
@@ -78,7 +78,7 @@ pub fn extract(source: &str) -> MinedModel {
                     intersection_of: vec![],
                 });
                 for v in &variants {
-                    let vname = v.trim_matches('"').to_string();
+                    let vname = v.trim_matches('"').trim_matches('\'').to_string();
                     sigs.push(MinedSig {
                         name: vname,
                         fields: vec![],
