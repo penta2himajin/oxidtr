@@ -234,7 +234,10 @@ fn resolve_positional_fields(diffs: &mut Vec<DiffItem>) {
     let mut indices_to_remove: Vec<usize> = Vec::new();
     for (struct_name, extras) in &extra_by_struct {
         let all_positional = extras.iter().all(|(_, name)| {
-            name.starts_with('_') && name[1..].parse::<usize>().is_ok()
+            // _0, _1, ... (impl_parser style)
+            (name.starts_with('_') && name[1..].parse::<usize>().is_ok())
+            // field0, field1, ... (rust_extractor style)
+            || (name.starts_with("field") && name["field".len()..].parse::<usize>().is_ok())
         });
         if !all_positional { continue; }
 

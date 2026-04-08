@@ -93,7 +93,8 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let validation_sources = collect_validation_sources_lean(impl_dir)?;
         differ::diff_lean_with_validation(&ir, &extracted, &validation_sources)
     } else if impl_dir.join("models.rs").exists() {
-        let (extracted, validation_sources) = extract_rust(impl_dir)?;
+        let extracted = extract_mined(impl_dir, "models.rs", "operations.rs", extract::rust_extractor::extract)?;
+        let validation_sources = collect_validation_sources_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
     } else {
         // Fallback: use mine to extract from any code in the directory
@@ -115,27 +116,17 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
     Ok(CheckResult { diffs })
 }
 
-fn extract_rust(impl_dir: &Path) -> Result<(ExtractedImpl, Vec<String>), CheckError> {
-    let models_src = std::fs::read_to_string(impl_dir.join("models.rs"))?;
-    let ops_path = impl_dir.join("operations.rs");
-    let ops_src = if ops_path.exists() {
-        std::fs::read_to_string(&ops_path)?
-    } else {
-        String::new()
-    };
-
-    // Collect validation sources (tests, newtypes) for validation coverage check
-    let mut validation_sources = Vec::new();
+fn collect_validation_sources_rust(impl_dir: &Path) -> Result<Vec<String>, CheckError> {
+    let mut sources = Vec::new();
     let tests_path = impl_dir.join("tests.rs");
     if tests_path.exists() {
-        validation_sources.push(std::fs::read_to_string(&tests_path)?);
+        sources.push(std::fs::read_to_string(&tests_path)?);
     }
     let newtypes_path = impl_dir.join("newtypes.rs");
     if newtypes_path.exists() {
-        validation_sources.push(std::fs::read_to_string(&newtypes_path)?);
+        sources.push(std::fs::read_to_string(&newtypes_path)?);
     }
-
-    Ok((impl_parser::parse_impl(&models_src, &ops_src), validation_sources))
+    Ok(sources)
 }
 
 /// Collect validation source texts from TypeScript impl directory.
@@ -382,6 +373,7 @@ fn extract_fns_generic(src: &str) -> Vec<ExtractedFn> {
         // Swift: "func name("
         let rest = trimmed.strip_prefix("export function ")
             .or_else(|| trimmed.strip_prefix("function "))
+            .or_else(|| trimmed.strip_prefix("pub fn "))
             .or_else(|| trimmed.strip_prefix("fun "))
             .or_else(|| trimmed.strip_prefix("func "))
             .or_else(|| {
