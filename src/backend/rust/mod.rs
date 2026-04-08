@@ -18,6 +18,12 @@ pub struct RustBackendConfig {
 }
 
 pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedFile> {
+    // If any structure has a module, use module-based layout
+    let has_modules = ir.structures.iter().any(|s| s.module.is_some());
+    if has_modules {
+        return generate_modular(ir, config);
+    }
+
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
@@ -66,6 +72,482 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
     }
 
     files
+}
+
+/// Group structures into "concepts": abstract sig + all sub-sigs form one concept,
+/// standalone sigs form individual concepts.
+fn group_into_concepts<'a>(structures: &[&'a StructureNode]) -> Vec<(String, Vec<&'a StructureNode>)> {
+    let enum_parents: HashSet<String> = structures.iter()
+        .filter(|s| s.is_enum)
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Build parent→children map
+    let mut children_of: HashMap<String, Vec<&'a StructureNode>> = HashMap::new();
+
+    for s in structures {
+        if super::is_native_type_alias(&s.name) {
+            continue;
+        }
+        if let Some(parent) = &s.parent {
+            if enum_parents.contains(parent) {
+                // This is an enum variant — grouped with parent
+                children_of.entry(parent.clone()).or_default().push(s);
+            }
+        }
+    }
+
+    let mut concepts: Vec<(String, Vec<&'a StructureNode>)> = Vec::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+
+    for s in structures {
+        if emitted.contains(&s.name) || super::is_native_type_alias(&s.name) {
+            continue;
+        }
+        // Skip enum variants — they'll be grouped with their parent
+        if s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)) {
+            continue;
+        }
+        let mut members = vec![*s];
+        if let Some(kids) = children_of.get(&s.name) {
+            for k in kids {
+                members.push(k);
+                emitted.insert(k.name.clone());
+            }
+        }
+        emitted.insert(s.name.clone());
+        concepts.push((s.name.clone(), members));
+    }
+    concepts
+}
+
+/// Generate module-based layout: each module gets a subdirectory,
+/// each domain concept gets its own file within that module.
+fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedFile> {
+    let use_serde = config.features.contains(&"serde".to_string());
+    let mut files = Vec::new();
+
+    // Group structures by module
+    let mut module_order: Vec<String> = Vec::new();
+    let mut by_module: HashMap<String, Vec<&StructureNode>> = HashMap::new();
+    let mut ungrouped: Vec<&StructureNode> = Vec::new();
+
+    for s in &ir.structures {
+        if let Some(m) = &s.module {
+            by_module.entry(m.clone()).or_default().push(s);
+            if !module_order.contains(m) {
+                module_order.push(m.clone());
+            }
+        } else {
+            ungrouped.push(s);
+        }
+    }
+
+    // Collect all type names across the entire IR (for cross-module imports)
+    let all_type_names: HashSet<String> = ir.structures.iter()
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Track which types are defined in which module (for import resolution)
+    let mut type_to_module: HashMap<String, String> = HashMap::new();
+    for s in &ir.structures {
+        if let Some(m) = &s.module {
+            type_to_module.insert(s.name.clone(), m.clone());
+        }
+    }
+
+    // Build self-ref fields for the entire IR
+    let self_ref_fields = find_cyclic_fields(ir);
+    let disj_fields = analyze::disj_fields(ir);
+
+    // Generate each module directory
+    for module_name in &module_order {
+        let module_structures = &by_module[module_name];
+        let concepts = group_into_concepts(module_structures);
+
+        let mut mod_rs_items: Vec<String> = Vec::new();
+
+        for (concept_name, members) in &concepts {
+            let file_name = to_snake_case(concept_name);
+            let file_path = format!("{module_name}/{file_name}.rs");
+
+            let content = generate_concept_file(
+                members, ir, &self_ref_fields, use_serde, &disj_fields,
+                module_name, &type_to_module, &all_type_names,
+            );
+
+            files.push(GeneratedFile { path: file_path, content });
+            mod_rs_items.push(file_name);
+        }
+
+        // Generate mod.rs for this module
+        let mut mod_rs = String::new();
+        for item in &mod_rs_items {
+            writeln!(mod_rs, "pub mod {item};").unwrap();
+        }
+        writeln!(mod_rs).unwrap();
+        // Re-export all public types for convenience
+        for item in &mod_rs_items {
+            writeln!(mod_rs, "pub use {item}::*;").unwrap();
+        }
+        files.push(GeneratedFile {
+            path: format!("{module_name}/mod.rs"),
+            content: mod_rs,
+        });
+    }
+
+    // Ungrouped structures → top-level models.rs (if any)
+    if !ungrouped.is_empty() {
+        let mut sub_ir = ir.clone();
+        sub_ir.structures = ungrouped.iter().map(|s| (*s).clone()).collect();
+        files.push(GeneratedFile {
+            path: "models.rs".to_string(),
+            content: generate_models_with_config(&sub_ir, config),
+        });
+    }
+
+    // Generate lib.rs (top-level module declarations)
+    let mut lib_rs = String::new();
+    for module_name in &module_order {
+        writeln!(lib_rs, "pub mod {module_name};").unwrap();
+    }
+    if !ungrouped.is_empty() {
+        writeln!(lib_rs, "pub mod models;").unwrap();
+    }
+
+    // Check if TC, operations, tests, fixtures, newtypes are needed
+    let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    if has_tc {
+        writeln!(lib_rs, "pub mod helpers;").unwrap();
+        let helpers_content = generate_helpers(ir)
+            .replace("use crate::models::*;",
+                &module_order.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"));
+        files.push(GeneratedFile {
+            path: "helpers.rs".to_string(),
+            content: helpers_content,
+        });
+    }
+    if !ir.operations.is_empty() {
+        writeln!(lib_rs, "pub mod operations;").unwrap();
+        files.push(GeneratedFile {
+            path: "operations.rs".to_string(),
+            content: generate_operations_modular(ir, &module_order),
+        });
+    }
+    if !ir.properties.is_empty() || !ir.constraints.is_empty() {
+        files.push(GeneratedFile {
+            path: "tests.rs".to_string(),
+            content: generate_tests_modular(ir, &module_order),
+        });
+    }
+    files.push(GeneratedFile {
+        path: "fixtures.rs".to_string(),
+        content: generate_fixtures_modular(ir, &module_order),
+    });
+    writeln!(lib_rs, "pub mod fixtures;").unwrap();
+
+    let newtype_content = generate_newtypes_modular(ir, &module_order);
+    if !newtype_content.is_empty() {
+        writeln!(lib_rs, "pub mod newtypes;").unwrap();
+        files.push(GeneratedFile {
+            path: "newtypes.rs".to_string(),
+            content: newtype_content,
+        });
+    }
+
+    files.push(GeneratedFile {
+        path: "lib.rs".to_string(),
+        content: lib_rs,
+    });
+
+    files
+}
+
+/// Generate a single concept file containing one or more related structures.
+fn generate_concept_file(
+    members: &[&StructureNode],
+    ir: &OxidtrIR,
+    self_ref_fields: &HashSet<(String, String)>,
+    use_serde: bool,
+    disj_fields: &[(String, String)],
+    current_module: &str,
+    type_to_module: &HashMap<String, String>,
+    _all_type_names: &HashSet<String>,
+) -> String {
+    let mut out = String::new();
+
+    // Collect types referenced by members that are in other modules
+    let member_names: HashSet<String> = members.iter().map(|m| m.name.clone()).collect();
+    let mut needed_imports: HashMap<String, HashSet<String>> = HashMap::new(); // module → types
+
+    for s in members {
+        for f in &s.fields {
+            if let Some(module) = type_to_module.get(&f.target) {
+                if module != current_module && !super::is_native_type_alias(&f.target) {
+                    needed_imports.entry(module.clone()).or_default().insert(f.target.clone());
+                }
+            }
+        }
+        // Parent in another module
+        if let Some(parent) = &s.parent {
+            if !member_names.contains(parent) {
+                if let Some(module) = type_to_module.get(parent) {
+                    if module != current_module {
+                        needed_imports.entry(module.clone()).or_default().insert(parent.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // Check if any field uses Set/Map
+    let needs_btreeset = members.iter().any(|s| s.fields.iter().any(|f| f.mult == Multiplicity::Set));
+    let needs_btreemap = members.iter().any(|s| s.fields.iter().any(|f| f.value_type.is_some()));
+
+    if needs_btreeset || needs_btreemap {
+        let mut imports = Vec::new();
+        if needs_btreemap { imports.push("BTreeMap"); }
+        if needs_btreeset { imports.push("BTreeSet"); }
+        writeln!(out, "use std::collections::{{{}}};", imports.join(", ")).unwrap();
+    }
+
+    if use_serde {
+        writeln!(out, "use serde::{{Serialize, Deserialize}};").unwrap();
+    }
+
+    // Cross-module imports
+    let mut sorted_modules: Vec<&String> = needed_imports.keys().collect();
+    sorted_modules.sort();
+    for module in sorted_modules {
+        let types = needed_imports.get(module).unwrap();
+        let mut sorted_types: Vec<&String> = types.iter().collect();
+        sorted_types.sort();
+        writeln!(out, "use crate::{}::{{{}}};", module, sorted_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap();
+    }
+
+    // Intra-module imports: types from sibling files within the same module
+    let mut intra_module_types: HashSet<String> = HashSet::new();
+    for s in members {
+        for f in &s.fields {
+            if !member_names.contains(&f.target) && !super::is_native_type_alias(&f.target) {
+                if let Some(module) = type_to_module.get(&f.target) {
+                    if module == current_module {
+                        intra_module_types.insert(f.target.clone());
+                    }
+                }
+            }
+        }
+        if let Some(parent) = &s.parent {
+            if !member_names.contains(parent) {
+                if let Some(module) = type_to_module.get(parent) {
+                    if module == current_module {
+                        intra_module_types.insert(parent.clone());
+                    }
+                }
+            }
+        }
+    }
+    if !intra_module_types.is_empty() {
+        let mut sorted: Vec<&String> = intra_module_types.iter().collect();
+        sorted.sort();
+        // Use super:: to access sibling types within the same module
+        for t in &sorted {
+            writeln!(out, "use super::{t};").unwrap();
+        }
+    }
+
+    if needs_btreeset || needs_btreemap || use_serde || !needed_imports.is_empty() || !intra_module_types.is_empty() {
+        writeln!(out).unwrap();
+    }
+
+    // Build sub-IR scoped to these members for constraint analysis
+    let enum_parents: HashSet<String> = members.iter()
+        .filter(|s| s.is_enum)
+        .map(|s| s.name.clone())
+        .collect();
+    let variant_names: HashSet<String> = members.iter()
+        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+        .map(|s| s.name.clone())
+        .collect();
+
+    // Collect parent→children mapping for enum generation
+    let children: HashMap<String, Vec<String>> = {
+        let mut map: HashMap<String, Vec<String>> = HashMap::new();
+        for s in members {
+            if let Some(parent) = &s.parent {
+                map.entry(parent.clone()).or_default().push(s.name.clone());
+            }
+        }
+        map
+    };
+
+    for s in members {
+        // Skip variant sigs — they become enum variants
+        if variant_names.contains(&s.name) {
+            continue;
+        }
+        if super::is_native_type_alias(&s.name) {
+            continue;
+        }
+
+        // Intersection type alias
+        if !s.intersection_of.is_empty() {
+            let first = &s.intersection_of[0];
+            let rest: Vec<&str> = s.intersection_of[1..].iter().map(|x| x.as_str()).collect();
+            if rest.is_empty() {
+                writeln!(out, "pub type {} = {};", s.name, first).unwrap();
+            } else {
+                writeln!(out, "// Intersection: {} = {}", s.name, s.intersection_of.join(" & ")).unwrap();
+                writeln!(out, "pub type {} = {}; // also includes: {}", s.name, first, rest.join(", ")).unwrap();
+            }
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        // Doc comments from constraints
+        let constraint_names = analyze::constraint_names_for_sig(ir, &s.name);
+        for cn in &constraint_names {
+            writeln!(out, "/// Invariant: {cn}").unwrap();
+        }
+
+        if s.is_enum {
+            generate_enum(&mut out, s, children.get(&s.name), ir, self_ref_fields, use_serde);
+        } else {
+            generate_struct(&mut out, s, self_ref_fields, use_serde, ir, disj_fields);
+        }
+        writeln!(out).unwrap();
+    }
+
+    // Derived fields for types in this concept
+    let member_set: HashSet<&str> = members.iter().map(|s| s.name.as_str()).collect();
+    for op in &ir.operations {
+        if let Some(ref sig) = op.receiver_sig {
+            if member_set.contains(sig.as_str()) {
+                // Generate impl block for this receiver
+                let fn_name = to_snake_case(&op.name);
+                let params = op.params.iter().map(|p| {
+                    let type_str = match p.mult {
+                        Multiplicity::One => format!("&{}", p.type_name),
+                        Multiplicity::Lone => format!("Option<&{}>", p.type_name),
+                        Multiplicity::Set => format!("&std::collections::BTreeSet<{}>", p.type_name),
+                        Multiplicity::Seq => format!("&[{}]", p.type_name),
+                    };
+                    format!("{}: {type_str}", to_snake_case(&p.name))
+                }).collect::<Vec<_>>().join(", ");
+
+                let return_str = match &op.return_type {
+                    Some(rt) => {
+                        let t = rust_return_type(&rt.type_name, &rt.mult);
+                        format!(" -> {t}")
+                    }
+                    None => String::new(),
+                };
+
+                let param_str = if params.is_empty() {
+                    "&self".to_string()
+                } else {
+                    format!("&self, {params}")
+                };
+
+                writeln!(out, "impl {sig} {{").unwrap();
+                writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
+                writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+                writeln!(out, "    }}").unwrap();
+                writeln!(out, "}}").unwrap();
+                writeln!(out).unwrap();
+            }
+        }
+    }
+
+    out
+}
+
+/// Generate operations.rs with modular imports
+fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
+    let mut out = String::new();
+
+    for module in modules {
+        writeln!(out, "use crate::{module}::*;").unwrap();
+    }
+    writeln!(out).unwrap();
+
+    // Check if any operation parameter or return type uses Set multiplicity
+    let needs_btreeset = ir.operations.iter().any(|op| {
+        op.params.iter().any(|p| p.mult == Multiplicity::Set)
+            || op.return_type.as_ref().map_or(false, |r| r.mult == Multiplicity::Set)
+    });
+    if needs_btreeset {
+        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    for op in &ir.operations {
+        if op.receiver_sig.is_some() {
+            continue;
+        }
+        let fn_name = to_snake_case(&op.name);
+        let params = op.params.iter().map(|p| {
+            let type_str = match p.mult {
+                Multiplicity::One => format!("&{}", p.type_name),
+                Multiplicity::Lone => format!("Option<&{}>", p.type_name),
+                Multiplicity::Set => format!("&BTreeSet<{}>", p.type_name),
+                Multiplicity::Seq => format!("&[{}]", p.type_name),
+            };
+            format!("{}: {type_str}", to_snake_case(&p.name))
+        }).collect::<Vec<_>>().join(", ");
+
+        let return_str = match &op.return_type {
+            Some(rt) => {
+                let t = rust_return_type(&rt.type_name, &rt.mult);
+                format!(" -> {t}")
+            }
+            None => String::new(),
+        };
+
+        if !op.body.is_empty() {
+            let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
+            for expr in &op.body {
+                let desc = analyze::describe_expr(expr);
+                let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
+                writeln!(out, "/// @{tag}: {desc}").unwrap();
+            }
+        }
+
+        writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
+        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
+    out
+}
+
+/// Generate tests.rs with modular imports
+fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> String {
+    // For now, reuse the existing test generation but fix imports
+    let original = generate_tests(ir);
+    // Replace `use crate::models::*` with module imports
+    let mut result = original.replace("use crate::models::*;",
+        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n    "));
+    // Also update fixtures import
+    result = result.replace("use crate::fixtures::*;", "use crate::fixtures::*;");
+    result
+}
+
+/// Generate fixtures.rs with modular imports
+fn generate_fixtures_modular(ir: &OxidtrIR, modules: &[String]) -> String {
+    let original = generate_fixtures(ir);
+    original.replace("use crate::models::*;",
+        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"))
+}
+
+/// Generate newtypes.rs with modular imports
+fn generate_newtypes_modular(ir: &OxidtrIR, modules: &[String]) -> String {
+    let original = generate_newtypes(ir);
+    if original.is_empty() { return original; }
+    original.replace("use crate::models::*;",
+        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"))
 }
 
 

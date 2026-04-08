@@ -34,7 +34,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_var: sig_is_var,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
-                            intersection_of: vec![],
+                            intersection_of: vec![], module: None,
                         });
                         i += 1; // advance past this unit struct line
                     } else {
@@ -74,7 +74,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_var: sig_is_var,
                             parent: None,
                             source_location: format!("line {}", line_num + 1),
-                            intersection_of: vec![],
+                            intersection_of: vec![], module: None,
                         });
                     }
                     continue;
@@ -188,7 +188,7 @@ pub fn extract(source: &str) -> MinedModel {
                         is_var: sig_is_var,
                         parent: None,
                         source_location: format!("line {}", line_num + 1),
-                        intersection_of: vec![],
+                        intersection_of: vec![], module: None,
                     });
                     for (vname, vfields) in variants {
                         sigs.push(MinedSig {
@@ -198,7 +198,7 @@ pub fn extract(source: &str) -> MinedModel {
                             is_var: false,
                             parent: Some(name.clone()),
                             source_location: format!("line {}", line_num + 1),
-                            intersection_of: vec![],
+                            intersection_of: vec![], module: None,
                         });
                     }
                     continue;

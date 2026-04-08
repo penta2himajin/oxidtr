@@ -38,6 +38,8 @@ struct Parser<'a> {
     intersection_annotations: std::collections::HashMap<String, Vec<String>>,
     /// Track current sig name for annotation lookup
     current_sig_name: String,
+    /// Track current inline module name (set by `module X` declarations)
+    current_module: Option<String>,
 }
 
 impl<'a> Parser<'a> {
@@ -48,6 +50,7 @@ impl<'a> Parser<'a> {
             union_annotations: std::collections::HashMap::new(),
             intersection_annotations: std::collections::HashMap::new(),
             current_sig_name: String::new(),
+            current_module: None,
         }
     }
 
@@ -62,6 +65,7 @@ impl<'a> Parser<'a> {
             union_annotations: annotations,
             intersection_annotations,
             current_sig_name: String::new(),
+            current_module: None,
         }
     }
 
@@ -110,58 +114,82 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Token::Eof => break,
                 Token::Sig => {
-                    model.sigs.push(self.parse_sig(false, false)?);
+                    let mut sig = self.parse_sig(false, false)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::Var => {
                     // Alloy 6: `var sig` — mutable atom set
                     self.next();
-                    model.sigs.push(self.parse_sig(false, true)?);
+                    let mut sig = self.parse_sig(false, true)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::Abstract => {
                     self.next();
                     // Alloy 6: `abstract var sig` — not typical but handle gracefully
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(true, is_var, SigMultiplicity::Default)?);
+                    let mut sig = self.parse_sig_body(true, is_var, SigMultiplicity::Default)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::One => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::One)?);
+                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::One)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::Some_ => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::Some)?);
+                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::Some)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::Lone => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    model.sigs.push(self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?);
+                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?;
+                    sig.module = self.current_module.clone();
+                    model.sigs.push(sig);
                 }
                 Token::Module => {
-                    self.skip_to_eol();
+                    self.parse_module_decl();
                 }
                 Token::Open => {
                     self.skip_to_eol();
                 }
                 Token::Enum => {
-                    model.sigs.extend(self.parse_enum()?);
+                    let mut sigs = self.parse_enum()?;
+                    for sig in &mut sigs {
+                        sig.module = self.current_module.clone();
+                    }
+                    model.sigs.extend(sigs);
                 }
                 Token::Fact => {
-                    model.facts.push(self.parse_fact()?);
+                    let mut fact = self.parse_fact()?;
+                    fact.module = self.current_module.clone();
+                    model.facts.push(fact);
                 }
                 Token::Pred => {
-                    model.preds.push(self.parse_pred()?);
+                    let mut pred = self.parse_pred()?;
+                    pred.module = self.current_module.clone();
+                    model.preds.push(pred);
                 }
                 Token::Fun => {
-                    model.funs.push(self.parse_fun()?);
+                    let mut fun = self.parse_fun()?;
+                    fun.module = self.current_module.clone();
+                    model.funs.push(fun);
                 }
                 Token::Assert => {
-                    model.asserts.push(self.parse_assert()?);
+                    let mut assert_decl = self.parse_assert()?;
+                    assert_decl.module = self.current_module.clone();
+                    model.asserts.push(assert_decl);
                 }
                 Token::Check | Token::Run => {
                     self.skip_command();
@@ -204,6 +232,7 @@ impl<'a> Parser<'a> {
             parent: None,
             fields: Vec::new(),
             intersection_of: Vec::new(),
+            module: None,
         });
         for variant in variants {
             sigs.push(SigDecl {
@@ -214,6 +243,7 @@ impl<'a> Parser<'a> {
                 parent: Some(name.clone()),
                 fields: Vec::new(),
                 intersection_of: Vec::new(),
+                module: None,
             });
         }
         Ok(sigs)
@@ -259,6 +289,7 @@ impl<'a> Parser<'a> {
             parent,
             fields,
             intersection_of,
+            module: None, // set by parse_model from current_module
         })
     }
 
@@ -315,7 +346,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_expr()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(FactDecl { name, body })
+        Ok(FactDecl { name, body, module: None })
     }
 
     fn parse_pred(&mut self) -> Result<PredDecl, ParseError> {
@@ -341,7 +372,7 @@ impl<'a> Parser<'a> {
         }
         self.expect(&Token::RBrace)?;
 
-        Ok(PredDecl { name, params, body })
+        Ok(PredDecl { name, params, body, module: None })
     }
 
     fn parse_fun(&mut self) -> Result<FunDecl, ParseError> {
@@ -378,7 +409,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_expr()?;
         self.expect(&Token::RBrace)?;
 
-        Ok(FunDecl { name, receiver_sig, params, return_mult, return_type, body })
+        Ok(FunDecl { name, receiver_sig, params, return_mult, return_type, body, module: None })
     }
 
     fn parse_param(&mut self) -> Result<ParamDecl, ParseError> {
@@ -395,7 +426,7 @@ impl<'a> Parser<'a> {
         self.expect(&Token::LBrace)?;
         let body = self.parse_expr()?;
         self.expect(&Token::RBrace)?;
-        Ok(AssertDecl { name, body })
+        Ok(AssertDecl { name, body, module: None })
     }
 
     fn parse_expr(&mut self) -> Result<Expr, ParseError> {
@@ -834,10 +865,37 @@ impl<'a> Parser<'a> {
         self.skip_to_next_toplevel();
     }
 
-    /// Skip `module path` or `open path[params] as alias` declaration.
+    /// Parse `module name` declaration and set current_module.
+    /// All subsequent declarations are tagged with this module name until
+    /// the next `module` declaration or end of file.
+    fn parse_module_decl(&mut self) {
+        self.next(); // consume `module`
+        // Collect the module path as a string (e.g. "ast", "my/model")
+        let mut name = String::new();
+        loop {
+            match self.peek() {
+                Token::Ident(s) => {
+                    self.next();
+                    name.push_str(&s);
+                }
+                _ => break,
+            }
+            // Handle path separators: module my/model
+            // The lexer doesn't produce '/' as a token, so the path
+            // will be in the ident itself or we stop at the next top-level.
+            // For simple names like `module ast`, this works directly.
+        }
+        if !name.is_empty() {
+            self.current_module = Some(name);
+        }
+        // Skip any remaining tokens on the line (e.g. version info)
+        self.skip_to_next_toplevel();
+    }
+
+    /// Skip `open path[params] as alias` declaration.
     /// Consumes the leading keyword then skips to the next top-level token.
     fn skip_to_eol(&mut self) {
-        self.next(); // consume module/open
+        self.next(); // consume open
         self.skip_to_next_toplevel();
     }
 

@@ -33,7 +33,7 @@ fn differ_no_diff_when_in_sync() {
                 mult: Multiplicity::One,
                 target: "String".into(),
                 value_type: None, raw_union_type: None }],
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         }],
         vec![],
     );
@@ -59,7 +59,7 @@ fn differ_no_diff_when_in_sync() {
 fn differ_missing_struct() {
     use oxidtr::check::ExtractedImpl;
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None }],
         vec![],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
@@ -90,7 +90,7 @@ fn differ_missing_field() {
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "email".into(), is_var: false, mult: Multiplicity::One, target: "String".into(), value_type: None, raw_union_type: None }],
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         }],
         vec![],
     );
@@ -109,7 +109,7 @@ fn differ_missing_field() {
 fn differ_extra_field() {
     use oxidtr::check::{ExtractedImpl, ExtractedStruct, ExtractedField};
     let ir = make_ir(
-        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![] }],
+        vec![StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None }],
         vec![],
     );
     let extracted = ExtractedImpl {
@@ -139,7 +139,7 @@ fn differ_multiplicity_mismatch() {
             sig_multiplicity: SigMultiplicity::Default,
             parent: None,
             fields: vec![IRField { name: "manager".into(), is_var: false, mult: Multiplicity::Lone, target: "User".into(), value_type: None, raw_union_type: None }],
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         }],
         vec![],
     );
@@ -167,7 +167,7 @@ fn differ_missing_fn() {
     use oxidtr::check::ExtractedImpl;
     let ir = make_ir(
         vec![],
-        vec![OperationNode { name: "add_user".into(), receiver_sig: None, params: vec![], return_type: None, body: vec![] }],
+        vec![OperationNode { name: "add_user".into(), receiver_sig: None, params: vec![], return_type: None, body: vec![], module: None }],
     );
     let extracted = ExtractedImpl { structs: vec![], fns: vec![] };
     let diffs = differ::diff(&ir, &extracted);
@@ -268,7 +268,7 @@ fn check_detects_missing_transition_test() {
     // A fact with prime operator should require a transition_ test
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("StateUpdate".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Always,
@@ -309,7 +309,7 @@ fn check_detects_missing_transition_test() {
 fn check_passes_when_transition_test_present() {
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("StateUpdate".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Always,
@@ -329,7 +329,7 @@ fn check_passes_when_transition_test_present() {
 fn check_detects_missing_invariant_test_for_temporal_without_prime() {
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("AlwaysPositive".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Always,
@@ -359,7 +359,7 @@ fn check_accepts_space_separated_invariant_test_name() {
     // check should recognize this as matching the temporal test requirement
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("FlagImpliesPositive".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Always,
@@ -386,7 +386,7 @@ fn check_accepts_space_separated_temporal_binary_test_name() {
     use oxidtr::parser::ast::TemporalBinaryOp;
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("FlagUntilLarge".to_string()),
             expr: Expr::TemporalBinary {
                 op: TemporalBinaryOp::Until,
@@ -407,7 +407,7 @@ fn check_accepts_space_separated_temporal_binary_test_name() {
 fn check_accepts_space_separated_liveness_test_name() {
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("WillConverge".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Eventually,
@@ -428,7 +428,7 @@ fn check_accepts_space_separated_transition_test_name() {
     // TS generates `it('transition StateUpdate', ...)` for prime constraints
     let ir = OxidtrIR {
         structures: vec![],
-        constraints: vec![ConstraintNode {
+        constraints: vec![ConstraintNode { module: None,
             name: Some("StateUpdate".to_string()),
             expr: Expr::TemporalUnary {
                 op: ast::TemporalUnaryOp::Always,
@@ -456,6 +456,7 @@ fn missing_assert_detected() {
         properties: vec![PropertyNode {
             name: "NoSelfLoop".to_string(),
             expr: Expr::VarRef("placeholder".to_string()),
+            module: None,
         }],
     };
     let sources = vec!["fn some_other_test() {}".to_string()];
@@ -475,6 +476,7 @@ fn present_assert_not_flagged() {
         properties: vec![PropertyNode {
             name: "NoSelfLoop".to_string(),
             expr: Expr::VarRef("placeholder".to_string()),
+            module: None,
         }],
     };
     let sources = vec!["fn no_self_loop() { assert!(true); }".to_string()];

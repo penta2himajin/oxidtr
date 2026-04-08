@@ -57,6 +57,7 @@ fn lower_sig(sig: &SigDecl) -> StructureNode {
         parent: sig.parent.clone(),
         fields,
         intersection_of: sig.intersection_of.clone(),
+        module: sig.module.clone(),
     }
 }
 
@@ -64,6 +65,7 @@ fn lower_fact(fact: &FactDecl) -> ConstraintNode {
     ConstraintNode {
         name: fact.name.clone(),
         expr: fact.body.clone(),
+        module: fact.module.clone(),
     }
 }
 
@@ -84,6 +86,7 @@ fn lower_pred(pred: &PredDecl) -> OperationNode {
         params,
         return_type: None,
         body: pred.body.clone(),
+        module: pred.module.clone(),
     }
 }
 
@@ -107,6 +110,7 @@ fn lower_fun(fun: &FunDecl) -> OperationNode {
             type_name: fun.return_type.clone(),
         }),
         body: vec![fun.body.clone()],
+        module: fun.module.clone(),
     }
 }
 
@@ -114,5 +118,6 @@ fn lower_assert(assert_decl: &AssertDecl) -> PropertyNode {
     PropertyNode {
         name: assert_decl.name.clone(),
         expr: assert_decl.body.clone(),
+        module: assert_decl.module.clone(),
     }
 }

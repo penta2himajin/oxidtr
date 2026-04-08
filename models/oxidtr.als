@@ -6,6 +6,8 @@
 -- Alloy AST (parser output)
 -------------------------------------------------------------------------------
 
+module ast
+
 abstract sig Multiplicity {}
 one sig One  extends Multiplicity {}
 one sig Lone extends Multiplicity {}
@@ -219,6 +221,8 @@ fact FunParamsCardinality  { all f: FunDecl | #f.funParams = #f.funParams }
 -- oxidtr IR (lowered from AST)
 -------------------------------------------------------------------------------
 
+module ir
+
 sig StructureNode {
   origin:    one SigDecl,
   irIsVarSig: lone StructureNode,  -- Alloy 6: var sig marker
@@ -277,6 +281,8 @@ fun OxidtrIR.origin: one AlloyModel {
 -------------------------------------------------------------------------------
 -- Constraint analysis (ConstraintInfo variants)
 -------------------------------------------------------------------------------
+
+module analysis
 
 sig FieldOrdering {
   foSig:        one StructureNode,
@@ -346,6 +352,8 @@ sig FactCoverage {
 -------------------------------------------------------------------------------
 -- Validated newtypes (Rust TryFrom wrappers for constrained sigs)
 -------------------------------------------------------------------------------
+
+module validated
 
 sig ValidatedSigDecl       { vSigDecl:       one SigDecl }
 sig ValidatedFieldDecl     { vFieldDecl:     one FieldDecl }

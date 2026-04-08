@@ -35,6 +35,7 @@ pub struct SigDecl {
     pub parent: Option<String>,
     pub fields: Vec<FieldDecl>,
     pub intersection_of: Vec<String>,
+    pub module: Option<String>, // inline module grouping
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,6 +171,7 @@ pub struct ParamDecl {
 pub struct FactDecl {
     pub name: Option<String>,
     pub body: Expr,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,12 +179,14 @@ pub struct PredDecl {
     pub name: String,
     pub params: Vec<ParamDecl>,
     pub body: Vec<Expr>, // pre/post conditions combined for now
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssertDecl {
     pub name: String,
     pub body: Expr,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +197,7 @@ pub struct FunDecl {
     pub return_mult: Multiplicity,
     pub return_type: String,
     pub body: Expr,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

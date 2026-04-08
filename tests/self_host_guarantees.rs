@@ -397,7 +397,11 @@ fn guarantee_4_mine_covers_all_sigs_and_fields() {
         let dir = tmp.path();
         let files = generate_fn(&ir);
         for file in &files {
-            std::fs::write(dir.join(&file.path), &file.content).unwrap();
+            let file_path = dir.join(&file.path);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(&file_path, &file.content).unwrap();
         }
 
         // Also write validators.ts for TS
@@ -461,7 +465,11 @@ fn guarantee_5_check_detects_missing_validation() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     for file in &files {
-        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        let file_path = dir.join(&file.path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&file_path, &file.content).unwrap();
     }
 
     // Verify the model has named facts
@@ -514,7 +522,11 @@ fn guarantee_5_check_detects_removed_validation() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
     for file in &files {
-        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        let file_path = dir.join(&file.path);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&file_path, &file.content).unwrap();
     }
 
     // Remove the tests.rs file entirely — this simulates losing all validations

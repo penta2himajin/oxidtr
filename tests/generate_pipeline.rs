@@ -57,10 +57,20 @@ fn generate_self_model_pipeline() {
     let result = generate::run("models/oxidtr.als", &test_config(out_dir.to_str().unwrap())).unwrap();
     assert!(!result.files_written.is_empty());
 
-    let models = std::fs::read_to_string(out_dir.join("models.rs")).unwrap();
-    assert!(models.contains("pub struct SigDecl"));
-    assert!(models.contains("pub struct OxidtrIR"));
-    assert!(models.contains("pub enum Multiplicity"));
+    // oxidtr.als uses module declarations → modular layout
+    let sig_decl = std::fs::read_to_string(out_dir.join("ast/sig_decl.rs")).unwrap();
+    assert!(sig_decl.contains("pub struct SigDecl"));
+
+    let oxidtr_ir = std::fs::read_to_string(out_dir.join("ir/oxidtr_i_r.rs")).unwrap();
+    assert!(oxidtr_ir.contains("pub struct OxidtrIR"));
+
+    let mult = std::fs::read_to_string(out_dir.join("ast/multiplicity.rs")).unwrap();
+    assert!(mult.contains("pub enum Multiplicity"));
+
+    // Verify lib.rs with module declarations
+    let lib_rs = std::fs::read_to_string(out_dir.join("lib.rs")).unwrap();
+    assert!(lib_rs.contains("pub mod ast;"));
+    assert!(lib_rs.contains("pub mod ir;"));
 }
 
 #[test]

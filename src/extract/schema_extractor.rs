@@ -95,7 +95,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_var: false,
             parent: None,
             source_location: loc.clone(),
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
         for v in variants {
             sigs.push(MinedSig {
@@ -105,7 +105,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_var: false,
                 parent: Some(name.to_string()),
                 source_location: loc.clone(),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             });
         }
     } else if body.contains("\"oneOf\"") && body.contains("\"discriminator\"") {
@@ -117,7 +117,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_var: false,
             parent: None,
             source_location: loc.clone(),
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
         let variant_sigs = extract_discriminated_variants(name, body, &loc);
         sigs.extend(variant_sigs);
@@ -131,7 +131,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_var: false,
             parent: None,
             source_location: loc,
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
     } else if body.contains("\"type\": \"string\"") {
         // Bare abstract sig (enum with no known variants)
@@ -142,7 +142,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
                 is_var: false,
             parent: None,
             source_location: loc,
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
     }
 
@@ -255,7 +255,7 @@ fn extract_discriminated_variants(parent_name: &str, body: &str, loc: &str) -> V
                 is_var: false,
             parent: Some(parent_name.to_string()),
             source_location: loc.to_string(),
-            intersection_of: vec![],
+            intersection_of: vec![], module: None,
         });
     }
 

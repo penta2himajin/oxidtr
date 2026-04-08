@@ -40,44 +40,67 @@ edition = "2021"
     )
     .unwrap();
 
-    // Write lib.rs that includes generated modules
-    let mut lib_rs = String::new();
-    lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-    lib_rs.push_str("pub mod models;\n");
+    // Detect modular layout (has lib.rs) vs flat layout (has models.rs)
+    let has_lib_rs = files.iter().any(|f| f.path == "lib.rs");
 
-    let has_helpers = files.iter().any(|f| f.path == "helpers.rs");
-    let has_operations = files.iter().any(|f| f.path == "operations.rs");
-    let has_tests = files.iter().any(|f| f.path == "tests.rs");
-    let has_fixtures = files.iter().any(|f| f.path == "fixtures.rs");
-    let has_newtypes = files.iter().any(|f| f.path == "newtypes.rs");
-
-    if has_helpers {
-        lib_rs.push_str("pub mod helpers;\n");
-    }
-    if has_operations {
-        lib_rs.push_str("pub mod operations;\n");
-    }
-    if has_fixtures {
+    if has_lib_rs {
+        // Modular layout: the generator produces its own lib.rs
+        // Write all generated files (creating subdirectories as needed)
+        for file in &files {
+            let file_path = format!("{crate_dir}/src/{}", file.path);
+            if let Some(parent) = std::path::Path::new(&file_path).parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            let mut content = String::new();
+            // lib.rs and mod.rs need crate-level allow, others get file-level
+            if file.path == "lib.rs" {
+                content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
+            } else if !file.path.ends_with("mod.rs") {
+                content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
+            }
+            content.push_str(&file.content);
+            std::fs::write(&file_path, content).unwrap();
+        }
+    } else {
+        // Flat layout: construct lib.rs manually
+        let mut lib_rs = String::new();
         lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("pub mod fixtures;\n");
-    }
-    if has_newtypes {
-        lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("pub mod newtypes;\n");
-    }
-    if has_tests {
-        lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
-        lib_rs.push_str("mod tests;\n");
-    }
+        lib_rs.push_str("pub mod models;\n");
 
-    std::fs::write(format!("{crate_dir}/src/lib.rs"), lib_rs).unwrap();
+        let has_helpers = files.iter().any(|f| f.path == "helpers.rs");
+        let has_operations = files.iter().any(|f| f.path == "operations.rs");
+        let has_tests = files.iter().any(|f| f.path == "tests.rs");
+        let has_fixtures = files.iter().any(|f| f.path == "fixtures.rs");
+        let has_newtypes = files.iter().any(|f| f.path == "newtypes.rs");
 
-    // Write generated files
-    for file in &files {
-        let mut content = String::new();
-        content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
-        content.push_str(&file.content);
-        std::fs::write(format!("{crate_dir}/src/{}", file.path), content).unwrap();
+        if has_helpers {
+            lib_rs.push_str("pub mod helpers;\n");
+        }
+        if has_operations {
+            lib_rs.push_str("pub mod operations;\n");
+        }
+        if has_fixtures {
+            lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
+            lib_rs.push_str("pub mod fixtures;\n");
+        }
+        if has_newtypes {
+            lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
+            lib_rs.push_str("pub mod newtypes;\n");
+        }
+        if has_tests {
+            lib_rs.push_str("#[allow(dead_code, unused_variables, unused_imports)]\n");
+            lib_rs.push_str("mod tests;\n");
+        }
+
+        std::fs::write(format!("{crate_dir}/src/lib.rs"), lib_rs).unwrap();
+
+        // Write generated files
+        for file in &files {
+            let mut content = String::new();
+            content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
+            content.push_str(&file.content);
+            std::fs::write(format!("{crate_dir}/src/{}", file.path), content).unwrap();
+        }
     }
 }
 

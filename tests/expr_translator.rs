@@ -94,7 +94,7 @@ fn make_ir_two_sigs(
         sig_multiplicity: SigMultiplicity::Default,
         parent: None,
         fields: vec![],
-        intersection_of: vec![],
+        intersection_of: vec![], module: None,
     };
     let node_a = StructureNode {
         name: sig_a.to_string(),
@@ -107,7 +107,7 @@ fn make_ir_two_sigs(
             mult,
             target: sig_b.to_string(),
             is_var: false, value_type: None, raw_union_type: None }],
-        intersection_of: vec![],
+        intersection_of: vec![], module: None,
     };
     OxidtrIR {
         structures: vec![node_a, node_b],
@@ -129,7 +129,7 @@ fn make_ir_self_ref(sig_name: &str, field_name: &str, mult: Multiplicity) -> Oxi
             mult,
             target: sig_name.to_string(),
             is_var: false, value_type: None, raw_union_type: None }],
-        intersection_of: vec![],
+        intersection_of: vec![], module: None,
     };
     OxidtrIR {
         structures: vec![node],

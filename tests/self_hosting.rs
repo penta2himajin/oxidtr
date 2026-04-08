@@ -32,21 +32,34 @@ fn self_model_generates_rust() {
     let ir = ir::lower(&model).unwrap();
     let files = rust::generate(&ir);
 
-    assert!(files.iter().any(|f| f.path == "models.rs"), "no models.rs");
+    // Modular layout: lib.rs + module dirs; Flat layout: models.rs
+    let has_modular = files.iter().any(|f| f.path == "lib.rs");
+    let has_flat = files.iter().any(|f| f.path == "models.rs");
+    assert!(has_modular || has_flat, "should generate lib.rs (modular) or models.rs (flat)");
     assert!(files.iter().any(|f| f.path == "tests.rs"), "no tests.rs");
 
-    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    // Concatenate all model content for assertion checks
+    let all_models: String = if has_flat {
+        files.iter().find(|f| f.path == "models.rs").unwrap().content.clone()
+    } else {
+        files.iter()
+            .filter(|f| f.path.ends_with(".rs") && !f.path.ends_with("mod.rs")
+                && !f.path.ends_with("lib.rs") && f.path != "tests.rs"
+                && f.path != "fixtures.rs" && f.path != "helpers.rs"
+                && f.path != "operations.rs" && f.path != "newtypes.rs")
+            .map(|f| f.content.as_str()).collect::<Vec<_>>().join("\n")
+    };
 
     // Verify key types from the self-hosting model exist
-    assert!(models.content.contains("pub enum Multiplicity"));
-    assert!(models.content.contains("pub struct SigDecl"));
-    assert!(models.content.contains("pub struct FieldDecl"));
-    assert!(models.content.contains("pub struct AlloyModel"));
-    assert!(models.content.contains("pub struct OxidtrIR"));
-    assert!(models.content.contains("pub struct StructureNode"));
-    assert!(models.content.contains("pub struct ConstraintNode"));
-    assert!(models.content.contains("pub struct OperationNode"));
-    assert!(models.content.contains("pub struct PropertyNode"));
+    assert!(all_models.contains("pub enum Multiplicity"));
+    assert!(all_models.contains("pub struct SigDecl"));
+    assert!(all_models.contains("pub struct FieldDecl"));
+    assert!(all_models.contains("pub struct AlloyModel"));
+    assert!(all_models.contains("pub struct OxidtrIR"));
+    assert!(all_models.contains("pub struct StructureNode"));
+    assert!(all_models.contains("pub struct ConstraintNode"));
+    assert!(all_models.contains("pub struct OperationNode"));
+    assert!(all_models.contains("pub struct PropertyNode"));
 }
 
 #[test]
@@ -105,7 +118,17 @@ fn self_hosted_crate_content_check() {
     let ir = ir::lower(&model).unwrap();
     let files = rust::generate(&ir);
 
-    let models = files.iter().find(|f| f.path == "models.rs").unwrap();
+    // Concatenate all model content for modular or flat layout
+    let all_models: String = if let Some(m) = files.iter().find(|f| f.path == "models.rs") {
+        m.content.clone()
+    } else {
+        files.iter()
+            .filter(|f| f.path.ends_with(".rs") && !f.path.ends_with("mod.rs")
+                && !f.path.ends_with("lib.rs") && f.path != "tests.rs"
+                && f.path != "fixtures.rs" && f.path != "helpers.rs"
+                && f.path != "operations.rs" && f.path != "newtypes.rs")
+            .map(|f| f.content.as_str()).collect::<Vec<_>>().join("\n")
+    };
     let tests = files.iter().find(|f| f.path == "tests.rs").unwrap();
 
     // No invariants.rs should be generated
@@ -113,10 +136,10 @@ fn self_hosted_crate_content_check() {
         "should NOT generate invariants.rs");
 
     // Key types from oxidtr domain
-    assert!(models.content.contains("pub enum Multiplicity"));
-    assert!(models.content.contains("pub struct SigDecl"));
-    assert!(models.content.contains("pub struct OxidtrIR"));
-    assert!(models.content.contains("pub struct StructureNode"));
+    assert!(all_models.contains("pub enum Multiplicity"));
+    assert!(all_models.contains("pub struct SigDecl"));
+    assert!(all_models.contains("pub struct OxidtrIR"));
+    assert!(all_models.contains("pub struct StructureNode"));
 
     // Tests use inlined translated expressions, not invariant function calls
     assert!(tests.content.contains(".iter().all("),

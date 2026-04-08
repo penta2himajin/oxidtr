@@ -389,6 +389,7 @@ sig DisplayProps extends BaseProps {}
         parent: None,
         fields: vec![],
         intersection_of: vec!["TransformProps".to_string(), "DisplayProps".to_string()],
+        module: None,
     });
     let files = oxidtr::backend::typescript::generate(&ir);
     let models = files.iter().find(|f| f.path == "models.ts").expect("models.ts");

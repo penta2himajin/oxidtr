@@ -27,12 +27,15 @@ pub struct StructureNode {
     /// For type aliases that are intersections (e.g. `type Base = A & B & C`).
     /// Backends render these as intersection/composition types rather than plain structs.
     pub intersection_of: Vec<String>,
+    /// Module grouping from `module X` declarations in the Alloy source.
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstraintNode {
     pub name: Option<String>,
     pub expr: Expr,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,12 +58,14 @@ pub struct OperationNode {
     pub params: Vec<IRParam>,
     pub return_type: Option<IRReturnType>,
     pub body: Vec<Expr>,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PropertyNode {
     pub name: String,
     pub expr: Expr,
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

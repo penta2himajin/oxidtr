@@ -42,7 +42,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_var: sig_is_var,
                 parent: iface_parent,
                 source_location: format!("line {}", line_num + 1),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             });
         }
 
@@ -56,6 +56,7 @@ pub fn extract(source: &str) -> MinedModel {
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: components,
+                module: None,
             });
         }
 
@@ -75,7 +76,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
-                    intersection_of: vec![],
+                    intersection_of: vec![], module: None,
                 });
                 for v in &variants {
                     let vname = v.trim_matches('"').trim_matches('\'').to_string();
@@ -86,7 +87,7 @@ pub fn extract(source: &str) -> MinedModel {
                         is_var: false,
                         parent: Some(name.clone()),
                         source_location: format!("line {}", line_num + 1),
-                        intersection_of: vec![],
+                        intersection_of: vec![], module: None,
                     });
                 }
             } else {
@@ -98,7 +99,7 @@ pub fn extract(source: &str) -> MinedModel {
                     is_var: sig_is_var,
                     parent: None,
                     source_location: format!("line {}", line_num + 1),
-                    intersection_of: vec![],
+                    intersection_of: vec![], module: None,
                 });
                 // Set parent on existing sigs that match variant names
                 for v in &variants {

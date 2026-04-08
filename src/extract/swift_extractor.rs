@@ -32,7 +32,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             });
         }
 
@@ -46,7 +46,7 @@ pub fn extract(source: &str) -> MinedModel {
                 is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             });
             for vs in variant_sigs {
                 sigs.push(vs);
@@ -212,7 +212,7 @@ fn collect_enum_cases(
                 is_var: false,
                 parent: Some(parent_name.to_string()),
                 source_location: format!("line {}", ln + 1),
-                intersection_of: vec![],
+                intersection_of: vec![], module: None,
             });
         }
     }

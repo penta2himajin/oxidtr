@@ -372,7 +372,9 @@ fn self_hosting_all_targets_still_work() {
     let go_files = go::generate(&ir_val);
 
     // Each backend produces models + tests at minimum
-    assert!(file_exists(&rust_files, "models.rs"), "Rust should generate models.rs");
+    // oxidtr.als uses module declarations → Rust generates lib.rs + module dirs
+    assert!(file_exists(&rust_files, "lib.rs") || file_exists(&rust_files, "models.rs"),
+        "Rust should generate lib.rs (modular) or models.rs (flat)");
     assert!(file_exists(&ts_files, "models.ts"), "TS should generate models.ts");
     assert!(file_exists(&kt_files, "Models.kt"), "Kotlin should generate Models.kt");
     assert!(file_exists(&java_files, "Models.java"), "Java should generate Models.java");
