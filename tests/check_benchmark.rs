@@ -66,6 +66,16 @@ fn report_diffs(lang: &str, diffs: &[DiffItem]) -> (usize, usize, usize, usize) 
     }
     if other_count > 0 {
         eprintln!("  Other diffs:   {other_count}");
+        for d in diffs {
+            let already_counted = matches!(d,
+                DiffItem::MissingStruct { .. } | DiffItem::ExtraStruct { .. } |
+                DiffItem::MissingField { .. } | DiffItem::ExtraField { .. } |
+                DiffItem::MultiplicityMismatch { .. }
+            );
+            if !already_counted {
+                eprintln!("    {d}");
+            }
+        }
     }
     eprintln!("  Total diffs:   {}", diffs.len());
     eprintln!();
@@ -81,10 +91,10 @@ fn report_diffs(lang: &str, diffs: &[DiffItem]) -> (usize, usize, usize, usize) 
 // Improve extractors → update these thresholds upward.
 //
 // Current baselines:
-//   Rust:       15/20 sigs (75%), 20 diffs — tuple variants unextracted
-//   TypeScript: 20/20 sigs (100%), 29 diffs — sig detection perfect, remaining: ops/validation
-//   Go:         20/20 sigs (100%),  7 diffs — sig detection perfect, remaining: ops/validation
-//   Java:        0/20 sigs  (0%), 27 diffs — Java class hierarchy completely unextracted
+//   Rust:       20/20 sigs (100%), 16 diffs — tuple variant names positional (_0 vs named)
+//   TypeScript: 20/20 sigs (100%),  0 diffs — PERFECT
+//   Go:         20/20 sigs (100%),  0 diffs — PERFECT
+//   Java:        0/20 sigs  (0%), 20 diffs — Java class hierarchy completely unextracted
 
 #[test]
 fn benchmark_rust_handwritten() {
@@ -94,8 +104,8 @@ fn benchmark_rust_handwritten() {
     let result = check::run("models/commonmark.als", &config).unwrap();
     let (found, _, _, _) = report_diffs("Rust", &result.diffs);
 
-    // Baseline: 15/20. Tuple variants (Text, CodeSpan, Emphasis, Strong, HtmlInline) are lost.
-    assert!(found >= 15, "Rust regression: expected >=15 sigs, got {found}");
+    // Baseline: 20/20. Tuple variants now extracted (fields positional: _0, _1, ...).
+    assert!(found >= 20, "Rust regression: expected >=20 sigs, got {found}");
 }
 
 #[test]

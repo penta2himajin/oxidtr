@@ -116,7 +116,8 @@ fn collect_fields(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -> Vec<E
 }
 
 /// Parse enum variants, producing an ExtractedStruct per variant.
-/// Handles both unit variants (`Foo,`) and struct variants (`Foo { field: Type, },`).
+/// Handles unit variants (`Foo,`), struct variants (`Foo { field: Type, },`),
+/// and tuple variants (`Foo(Type),`).
 fn collect_enum_variants(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -> Vec<ExtractedStruct> {
     let mut result = Vec::new();
     let mut depth = 1usize; // already inside the enum `{`
@@ -133,6 +134,7 @@ fn collect_enum_variants(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -
         // Try to detect a variant line at depth 1
         // Unit variant: "VariantName," at depth 1
         // Struct variant start: "VariantName {" at depth 2 (open brace just counted)
+        // Tuple variant: "VariantName(Type)," at depth 1
         let cleaned = trimmed.trim_end_matches(',');
         if cleaned.is_empty() { continue; }
         let first = cleaned.chars().next().unwrap_or(' ');
@@ -146,12 +148,56 @@ fn collect_enum_variants(lines: &mut std::iter::Peekable<std::str::Lines<'_>>) -
                 let fields = collect_variant_fields(lines, &mut depth);
                 result.push(ExtractedStruct { name, fields, is_enum: false, is_var: false });
             }
+        } else if let Some(paren_pos) = cleaned.find('(') {
+            // Tuple variant: "VariantName(Type)" or "VariantName(Type1, Type2)"
+            let name: String = cleaned[..paren_pos].trim().to_string();
+            if name.chars().all(|c| c.is_alphanumeric() || c == '_') && !name.is_empty() {
+                // Extract the single inner type for common patterns
+                let fields = parse_tuple_variant_fields(cleaned, paren_pos);
+                result.push(ExtractedStruct { name, fields, is_enum: false, is_var: false });
+            }
         } else if cleaned.chars().all(|c| c.is_alphanumeric() || c == '_') {
             // Unit variant
             result.push(ExtractedStruct { name: cleaned.to_string(), fields: vec![], is_enum: false, is_var: false });
         }
     }
     result
+}
+
+/// Parse tuple variant fields: `Foo(Type)` or `Foo(Vec<Type>)`.
+/// Since tuple variants have no named fields, we generate a positional name `_0`, `_1`, etc.
+fn parse_tuple_variant_fields(cleaned: &str, paren_pos: usize) -> Vec<ExtractedField> {
+    let inner = &cleaned[paren_pos + 1..];
+    let inner = inner.trim_end_matches(')').trim();
+    if inner.is_empty() { return vec![]; }
+    // Split on top-level commas (respecting angle brackets)
+    let parts = split_type_args(inner);
+    parts.iter().enumerate().filter_map(|(i, type_str)| {
+        let type_str = type_str.trim();
+        if type_str.is_empty() { return None; }
+        let (mult, target) = type_to_mult(type_str);
+        Some(ExtractedField { name: format!("_{i}"), mult, target, is_var: false })
+    }).collect()
+}
+
+/// Split a type argument list on top-level commas, respecting `<>` nesting.
+fn split_type_args(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, ch) in s.chars().enumerate() {
+        match ch {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 /// Collect fields inside a struct enum variant.

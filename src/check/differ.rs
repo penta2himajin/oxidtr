@@ -108,6 +108,8 @@ pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> 
 /// Diff with Rust snake_case normalization, including validation coverage check.
 pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_snake_case);
+    remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, true));
     diffs
 }
@@ -117,6 +119,7 @@ pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation
 pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
     remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
@@ -126,6 +129,7 @@ pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, v
 pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_pascal_case);
     remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
@@ -136,6 +140,20 @@ pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, valid
     remove_seq_set_mismatches(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
+}
+
+/// Remove VarMismatch diffs when the model has no var fields at all.
+/// Hand-written code in TS/Kotlin/etc. typically omits `readonly`, which the extractor
+/// interprets as `var`. If the model itself has no var fields, these mismatches are spurious.
+fn remove_spurious_var_mismatches(ir: &OxidtrIR, diffs: &mut Vec<DiffItem>) {
+    let model_has_var = ir.structures.iter().any(|s|
+        s.is_var || s.fields.iter().any(|f| f.is_var)
+    );
+    if !model_has_var {
+        diffs.retain(|d| !matches!(d,
+            DiffItem::VarMismatch { .. } | DiffItem::VarMismatchSig { .. }
+        ));
+    }
 }
 
 /// Remove Seq/Set multiplicity mismatches — many languages use the same

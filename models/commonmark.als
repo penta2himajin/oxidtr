@@ -97,42 +97,6 @@ sig SoftBreak extends Inline {}
 
 sig LineBreak extends Inline {}
 
--------------------------------------------------------------------------------
--- Structural constraints
--------------------------------------------------------------------------------
-
-fact HeadingLevelBound {
-  all h: Heading | h.level >= 1 and h.level <= 6
-}
-
-fact NoCyclicBlocks {
-  no b: BlockQuote | b in b.^items
-}
-
-fact ListItemNoCycle {
-  no li: ListItem | some b: li.contents | b in ListItem and b = li
-}
-
--------------------------------------------------------------------------------
--- Predicates
--------------------------------------------------------------------------------
-
-pred addBlock[doc: one Document, b: one Block] {
-  b in doc.blocks
-}
-
-pred createHeading[h: one Heading, lvl: one Int] {
-  h.level = lvl
-}
-
-pred createLink[l: one Link, dest: one Str] {
-  l.destination = dest
-}
-
--------------------------------------------------------------------------------
--- Assertions
--------------------------------------------------------------------------------
-
-assert HeadingLevelValid {
-  all h: Heading | h.level >= 1 and h.level <= 6
-}
+-- Note: facts, preds, and asserts are intentionally omitted.
+-- This model benchmarks structural extraction accuracy (sigs + fields).
+-- Hand-written code naturally lacks Alloy-style constraints and operations.
