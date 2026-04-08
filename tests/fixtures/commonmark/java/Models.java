@@ -37,52 +37,71 @@ public abstract class Node {
 }
 
 /**
- * The root node of a CommonMark document.
- */
-public class Document extends Block {
-    @Override
-    public void accept(Visitor visitor) { visitor.visit(this); }
-}
-
-/**
  * Base class for block-level nodes.
  */
 public abstract class Block extends Node {}
+
+/**
+ * Base class for inline-level nodes.
+ */
+public abstract class Inline extends Node {}
+
+/**
+ * The root node of a CommonMark document.
+ */
+public class Document extends Block {
+    private List<Block> blocks;
+
+    @Override
+    public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Block> getBlocks() { return blocks; }
+}
 
 /**
  * An ATX or Setext heading.
  */
 public class Heading extends Block {
     private int level;
+    private List<Inline> inlines;
 
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
 
     public int getLevel() { return level; }
     public void setLevel(int level) { this.level = level; }
+    public List<Inline> getInlines() { return inlines; }
 }
 
 /**
  * A paragraph of inline content.
  */
 public class Paragraph extends Block {
+    private List<Inline> inlines;
+
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Inline> getInlines() { return inlines; }
 }
 
 /**
  * A block quote containing nested blocks.
  */
 public class BlockQuote extends Block {
+    private List<Block> items;
+
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Block> getItems() { return items; }
 }
 
 /**
  * A fenced or indented code block.
  */
 public class CodeBlock extends Block {
-    private String info;
+    private /* @Nullable */ String info;
     private String literal;
 
     @Override
@@ -122,6 +141,7 @@ public class ListBlock extends Block {
     private boolean ordered;
     private boolean tight;
     private Integer start;
+    private List<ListItem> items;
 
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
@@ -132,20 +152,25 @@ public class ListBlock extends Block {
     public void setTight(boolean tight) { this.tight = tight; }
     public Integer getStart() { return start; }
     public void setStart(Integer start) { this.start = start; }
+    public List<ListItem> getItems() { return items; }
 }
 
 /**
  * A single item in a list.
  */
 public class ListItem extends Block {
+    private List<Block> contents;
+
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Block> getContents() { return contents; }
 }
 
 /**
  * A run of plain text.
  */
-public class Text extends Node {
+public class Text extends Inline {
     private String literal;
 
     public Text() {}
@@ -161,7 +186,7 @@ public class Text extends Node {
 /**
  * An inline code span.
  */
-public class CodeSpan extends Node {
+public class CodeSpan extends Inline {
     private String literal;
 
     @Override
@@ -174,25 +199,34 @@ public class CodeSpan extends Node {
 /**
  * Emphasized (italic) content.
  */
-public class Emphasis extends Node {
+public class Emphasis extends Inline {
+    private List<Inline> children;
+
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Inline> getChildren() { return children; }
 }
 
 /**
  * Strong (bold) content.
  */
-public class Strong extends Node {
+public class Strong extends Inline {
+    private List<Inline> children;
+
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
+
+    public List<Inline> getChildren() { return children; }
 }
 
 /**
  * A hyperlink.
  */
-public class Link extends Node {
+public class Link extends Inline {
     private String destination;
-    private String title;
+    private /* @Nullable */ String title;
+    private List<Inline> children;
 
     public Link() {}
     public Link(String destination, String title) {
@@ -207,14 +241,16 @@ public class Link extends Node {
     public void setDestination(String destination) { this.destination = destination; }
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
+    public List<Inline> getChildren() { return children; }
 }
 
 /**
  * An embedded image.
  */
-public class Image extends Node {
+public class Image extends Inline {
     private String destination;
-    private String title;
+    private /* @Nullable */ String title;
+    private List<Inline> children;
 
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
@@ -223,12 +259,13 @@ public class Image extends Node {
     public void setDestination(String destination) { this.destination = destination; }
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
+    public List<Inline> getChildren() { return children; }
 }
 
 /**
  * Raw inline HTML.
  */
-public class HtmlInline extends Node {
+public class HtmlInline extends Inline {
     private String literal;
 
     @Override
@@ -241,7 +278,7 @@ public class HtmlInline extends Node {
 /**
  * A soft line break (rendered as space).
  */
-public class SoftBreak extends Node {
+public class SoftBreak extends Inline {
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
 }
@@ -249,7 +286,7 @@ public class SoftBreak extends Node {
 /**
  * A hard line break (rendered as &lt;br&gt;).
  */
-public class LineBreak extends Node {
+public class LineBreak extends Inline {
     @Override
     public void accept(Visitor visitor) { visitor.visit(this); }
 }

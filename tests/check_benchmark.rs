@@ -94,7 +94,7 @@ fn report_diffs(lang: &str, diffs: &[DiffItem]) -> (usize, usize, usize, usize) 
 //   Rust:       20/20 sigs (100%), 0 diffs — PERFECT
 //   TypeScript: 20/20 sigs (100%), 0 diffs — PERFECT
 //   Go:         20/20 sigs (100%), 0 diffs — PERFECT
-//   Java:        0/20 sigs  (0%), 20 diffs — Java class hierarchy completely unextracted
+//   Java:       20/20 sigs (100%), 0 diffs — PERFECT
 
 #[test]
 fn benchmark_rust_handwritten() {
@@ -140,9 +140,8 @@ fn benchmark_java_handwritten() {
     let result = check::run("models/commonmark.als", &config).unwrap();
     let (found, _, _, _) = report_diffs("Java", &result.diffs);
 
-    // Baseline: 0/20. Java class hierarchy completely unextracted via mine fallback.
-    // This is the primary target for improvement.
-    eprintln!("Java baseline: {found}/20 sigs found");
+    // Baseline: 20/20. Class hierarchy extraction with private fields + boxed type mapping.
+    assert!(found >= 20, "Java regression: expected >=20 sigs, got {found}");
 }
 
 // ---------------------------------------------------------------------------
