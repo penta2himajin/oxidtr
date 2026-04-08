@@ -3,7 +3,7 @@
 use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
 use crate::analyze;
-use super::impl_parser::{ExtractedImpl, ExtractedStruct};
+use super::{ExtractedImpl, ExtractedStruct};
 
 fn to_snake_case(s: &str) -> String {
     let mut out = String::new();
@@ -108,20 +108,34 @@ pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> 
 /// Diff with Rust snake_case normalization, including validation coverage check.
 pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_snake_case);
+    remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
+    remove_field_referenced_extras(extracted, &mut diffs);
+    resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, true));
     diffs
 }
 
 /// Diff with identity normalization, including validation coverage check.
+/// Treats Seq≈Set as equivalent (TS arrays/Go slices serve both roles).
 pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
+    remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
+    remove_field_referenced_extras(extracted, &mut diffs);
+    resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
 
 /// Diff with Go PascalCase normalization (camelCase → PascalCase), including validation coverage.
+/// Treats Seq≈Set as equivalent (Go slices serve both roles).
 pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_pascal_case);
+    remove_seq_set_mismatches(&mut diffs);
+    remove_spurious_var_mismatches(ir, &mut diffs);
+    remove_field_referenced_extras(extracted, &mut diffs);
+    resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
@@ -129,14 +143,133 @@ pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validat
 /// Diff with Lean lowerCamelCase normalization, treating Seq≈Set (both map to List in Lean).
 pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
-    // Remove Seq/Set mismatches — Lean maps both to List, so the extractor always returns Set
+    remove_seq_set_mismatches(&mut diffs);
+    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs
+}
+
+/// Remove VarMismatch diffs when the model has no var fields at all.
+/// Hand-written code in TS/Kotlin/etc. typically omits `readonly`, which the extractor
+/// interprets as `var`. If the model itself has no var fields, these mismatches are spurious.
+fn remove_spurious_var_mismatches(ir: &OxidtrIR, diffs: &mut Vec<DiffItem>) {
+    let model_has_var = ir.structures.iter().any(|s|
+        s.is_var || s.fields.iter().any(|f| f.is_var)
+    );
+    if !model_has_var {
+        diffs.retain(|d| !matches!(d,
+            DiffItem::VarMismatch { .. } | DiffItem::VarMismatchSig { .. }
+        ));
+    }
+}
+
+/// Suppress ExtraStruct for types that are only used as field types in model-matching structs.
+/// Example: `HeadingLevel` is Extra because it's not in the model, but it's referenced
+/// by `Heading.level: HeadingLevel`. Its enum variants (H2, H3, ...) are also suppressed.
+fn remove_field_referenced_extras(extracted: &ExtractedImpl, diffs: &mut Vec<DiffItem>) {
+    use std::collections::{HashSet, HashMap};
+
+    // Build variant→parent mapping from extraction order.
+    // Extractors emit: enum (is_enum=true), then its variants, then next enum.
+    let mut variant_of: HashMap<&str, &str> = HashMap::new();
+    let mut current_enum: Option<&str> = None;
+    for s in &extracted.structs {
+        if s.is_enum {
+            current_enum = Some(&s.name);
+        } else if let Some(parent) = current_enum {
+            variant_of.insert(&s.name, parent);
+        }
+    }
+
+    // Collect all type names referenced as field targets in any impl struct.
+    let mut field_targets: HashSet<&str> = HashSet::new();
+    for s in &extracted.structs {
+        for f in &s.fields {
+            field_targets.insert(&f.target);
+        }
+    }
+
+    // A type is suppressible if it's field-referenced, OR its parent enum is field-referenced.
+    let suppressible = |name: &str| -> bool {
+        if field_targets.contains(name) { return true; }
+        if let Some(parent) = variant_of.get(name) {
+            return field_targets.contains(parent);
+        }
+        false
+    };
+
+    diffs.retain(|d| {
+        if let DiffItem::ExtraStruct { name } = d {
+            !suppressible(name)
+        } else {
+            true
+        }
+    });
+}
+
+/// Resolve positional field mismatches from tuple enum variants.
+/// When impl has `_0`, `_1`, ... fields (from tuple variants) and IR has named fields,
+/// match them positionally if the field count and multiplicities align.
+fn resolve_positional_fields(diffs: &mut Vec<DiffItem>) {
+    use std::collections::HashMap;
+
+    // Group MissingField and ExtraField by struct_name.
+    let mut missing_by_struct: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+    let mut extra_by_struct: HashMap<String, Vec<(usize, String)>> = HashMap::new();
+
+    for (i, d) in diffs.iter().enumerate() {
+        match d {
+            DiffItem::MissingField { struct_name, field_name } => {
+                missing_by_struct.entry(struct_name.clone()).or_default()
+                    .push((i, field_name.clone()));
+            }
+            DiffItem::ExtraField { struct_name, field_name } => {
+                extra_by_struct.entry(struct_name.clone()).or_default()
+                    .push((i, field_name.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    // For each struct, check if extras are positional (_0, _1, ...) and counts match.
+    let mut indices_to_remove: Vec<usize> = Vec::new();
+    for (struct_name, extras) in &extra_by_struct {
+        let all_positional = extras.iter().all(|(_, name)| {
+            // _0, _1, ... (positional naming convention)
+            (name.starts_with('_') && name[1..].parse::<usize>().is_ok())
+            // field0, field1, ... (rust_extractor style)
+            || (name.starts_with("field") && name["field".len()..].parse::<usize>().is_ok())
+        });
+        if !all_positional { continue; }
+
+        if let Some(missings) = missing_by_struct.get(struct_name) {
+            if extras.len() == missings.len() {
+                // Positional match: suppress both Missing and Extra
+                for (idx, _) in extras {
+                    indices_to_remove.push(*idx);
+                }
+                for (idx, _) in missings {
+                    indices_to_remove.push(*idx);
+                }
+            }
+        }
+    }
+
+    indices_to_remove.sort_unstable();
+    indices_to_remove.dedup();
+    // Remove in reverse order to preserve indices.
+    for idx in indices_to_remove.into_iter().rev() {
+        diffs.remove(idx);
+    }
+}
+
+/// Remove Seq/Set multiplicity mismatches — many languages use the same
+/// collection type (e.g. slices, arrays, lists) for both ordered and unordered.
+fn remove_seq_set_mismatches(diffs: &mut Vec<DiffItem>) {
     diffs.retain(|d| !matches!(d,
         DiffItem::MultiplicityMismatch { expected, actual, .. }
             if (*expected == Multiplicity::Seq && *actual == Multiplicity::Set)
                 || (*expected == Multiplicity::Set && *actual == Multiplicity::Seq)
     ));
-    diffs.extend(diff_validations(ir, validation_sources, false));
-    diffs
 }
 
 fn to_pascal_case(s: &str) -> String {

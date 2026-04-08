@@ -30,10 +30,10 @@ pub fn extract(source: &str) -> MinedModel {
             } else {
                 collect_interface_fields(&mut lines)
             };
-            // Skip discriminant-only interfaces (will be handled as union variants)
+            // Skip discriminant fields (kind/type with string literal values)
             let real_fields: Vec<MinedField> = fields
                 .into_iter()
-                .filter(|f| f.name != "kind")
+                .filter(|f| !is_discriminant_field(f))
                 .collect();
             sigs.push(MinedSig {
                 name,
@@ -61,8 +61,11 @@ pub fn extract(source: &str) -> MinedModel {
 
         // export type Foo = "A" | "B" → abstract sig + one sig children (string literal union)
         // export type Foo = A | B     → abstract sig + sub sig children (discriminated union)
-        if let Some((name, variants)) = parse_type_union(trimmed) {
-            let is_string_literal = variants.iter().all(|v| v.starts_with('"'));
+        // Also handles multi-line: export type Foo =\n  | A\n  | B;
+        if let Some((name, variants)) = parse_type_union(trimmed)
+            .or_else(|| parse_multiline_type_union(trimmed, &mut lines))
+        {
+            let is_string_literal = variants.iter().all(|v| v.starts_with('"') || v.starts_with('\''));
             if is_string_literal {
                 // String literal union → abstract sig + one sig per literal
                 sigs.push(MinedSig {
@@ -75,7 +78,7 @@ pub fn extract(source: &str) -> MinedModel {
                     intersection_of: vec![],
                 });
                 for v in &variants {
-                    let vname = v.trim_matches('"').to_string();
+                    let vname = v.trim_matches('"').trim_matches('\'').to_string();
                     sigs.push(MinedSig {
                         name: vname,
                         fields: vec![],
@@ -117,6 +120,19 @@ pub fn extract(source: &str) -> MinedModel {
     super::extract_temporal_annotations(source, &mut fact_candidates);
 
     MinedModel { sigs, fact_candidates }
+}
+
+/// A discriminant field is a field named "type" or "kind" whose target
+/// looks like a string literal value (e.g. `type: 'heading'`, `kind: "Literal"`).
+fn is_discriminant_field(f: &MinedField) -> bool {
+    // `kind` fields are always discriminants (oxidtr convention)
+    if f.name == "kind" { return true; }
+    // `type` fields are discriminants when the target looks like a literal tag
+    // (starts with lowercase — e.g. 'heading', 'paragraph')
+    if f.name == "type" {
+        return f.target.chars().next().map_or(false, |c| c.is_ascii_lowercase());
+    }
+    false
 }
 
 /// Returns (name, first_parent) for an interface declaration.
@@ -169,6 +185,8 @@ fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
     let rhs = rest[eq_pos + 1..].trim().trim_end_matches(';').trim();
     // Skip intersection types (handled by parse_type_intersection)
     if rhs.contains("& ") && !rhs.contains('|') { return None; }
+    // Skip empty rhs (multi-line union handled by parse_multiline_type_union)
+    if rhs.is_empty() { return None; }
 
     let variants: Vec<String> = rhs.split('|')
         .map(|s| s.trim().to_string())
@@ -176,6 +194,44 @@ fn parse_type_union(line: &str) -> Option<(String, Vec<String>)> {
         .collect();
     if variants.is_empty() { return None; }
 
+    Some((name, variants))
+}
+
+/// Parse multi-line type union:
+///   export type Foo =
+///     | A
+///     | B;
+fn parse_multiline_type_union(
+    line: &str,
+    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
+) -> Option<(String, Vec<String>)> {
+    let rest = line.strip_prefix("export type ")
+        .or_else(|| line.strip_prefix("type "))?;
+    let eq_pos = rest.find('=')?;
+    let name: String = rest[..eq_pos].trim().to_string();
+    if name.is_empty() { return None; }
+    let rhs = rest[eq_pos + 1..].trim();
+    // Only match if rhs is empty or starts with `|` (beginning of multi-line union)
+    if !rhs.is_empty() && !rhs.starts_with('|') { return None; }
+
+    let mut variants: Vec<String> = Vec::new();
+    // Collect initial rhs if it starts with `|`
+    if rhs.starts_with('|') {
+        let v = rhs.trim_start_matches('|').trim().trim_end_matches(';').trim().to_string();
+        if !v.is_empty() { variants.push(v); }
+    }
+    // Collect subsequent lines starting with `|`
+    while let Some((_, next_line)) = lines.peek() {
+        let trimmed = next_line.trim();
+        if let Some(rest) = trimmed.strip_prefix('|') {
+            let v = rest.trim().trim_end_matches(';').trim().to_string();
+            if !v.is_empty() { variants.push(v); }
+            lines.next();
+        } else {
+            break;
+        }
+    }
+    if variants.is_empty() { return None; }
     Some((name, variants))
 }
 
@@ -337,14 +393,17 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim();
     if type_str.is_empty() { return None; }
 
-    // Issue 4: Single string literal discriminant (kind: "Foo").
+    // Issue 4: Single string literal discriminant (kind: "Foo" or type: 'foo').
     // Must NOT be a union — "frame" | "scene" starts/ends with '"' but contains " | ".
-    if type_str.starts_with('"') && type_str.ends_with('"') && !type_str.contains(" | ") {
+    let is_double_quoted = type_str.starts_with('"') && type_str.ends_with('"') && !type_str.contains(" | ");
+    let is_single_quoted = type_str.starts_with('\'') && type_str.ends_with('\'') && !type_str.contains(" | ");
+    if is_double_quoted || is_single_quoted {
+        let quote_char = if is_double_quoted { '"' } else { '\'' };
         return Some(MinedField {
             name,
             is_var: !has_readonly,
             mult: MinedMultiplicity::One,
-            target: type_str.trim_matches('"').to_string(),
+            target: type_str.trim_matches(quote_char).to_string(),
             raw_union_type: None,
         });
     }

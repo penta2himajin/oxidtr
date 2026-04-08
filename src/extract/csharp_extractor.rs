@@ -52,7 +52,12 @@ pub fn extract(source: &str) -> MinedModel {
         // public class Foo : Bar
         // public class Foo
         if let Some((name, is_abstract, parent)) = parse_cs_class(trimmed) {
-            let fields = collect_cs_class_fields(&mut lines);
+            let fields = if trimmed.contains('{') && trimmed.contains('}') {
+                // Single-line class: `public class Foo : Bar {}`
+                vec![]
+            } else {
+                collect_cs_class_fields(&mut lines)
+            };
             sigs.push(MinedSig {
                 name,
                 fields,

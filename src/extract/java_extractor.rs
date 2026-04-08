@@ -10,6 +10,12 @@ pub fn extract(source: &str) -> MinedModel {
     let mut lines = source.lines().enumerate().peekable();
     let mut prev_line_has_var_sig = false;
 
+    // Pre-check: if records exist, skip class parsing (generated Java 16+ code).
+    let has_records = source.lines().any(|l| {
+        let t = l.trim();
+        t.starts_with("public record ") || t.starts_with("record ")
+    });
+
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
@@ -74,6 +80,31 @@ pub fn extract(source: &str) -> MinedModel {
                     is_abstract: false,
                     is_var: false,
                     parent: Some(name.clone()),
+                    source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
+                });
+            }
+        }
+
+        // public [abstract] class Foo [extends Bar] { → sig (with optional parent)
+        // Skip class parsing if records are present (generated Java 16+ code uses records;
+        // classes in that context are infrastructure helpers, not domain types).
+        if !has_records {
+            if let Some((name, is_abstract, parent)) = parse_class_decl(trimmed) {
+                let fields = if trimmed.contains('{') && trimmed.contains('}') {
+                    // Single-line class: `public abstract class Block extends Node {}`
+                    vec![]
+                } else if trimmed.contains('{') {
+                    collect_class_fields(&mut lines)
+                } else {
+                    vec![]
+                };
+                sigs.push(MinedSig {
+                    name,
+                    fields,
+                    is_abstract,
+                    is_var: sig_is_var,
+                    parent,
                     source_location: format!("line {}", line_num + 1),
                     intersection_of: vec![],
                 });
@@ -183,6 +214,79 @@ fn parse_enum(line: &str) -> Option<String> {
     if name.is_empty() { None } else { Some(name) }
 }
 
+/// Parse a class declaration: `public [abstract] class Foo [extends Bar] {`
+/// Returns (name, is_abstract, parent).
+fn parse_class_decl(line: &str) -> Option<(String, bool, Option<String>)> {
+    // Must contain "class " keyword
+    if !line.contains("class ") { return None; }
+    // Must not be an interface or enum (already handled above)
+    if line.contains("interface ") || line.contains("enum ") || line.contains("record ") { return None; }
+
+    let is_abstract = line.contains("abstract ");
+
+    // Find the class name after "class "
+    let class_pos = line.find("class ")?;
+    let after_class = &line[class_pos + "class ".len()..];
+    let name: String = after_class.chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() || !name.chars().next()?.is_ascii_uppercase() { return None; }
+
+    // Look for "extends Parent"
+    let parent = if let Some(ext_pos) = after_class.find("extends ") {
+        let after_ext = &after_class[ext_pos + "extends ".len()..];
+        let parent_name: String = after_ext.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if parent_name.is_empty() { None } else { Some(parent_name) }
+    } else {
+        None
+    };
+
+    Some((name, is_abstract, parent))
+}
+
+/// Collect fields from a Java class body.
+/// Looks for `private Type field;` patterns.
+fn collect_class_fields(
+    lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
+) -> Vec<MinedField> {
+    let mut fields = Vec::new();
+    let mut depth = 1usize;
+
+    for (_ln, line) in lines.by_ref() {
+        let trimmed = line.trim();
+        for ch in trimmed.chars() {
+            match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
+        }
+        if depth == 0 { break; }
+
+        // Only parse field declarations at depth 1 (direct class body)
+        if depth == 1 {
+            if let Some(field) = parse_class_field(trimmed) {
+                fields.push(field);
+            }
+        }
+    }
+
+    fields
+}
+
+/// Parse a private field: `private Type name;`
+fn parse_class_field(line: &str) -> Option<MinedField> {
+    let trimmed = line.trim().trim_end_matches(';').trim();
+    // Must start with "private" (Java convention for fields)
+    let rest = trimmed.strip_prefix("private ")?;
+    // Split into type and name
+    let parts: Vec<&str> = rest.split_whitespace().collect();
+    if parts.len() < 2 { return None; }
+    let name = parts.last()?.to_string();
+    if name.is_empty() || !name.chars().next()?.is_ascii_lowercase() { return None; }
+    let type_str = parts[..parts.len() - 1].join(" ");
+    let (mult, target) = java_type_to_mult(&type_str);
+    Some(MinedField { name, is_var: false, mult, target, raw_union_type: None })
+}
+
 fn parse_java_param(param: &str) -> Option<MinedField> {
     let is_var = param.contains("@alloy: var");
     // Strip @Annotation(...) patterns but preserve block comments (e.g., /* @Nullable */)
@@ -235,6 +339,18 @@ fn java_type_to_mult(java_type: &str) -> (MinedMultiplicity, String) {
     if let Some(inner) = strip_wrapper(t, "Optional<", ">") {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
+    // Boxed types are nullable → lone
+    if matches!(t, "Integer" | "Long" | "Short" | "Byte" | "Double" | "Float" | "Boolean" | "Character") {
+        let primitive = match t {
+            "Integer" | "Long" | "Short" | "Byte" => "int",
+            "Double" | "Float" => "double",
+            "Boolean" => "boolean",
+            "Character" => "char",
+            _ => t,
+        };
+        return (MinedMultiplicity::Lone, primitive.to_string());
+    }
+
     (MinedMultiplicity::One, t.to_string())
 }
 
