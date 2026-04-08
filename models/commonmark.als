@@ -11,7 +11,7 @@
 -------------------------------------------------------------------------------
 
 sig Document {
-  blocks: set Block
+  blocks: seq Block
 }
 
 -------------------------------------------------------------------------------
@@ -22,15 +22,15 @@ abstract sig Block {}
 
 sig Heading extends Block {
   level:   one Int,
-  inlines: set Inline
+  inlines: seq Inline
 }
 
 sig Paragraph extends Block {
-  inlines: set Inline
+  inlines: seq Inline
 }
 
 sig BlockQuote extends Block {
-  items: set Block
+  items: seq Block
 }
 
 sig CodeBlock extends Block {
@@ -48,11 +48,11 @@ sig ListBlock extends Block {
   ordered: one Bool,
   tight:   one Bool,
   start:   lone Int,
-  items:   set ListItem
+  items:   seq ListItem
 }
 
 sig ListItem extends Block {
-  contents: set Block
+  contents: seq Block
 }
 
 -------------------------------------------------------------------------------
@@ -70,11 +70,11 @@ sig CodeSpan extends Inline {
 }
 
 sig Emphasis extends Inline {
-  children: set Inline
+  children: seq Inline
 }
 
 sig Strong extends Inline {
-  children: set Inline
+  children: seq Inline
 }
 
 sig Link extends Inline {

@@ -77,13 +77,13 @@ fn report_diffs(lang: &str, diffs: &[DiffItem]) -> (usize, usize, usize, usize) 
 // Per-language benchmarks: run check and report precision/recall
 // ---------------------------------------------------------------------------
 
-// Baseline values as of initial measurement.
+// Baseline values as of latest measurement.
 // Improve extractors → update these thresholds upward.
 //
 // Current baselines:
-//   Rust:       15/20 sigs (75%), 26 diffs — tuple variants unextracted
-//   TypeScript: 18/20 sigs (90%), 51 diffs — `type` fields spurious, Seq/Set mismatch
-//   Go:         18/20 sigs (90%), 16 diffs — interfaces unextracted, Lone→One
+//   Rust:       15/20 sigs (75%), 20 diffs — tuple variants unextracted
+//   TypeScript: 20/20 sigs (100%), 29 diffs — sig detection perfect, remaining: ops/validation
+//   Go:         20/20 sigs (100%),  7 diffs — sig detection perfect, remaining: ops/validation
 //   Java:        0/20 sigs  (0%), 27 diffs — Java class hierarchy completely unextracted
 
 #[test]
@@ -106,8 +106,8 @@ fn benchmark_ts_handwritten() {
     let result = check::run("models/commonmark.als", &config).unwrap();
     let (found, _, _, _) = report_diffs("TypeScript", &result.diffs);
 
-    // Baseline: 18/20. Missing: Block, Inline (type aliases, not interfaces).
-    assert!(found >= 18, "TypeScript regression: expected >=18 sigs, got {found}");
+    // Baseline: 20/20. Sig detection is perfect after multi-line union + discriminant fixes.
+    assert!(found >= 20, "TypeScript regression: expected >=20 sigs, got {found}");
 }
 
 #[test]
@@ -118,8 +118,8 @@ fn benchmark_go_handwritten() {
     let result = check::run("models/commonmark.als", &config).unwrap();
     let (found, _, _, _) = report_diffs("Go", &result.diffs);
 
-    // Baseline: 18/20. Missing: Block, Inline (Go interfaces not extracted as sigs).
-    assert!(found >= 18, "Go regression: expected >=18 sigs, got {found}");
+    // Baseline: 20/20. Sig detection is perfect after empty interface + field parsing fixes.
+    assert!(found >= 20, "Go regression: expected >=20 sigs, got {found}");
 }
 
 #[test]

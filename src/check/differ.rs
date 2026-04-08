@@ -113,15 +113,19 @@ pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation
 }
 
 /// Diff with identity normalization, including validation coverage check.
+/// Treats Seq≈Set as equivalent (TS arrays/Go slices serve both roles).
 pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
+    remove_seq_set_mismatches(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
 
 /// Diff with Go PascalCase normalization (camelCase → PascalCase), including validation coverage.
+/// Treats Seq≈Set as equivalent (Go slices serve both roles).
 pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_pascal_case);
+    remove_seq_set_mismatches(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
 }
@@ -129,14 +133,19 @@ pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validat
 /// Diff with Lean lowerCamelCase normalization, treating Seq≈Set (both map to List in Lean).
 pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
-    // Remove Seq/Set mismatches — Lean maps both to List, so the extractor always returns Set
+    remove_seq_set_mismatches(&mut diffs);
+    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs
+}
+
+/// Remove Seq/Set multiplicity mismatches — many languages use the same
+/// collection type (e.g. slices, arrays, lists) for both ordered and unordered.
+fn remove_seq_set_mismatches(diffs: &mut Vec<DiffItem>) {
     diffs.retain(|d| !matches!(d,
         DiffItem::MultiplicityMismatch { expected, actual, .. }
             if (*expected == Multiplicity::Seq && *actual == Multiplicity::Set)
                 || (*expected == Multiplicity::Set && *actual == Multiplicity::Seq)
     ));
-    diffs.extend(diff_validations(ir, validation_sources, false));
-    diffs
 }
 
 fn to_pascal_case(s: &str) -> String {

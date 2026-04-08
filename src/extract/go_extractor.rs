@@ -81,10 +81,22 @@ pub fn extract(source: &str) -> MinedModel {
             });
         }
 
-        // type Foo interface { → abstract sig
+        // type Foo interface { → abstract sig (with or without marker method)
         if let Some(name) = parse_go_interface(trimmed) {
-            let marker_method = collect_go_interface_marker(&mut lines);
-            if let Some(_marker) = marker_method {
+            if is_inline_empty_interface(trimmed) {
+                // Empty interface on same line: `type Foo interface{}`
+                sigs.push(MinedSig {
+                    name,
+                    fields: vec![],
+                    is_abstract: true,
+                    is_var: sig_is_var,
+                    parent: None,
+                    source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![],
+                });
+            } else {
+                // Multi-line interface: consume body, check for marker method
+                let _marker_method = collect_go_interface_marker(&mut lines);
                 sigs.push(MinedSig {
                     name,
                     fields: vec![],
@@ -162,6 +174,12 @@ fn parse_go_struct(line: &str) -> Option<String> {
 fn is_inline_empty_struct(line: &str) -> bool {
     let trimmed = line.trim();
     trimmed.ends_with("struct{}")
+}
+
+/// Check if an interface declaration is an inline empty interface (`type X interface{}`).
+fn is_inline_empty_interface(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.ends_with("interface{}") || trimmed.ends_with("interface {}")
 }
 
 /// Check if a func declaration has its body entirely on the same line (e.g., `func (X) isY() {}`).
@@ -254,18 +272,19 @@ fn collect_go_struct_fields(
 fn parse_go_field(line: &str) -> Option<MinedField> {
     let line = line.trim();
     if line.is_empty() || line.starts_with("//") || line.starts_with("/*") { return None; }
-    // Skip embedded types (single word without space)
-    let parts: Vec<&str> = line.splitn(3, char::is_whitespace).collect();
-    if parts.len() < 2 { return None; }
-    let name = parts[0];
+    // Split on whitespace, skipping empty parts (handles multi-space alignment)
+    let mut parts = line.split_whitespace();
+    let name = parts.next()?;
     if name.is_empty() || !name.chars().next()?.is_ascii_uppercase() { return None; }
-    // Remove json tags etc.
-    let type_str = parts[1].trim();
+    // Second token is the type; skip embedded types (single word lines like "BaseBlock")
+    let type_str = parts.next()?;
+    // Remove json tags (backtick-delimited)
     let type_str = if let Some(backtick) = type_str.find('`') {
         type_str[..backtick].trim()
     } else {
         type_str
     };
+    if type_str.is_empty() { return None; }
 
     let (mult, target) = go_type_to_mult(type_str);
     // Convert Go field name (PascalCase) to camelCase for Alloy
@@ -281,7 +300,9 @@ fn go_type_to_mult(go_type: &str) -> (MinedMultiplicity, String) {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
 
-    // []T → set (Go slices are unordered conceptually, but we default to set)
+    // []T → set (Go has no native set; slices serve both roles.
+    //   Alloy set vs seq distinction is handled by @alloy: seq annotation
+    //   or by Set≈Seq equivalence in the differ.)
     if let Some(inner) = t.strip_prefix("[]") {
         return (MinedMultiplicity::Set, inner.to_string());
     }

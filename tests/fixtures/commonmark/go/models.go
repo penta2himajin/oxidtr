@@ -44,7 +44,7 @@ type BlockQuote struct {
 // CodeBlock represents an indented or fenced code block.
 type CodeBlock struct {
 	BaseBlock
-	Info    string
+	Info    *string
 	Literal string
 }
 
@@ -64,7 +64,7 @@ type ListBlock struct {
 	BaseBlock
 	Ordered bool
 	Tight   bool
-	Start   int
+	Start   *int
 	Items   []ListItem
 }
 
@@ -102,7 +102,7 @@ type Strong struct {
 type Link struct {
 	BaseInline
 	Destination string
-	Title       string
+	Title       *string
 	Children    []Inline
 }
 
@@ -110,7 +110,7 @@ type Link struct {
 type Image struct {
 	BaseInline
 	Destination string
-	Title       string
+	Title       *string
 	Children    []Inline
 }
 
