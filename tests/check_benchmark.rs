@@ -144,8 +144,44 @@ fn benchmark_java_handwritten() {
     assert!(found >= 20, "Java regression: expected >=20 sigs, got {found}");
 }
 
+#[test]
+fn benchmark_kotlin_handwritten() {
+    let config = CheckConfig {
+        impl_dir: "tests/fixtures/commonmark/kotlin".to_string(),
+    };
+    let result = check::run("models/commonmark.als", &config).unwrap();
+    let (found, _, _, _) = report_diffs("Kotlin", &result.diffs);
+
+    // Baseline: 20/20 (0 diffs). Sealed class + data class + data object pattern works perfectly.
+    assert!(found >= 20, "Kotlin regression: expected >=20 sigs, got {found}");
+}
+
+#[test]
+fn benchmark_swift_handwritten() {
+    let config = CheckConfig {
+        impl_dir: "tests/fixtures/commonmark/swift".to_string(),
+    };
+    let result = check::run("models/commonmark.als", &config).unwrap();
+    let (found, _, _, _) = report_diffs("Swift", &result.diffs);
+
+    // Baseline: 20/20 (0 diffs). Enum + struct + case params pattern works perfectly.
+    assert!(found >= 20, "Swift regression: expected >=20 sigs, got {found}");
+}
+
+#[test]
+fn benchmark_csharp_handwritten() {
+    let config = CheckConfig {
+        impl_dir: "tests/fixtures/commonmark/csharp".to_string(),
+    };
+    let result = check::run("models/commonmark.als", &config).unwrap();
+    let (found, _, _, _) = report_diffs("C#", &result.diffs);
+
+    // Baseline: 20/20 (0 diffs). Class hierarchy + C# properties + nullable pattern.
+    assert!(found >= 20, "C# regression: expected >=20 sigs, got {found}");
+}
+
 // ---------------------------------------------------------------------------
-// Summary: run all 4 and compare
+// Summary: run all 7 and compare
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -157,6 +193,9 @@ fn benchmark_summary() {
         ("TypeScript", "tests/fixtures/commonmark/ts"),
         ("Go", "tests/fixtures/commonmark/go"),
         ("Java", "tests/fixtures/commonmark/java"),
+        ("Kotlin", "tests/fixtures/commonmark/kotlin"),
+        ("Swift", "tests/fixtures/commonmark/swift"),
+        ("C#", "tests/fixtures/commonmark/csharp"),
     ];
 
     eprintln!("\n╔══════════════════════════════════════════════════╗");
