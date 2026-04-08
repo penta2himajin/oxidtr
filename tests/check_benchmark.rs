@@ -91,9 +91,9 @@ fn report_diffs(lang: &str, diffs: &[DiffItem]) -> (usize, usize, usize, usize) 
 // Improve extractors → update these thresholds upward.
 //
 // Current baselines:
-//   Rust:       20/20 sigs (100%), 16 diffs — tuple variant names positional (_0 vs named)
-//   TypeScript: 20/20 sigs (100%),  0 diffs — PERFECT
-//   Go:         20/20 sigs (100%),  0 diffs — PERFECT
+//   Rust:       20/20 sigs (100%), 0 diffs — PERFECT
+//   TypeScript: 20/20 sigs (100%), 0 diffs — PERFECT
+//   Go:         20/20 sigs (100%), 0 diffs — PERFECT
 //   Java:        0/20 sigs  (0%), 20 diffs — Java class hierarchy completely unextracted
 
 #[test]
