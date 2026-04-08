@@ -220,9 +220,12 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
     if has_tc {
         writeln!(lib_rs, "pub mod helpers;").unwrap();
+        let helpers_content = generate_helpers(ir)
+            .replace("use crate::models::*;",
+                &module_order.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"));
         files.push(GeneratedFile {
             path: "helpers.rs".to_string(),
-            content: generate_helpers(ir),
+            content: helpers_content,
         });
     }
     if !ir.operations.is_empty() {
