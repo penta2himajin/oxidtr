@@ -3,6 +3,7 @@
 use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
 use crate::analyze;
+use crate::backend::is_native_type_alias;
 use super::{ExtractedImpl, ExtractedStruct};
 
 fn to_snake_case(s: &str) -> String {
@@ -397,8 +398,9 @@ where F: Fn(&str) -> String {
     let impl_map: std::collections::HashMap<&str, &ExtractedStruct> =
         extracted.structs.iter().map(|s| (s.name.as_str(), s)).collect();
 
-    // Missing: in IR but not in impl
+    // Missing: in IR but not in impl (skip native type aliases — they map to primitives)
     for s in &ir.structures {
+        if is_native_type_alias(&s.name) { continue; }
         if !impl_map.contains_key(s.name.as_str()) {
             diffs.push(DiffItem::MissingStruct { name: s.name.clone() });
         }
