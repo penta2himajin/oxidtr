@@ -261,6 +261,46 @@ fn check_run_missing_models_rs_is_error() {
     assert!(matches!(err, Err(check::CheckError::ImplNotFound(_))));
 }
 
+// ── Native type aliases should not appear as MISSING_STRUCT ──────────────────
+
+#[test]
+fn differ_skips_native_type_aliases() {
+    // If the model contains sigs Str, Int, Float, Bool (native type aliases),
+    // the differ should NOT report them as MISSING_STRUCT because backends
+    // map them to language primitives instead of emitting struct definitions.
+    let ir = make_ir(
+        vec![
+            StructureNode { name: "User".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![
+                IRField { name: "name".into(), is_var: false, mult: Multiplicity::One, target: "Str".into(), value_type: None, raw_union_type: None },
+            ], intersection_of: vec![], module: None },
+            StructureNode { name: "Str".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None },
+            StructureNode { name: "Int".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None },
+            StructureNode { name: "Float".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None },
+            StructureNode { name: "Bool".into(), is_enum: false, is_var: false, sig_multiplicity: SigMultiplicity::Default, parent: None, fields: vec![], intersection_of: vec![], module: None },
+        ],
+        vec![],
+    );
+    let extracted = ExtractedImpl {
+        structs: vec![ExtractedStruct {
+            name: "User".into(),
+            is_enum: false,
+            is_var: false,
+            fields: vec![ExtractedField { name: "name".into(), mult: Multiplicity::One, target: "String".into(), is_var: false }],
+        }],
+        fns: vec![],
+    };
+    let diffs = differ::diff(&ir, &extracted);
+    // Should not contain MissingStruct for any native type alias
+    let native_missing: Vec<_> = diffs.iter().filter(|d| matches!(d,
+        DiffItem::MissingStruct { name } if matches!(name.as_str(), "Str" | "Int" | "Float" | "Bool")
+    )).collect();
+    assert!(native_missing.is_empty(),
+        "native type aliases should not be reported as MISSING_STRUCT: {native_missing:?}");
+    // Should not contain ExtraStruct for User either
+    assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingStruct { name } if name == "User")),
+        "User should not be missing: {diffs:?}");
+}
+
 // ── Alloy 6: temporal constraint checking ──────────────────────────────────
 
 #[test]
