@@ -378,11 +378,38 @@ fn find_char(bytes: &[u8], ch: u8, from: usize) -> Option<usize> {
     None
 }
 
+/// Map a JSON Schema primitive type name to the corresponding Alloy sig name.
+fn primitive_type_to_alloy(json_type: &str) -> Option<&'static str> {
+    match json_type {
+        "string" => Some("Str"),
+        "integer" => Some("Int"),
+        "number" => Some("Float"),
+        "boolean" => Some("Bool"),
+        _ => None,
+    }
+}
+
+/// Extract an inline primitive type from a field body.
+/// Looks for `"type": "string"` / `"integer"` / `"number"` / `"boolean"`.
+fn extract_primitive_type(body: &str) -> Option<String> {
+    let pos = body.find("\"type\"")?;
+    let rest = &body[pos + 6..];
+    let colon_pos = rest.find(':')?;
+    let after_colon = rest[colon_pos + 1..].trim_start();
+    let val = strip_quotes(after_colon)?;
+    primitive_type_to_alloy(val).map(|s| s.to_string())
+}
+
+/// Try to extract target type from `$ref` first, then fall back to inline primitive.
+fn extract_target_from(body: &str) -> Option<String> {
+    extract_ref_from(body).or_else(|| extract_primitive_type(body))
+}
+
 /// Classify a field from its JSON Schema body into a MinedField.
 fn classify_field(name: &str, body: &str) -> Option<MinedField> {
-    // Case 1: "oneOf": [...{"$ref":...}, {"type":"null"}] -> Lone
+    // Case 1: "oneOf": [...{"$ref":...} or {"type":"<prim>"}, {"type":"null"}] -> Lone
     if body.contains("\"oneOf\"") && body.contains("\"null\"") {
-        if let Some(target) = extract_ref_from(body) {
+        if let Some(target) = extract_target_from(body) {
             return Some(MinedField {
                 name: name.to_string(),
                 is_var: false,
@@ -393,11 +420,11 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
         }
     }
 
-    // Case 2: "type": "array", "items": {"$ref": ...} -> Set (if uniqueItems) or Seq
+    // Case 2: "type": "array", "items": {"$ref": ...} or {"type":"<prim>"} -> Set/Seq
     if body.contains("\"array\"") {
         if let Some(items_pos) = body.find("\"items\"") {
             let rest = &body[items_pos..];
-            if let Some(target) = extract_ref_from(rest) {
+            if let Some(target) = extract_target_from(rest) {
                 let mult = if body.contains("\"uniqueItems\"") && body.contains("true") {
                     MinedMultiplicity::Set
                 } else {
@@ -416,6 +443,17 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
 
     // Case 3: "$ref": "#/definitions/X" -> One
     if let Some(target) = extract_ref_from(body) {
+        return Some(MinedField {
+            name: name.to_string(),
+            is_var: false,
+            mult: MinedMultiplicity::One,
+            target,
+            raw_union_type: None,
+        });
+    }
+
+    // Case 4: inline primitive "type": "string"/"integer"/"number"/"boolean" -> One
+    if let Some(target) = extract_primitive_type(body) {
         return Some(MinedField {
             name: name.to_string(),
             is_var: false,
