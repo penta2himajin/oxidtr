@@ -315,8 +315,7 @@ sig Exhaustive {
 
 sig ValueBound {
   vbSig:       one StructureNode,
-  vbField:     one FieldDecl,
-  vbBound:     one BoundKind
+  vbField:     one FieldDecl
 }
 
 -------------------------------------------------------------------------------
