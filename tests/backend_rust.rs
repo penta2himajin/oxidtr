@@ -787,3 +787,53 @@ fn rust_native_type_with_multiplicities() {
     assert!(models.contains("pub label: Option<String>,"), "lone Str → Option<String>:\n{models}");
     assert!(models.contains("pub scores: Vec<i64>,"), "seq Int → Vec<i64>:\n{models}");
 }
+
+#[test]
+fn enum_variant_fields_resolve_native_types() {
+    let files = generate_from(r#"
+        abstract sig AlgebraicStructure { rank: one Int, label: one Str }
+        sig Magma extends AlgebraicStructure {}
+        sig Monoid extends AlgebraicStructure {}
+    "#);
+    let models = find_file(&files, "models.rs");
+    // Enum variant fields should use resolved types (i64, String), not Alloy names (Int, Str)
+    assert!(models.contains("rank: i64,"), "enum variant field Int should resolve to i64:\n{models}");
+    assert!(models.contains("label: String,"), "enum variant field Str should resolve to String:\n{models}");
+    assert!(!models.contains("rank: Int,"), "should not contain raw Alloy type Int:\n{models}");
+    assert!(!models.contains("label: Str,"), "should not contain raw Alloy type Str:\n{models}");
+}
+
+#[test]
+fn fixture_respects_value_bounds() {
+    let files = generate_from(r#"
+        sig Report { total_laws: one Int, score: one Float }
+        fact PositiveLaws { all r: Report | r.total_laws > 0 }
+        fact PositiveScore { all r: Report | r.score >= 1 }
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    // total_laws > 0 → default should be 1i64 (AtLeast(1)), not 0i64
+    assert!(fixtures.contains("total_laws: 1i64"), "total_laws should be 1i64 (> 0):\n{fixtures}");
+    // score >= 1 → default should be 1.0f64 (AtLeast(1)), not 0.0f64
+    assert!(fixtures.contains("score: 1.0f64"), "score should be 1.0f64 (>= 1):\n{fixtures}");
+}
+
+#[test]
+fn one_sig_fixed_value_generates_unit_variant_with_const_method() {
+    let files = generate_from(r#"
+        abstract sig AlgebraicStructure { rank: one Int }
+        one sig Magma extends AlgebraicStructure {}
+        one sig Monoid extends AlgebraicStructure {}
+        fact { Magma.rank = 0 }
+        fact { Monoid.rank = 1 }
+    "#);
+    let models = find_file(&files, "models.rs");
+    // Should generate unit variants (no fields)
+    assert!(models.contains("Magma,"), "Magma should be unit variant:\n{models}");
+    assert!(models.contains("Monoid,"), "Monoid should be unit variant:\n{models}");
+    // Should NOT generate struct variants with rank field
+    assert!(!models.contains("Magma {"), "Magma should NOT be struct variant:\n{models}");
+    // Should generate const fn rank()
+    assert!(models.contains("pub const fn rank(&self)"), "should have const fn rank:\n{models}");
+    assert!(models.contains("Self::Magma => 0"), "Magma.rank should be 0:\n{models}");
+    assert!(models.contains("Self::Monoid => 1"), "Monoid.rank should be 1:\n{models}");
+}

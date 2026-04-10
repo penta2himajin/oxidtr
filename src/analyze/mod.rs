@@ -72,6 +72,12 @@ pub enum ConstraintInfo {
         sig_name: String,
         condition: Expr,
     },
+    /// Value bound: all s: S | s.field > N (direct comparison to literal)
+    ValueBound {
+        sig_name: String,
+        field_name: String,
+        bound: BoundKind,
+    },
     /// Generic named constraint (for doc comments)
     Named {
         name: String,
@@ -388,6 +394,7 @@ pub fn constraints_for_sig(ir: &OxidtrIR, sig_name: &str) -> Vec<ConstraintInfo>
         ConstraintInfo::Exhaustive { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Implication { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Prohibition { sig_name: s, .. } => s == sig_name,
+        ConstraintInfo::ValueBound { sig_name: s, .. } => s == sig_name,
         ConstraintInfo::Named { .. } => false,
     }).collect()
 }
@@ -664,6 +671,31 @@ fn analyze_body_for_sig(
                     }
                 }
             }
+            // ValueBound: s.field > N or s.field >= N etc. (field vs literal)
+            if !matches!(left.as_ref(), Expr::Cardinality(_)) {
+                if let Expr::FieldAccess { base, field } = left.as_ref() {
+                    if let Expr::VarRef(v) = base.as_ref() {
+                        if v == var {
+                            let n = extract_int(right);
+                            let bound = match op {
+                                CompareOp::Gt => n.map(|v| BoundKind::AtLeast((v + 1) as usize)),
+                                CompareOp::Gte => n.map(|v| BoundKind::AtLeast(v as usize)),
+                                CompareOp::Lt => n.map(|v| BoundKind::AtMost((v - 1) as usize)),
+                                CompareOp::Lte => n.map(|v| BoundKind::AtMost(v as usize)),
+                                CompareOp::Eq => n.map(|v| BoundKind::Exact(v as usize)),
+                                _ => None,
+                            };
+                            if let Some(bound) = bound {
+                                results.push(ConstraintInfo::ValueBound {
+                                    sig_name: sig_name.to_string(),
+                                    field_name: field.clone(),
+                                    bound,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
         // Disjunction: check for exhaustive classification (x in A or x in B or ...)
         Expr::BinaryLogic { op: LogicOp::Or, .. } => {
@@ -905,6 +937,48 @@ pub fn bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Opti
     let constraints = constraints_for_sig(ir, sig_name);
     for c in &constraints {
         if let ConstraintInfo::CardinalityBound { field_name: fname, bound, .. } = c {
+            if fname == field_name {
+                return Some(bound.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Detect fixed-value assignments in global facts: `Sig.field = constant`.
+/// Returns a map of (sig_name, field_name) → literal value (as i64).
+pub fn fixed_value_fields(ir: &OxidtrIR) -> std::collections::HashMap<(String, String), i64> {
+    let mut result = std::collections::HashMap::new();
+    for c in &ir.constraints {
+        collect_fixed_values(&c.expr, &mut result);
+    }
+    result
+}
+
+fn collect_fixed_values(expr: &Expr, result: &mut std::collections::HashMap<(String, String), i64>) {
+    match expr {
+        Expr::Comparison { op: CompareOp::Eq, left, right } => {
+            if let Expr::FieldAccess { base, field } = left.as_ref() {
+                if let Expr::VarRef(sig_name) = base.as_ref() {
+                    if let Expr::IntLiteral(val) = right.as_ref() {
+                        result.insert((sig_name.clone(), field.clone()), *val);
+                    }
+                }
+            }
+        }
+        Expr::BinaryLogic { left, right, .. } => {
+            collect_fixed_values(left, result);
+            collect_fixed_values(right, result);
+        }
+        _ => {}
+    }
+}
+
+/// Get the value bound for a specific field on a sig (e.g., s.field > 0 → AtLeast(1)).
+pub fn value_bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Option<BoundKind> {
+    let constraints = constraints_for_sig(ir, sig_name);
+    for c in &constraints {
+        if let ConstraintInfo::ValueBound { field_name: fname, bound, .. } = c {
             if fname == field_name {
                 return Some(bound.clone());
             }
@@ -1240,6 +1314,24 @@ pub enum AnomalyPattern {
     UnboundedCollection { sig_name: String, field_name: String },
     /// Self-referential field (target == sig or transitive) without NoSelfRef or Acyclic guard.
     UnguardedSelfRef { sig_name: String, field_name: String },
+}
+
+/// Check if a constraint expression is vacuously true when some quantifier domains are empty.
+/// Returns true if the expression is `all x: Domain | ...` and `Domain` is in `empty_domains`.
+pub fn is_vacuously_true(expr: &Expr, empty_domains: &HashSet<String>) -> bool {
+    match expr {
+        Expr::Quantifier { kind: QuantKind::All, bindings, .. } => {
+            bindings.iter().any(|b| {
+                if let Expr::VarRef(name) = &b.domain {
+                    empty_domains.contains(name)
+                } else {
+                    false
+                }
+            })
+        }
+        Expr::TemporalUnary { expr: inner, .. } => is_vacuously_true(inner, empty_domains),
+        _ => false,
+    }
 }
 
 /// Detect anomaly patterns in the IR that warrant edge-case testing.

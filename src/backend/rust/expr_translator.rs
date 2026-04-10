@@ -265,8 +265,8 @@ fn translate_inner(expr: &Expr, parens_if_complex: bool, sig_names: &HashSet<Str
     }
 }
 
-/// Collect all (var, domain_str, is_disj) tuples from bindings, expanding multi-var bindings.
-fn collect_quant_vars(bindings: &[QuantBinding], sig_names: &HashSet<String>) -> Vec<(String, String, bool)> {
+/// Collect all (var, domain_str, is_disj, is_singleton) tuples from bindings, expanding multi-var bindings.
+fn collect_quant_vars(bindings: &[QuantBinding], sig_names: &HashSet<String>) -> Vec<(String, String, bool, bool)> {
     let mut vars = Vec::new();
     for b in bindings {
         let domain_str = match &b.domain {
@@ -274,7 +274,7 @@ fn collect_quant_vars(bindings: &[QuantBinding], sig_names: &HashSet<String>) ->
             _ => translate_inner(&b.domain, false, sig_names),
         };
         for v in &b.vars {
-            vars.push((v.clone(), domain_str.clone(), b.disj));
+            vars.push((v.clone(), domain_str.clone(), b.disj, false));
         }
     }
     vars
@@ -285,16 +285,22 @@ fn collect_quant_vars_ir(
     bindings: &[QuantBinding],
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
-) -> Vec<(String, String, bool)> {
+) -> Vec<(String, String, bool, bool)> {
     let mut vars = Vec::new();
     for b in bindings {
+        let is_singleton = match &b.domain {
+            Expr::VarRef(name) if sig_names.contains(name) => {
+                crate::analyze::sig_multiplicity_for(ir, name) == SigMultiplicity::One
+            }
+            _ => false,
+        };
         let domain_str = match &b.domain {
             Expr::VarRef(name) if sig_names.contains(name) => to_snake_plural(name),
             Expr::VarRef(name) => name.clone(),
             _ => translate_inner_ir(&b.domain, false, sig_names, ir),
         };
         for v in &b.vars {
-            vars.push((v.clone(), domain_str.clone(), b.disj));
+            vars.push((v.clone(), domain_str.clone(), b.disj, is_singleton));
         }
     }
     vars
@@ -303,7 +309,7 @@ fn collect_quant_vars_ir(
 /// Build nested quantifier code from inside-out.
 fn build_nested_quantifier(
     kind: &QuantKind,
-    vars: &[(String, String, bool)],
+    vars: &[(String, String, bool, bool)],
     body_str: &str,
     use_clone: bool,
 ) -> String {
@@ -351,7 +357,18 @@ fn build_nested_quantifier(
     // Build from inside-out: last var is innermost
     let mut result = guarded_body;
     for idx in (0..vars.len()).rev() {
-        let (ref var, ref domain, _) = vars[idx];
+        let (ref var, ref domain, _, is_singleton) = vars[idx];
+
+        // Singleton optimization: for `one sig`, bind directly instead of iterating
+        if is_singleton {
+            let bind = format!("{{ let {var} = {domain}[0].clone(); {result} }}");
+            result = match kind {
+                QuantKind::No => format!("!{bind}"),
+                _ => bind,
+            };
+            continue;
+        }
+
         let inner = if use_clone {
             format!("{{ let {var} = {var}.clone(); {result} }}")
         } else {

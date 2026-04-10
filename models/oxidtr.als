@@ -313,6 +313,12 @@ sig Exhaustive {
   exhCategories: set Expr
 }
 
+sig ValueBound {
+  vbSig:       one StructureNode,
+  vbField:     one FieldDecl,
+  vbBound:     one BoundKind
+}
+
 -------------------------------------------------------------------------------
 -- Anomaly detection (AnomalyPattern variants)
 -------------------------------------------------------------------------------
