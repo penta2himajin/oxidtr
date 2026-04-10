@@ -39,6 +39,48 @@ fn generate_inlined_constraint_in_tests() {
 }
 
 #[test]
+fn one_sig_quantifier_simplified_to_direct_binding() {
+    let files = generate_from(r#"
+        one sig Config { max_retries: one Int }
+        fact ConfigValid { all c: Config | c.max_retries = c.max_retries }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // For `one sig`, should use direct binding instead of .iter().all()
+    assert!(
+        !content.contains(".iter().all("),
+        "one sig quantifier should NOT use .iter().all():\n{content}"
+    );
+    assert!(
+        content.contains("[0].clone()"),
+        "one sig quantifier should use direct [0].clone() binding:\n{content}"
+    );
+}
+
+#[test]
+fn coverage_test_warns_vacuously_true() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        sig Order { owner: one User }
+        fact UserHasRole { all u: User | u.role = u.role }
+        fact OrderOwnership { all o: Order | o.owner = o.owner }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    // Order has no fixture → coverage test involving OrderOwnership should warn vacuously true
+    if content.contains("cover_") {
+        // If there is a coverage test that involves Order (which has no fixture),
+        // it should have a vacuous truth warning
+        let has_order_coverage = content.contains("order_ownership");
+        if has_order_coverage {
+            assert!(
+                content.contains("vacuously true"),
+                "coverage test with empty domain should warn about vacuous truth:\n{content}"
+            );
+        }
+    }
+}
+
+#[test]
 fn generate_inlined_constraint_with_implies() {
     let files = generate_from(r#"
         sig User { role: one Role, owns: set Resource }

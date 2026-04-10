@@ -269,6 +269,68 @@ fn schema_mine_round_trip_one_field() {
     assert_field(a, "b", MinedMultiplicity::One, "B");
 }
 
+#[test]
+fn schema_mine_inline_primitive_types() {
+    // Hand-crafted JSON Schema with inline primitive types (no $ref for primitives)
+    let schema = r#"{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Person": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "age": {
+          "type": "integer"
+        },
+        "score": {
+          "type": "number"
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "nickname": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "null" }
+          ]
+        },
+        "tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "history": {
+          "type": "array",
+          "items": { "type": "integer" }
+        }
+      },
+      "required": ["name", "age", "score", "active"]
+    }
+  }
+}"#;
+
+    let mined = schema_extractor::extract(schema);
+
+    let person = assert_sig_exists(&mined.sigs, "Person");
+
+    // One primitives
+    assert_field(person, "name", MinedMultiplicity::One, "Str");
+    assert_field(person, "age", MinedMultiplicity::One, "Int");
+    assert_field(person, "score", MinedMultiplicity::One, "Float");
+    assert_field(person, "active", MinedMultiplicity::One, "Bool");
+
+    // Lone primitive (oneOf with null)
+    assert_field(person, "nickname", MinedMultiplicity::Lone, "Str");
+
+    // Set of primitives (array + uniqueItems)
+    assert_field(person, "tags", MinedMultiplicity::Set, "Str");
+
+    // Seq of primitives (array without uniqueItems)
+    assert_field(person, "history", MinedMultiplicity::Seq, "Int");
+}
+
 // ── Self-hosting schema round-trip ─────────────────────────────────────────
 
 #[test]

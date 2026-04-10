@@ -737,11 +737,31 @@ fn generate_enum(
     // Parent abstract sig may have fields that should be inherited by all variants
     let parent_fields = &s.fields;
 
+    // Detect fixed-value fields: one sig + fact { Sig.field = constant }
+    let fixed_values = analyze::fixed_value_fields(ir);
+
+    // Check if a variant has all its fields fixed by facts (→ unit variant + const method)
+    let variant_is_unit = |variant_name: &str, fields: &[&IRField]| -> bool {
+        if fields.is_empty() { return true; }
+        let child_node = struct_map.get(variant_name);
+        let is_singleton = child_node.map_or(false, |c| c.sig_multiplicity == SigMultiplicity::One);
+        if !is_singleton { return false; }
+        fields.iter().all(|f| fixed_values.contains_key(&(variant_name.to_string(), f.name.clone())))
+    };
+
+    // Collect (field_name, type, values per variant) for const methods
+    let mut const_methods: Vec<(String, String, Vec<(String, i64)>)> = Vec::new();
+
     if use_serde {
         writeln!(out, "#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]").unwrap();
-        // Check if any variant has fields (including inherited parent fields) — if so, use tagged representation
-        let has_data_variants = !parent_fields.is_empty() || children.map_or(false, |vs| {
-            vs.iter().any(|v| struct_map.get(v.as_str()).map_or(false, |st| !st.fields.is_empty()))
+        // Check if any variant has non-fixed fields (including inherited parent fields)
+        let has_data_variants = children.as_ref().map_or(false, |vs| {
+            vs.iter().any(|v| {
+                let child = struct_map.get(v.as_str());
+                let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
+                let all_fields: Vec<&IRField> = parent_fields.iter().chain(child_fields.iter().copied()).collect();
+                !variant_is_unit(v, &all_fields)
+            })
         });
         if has_data_variants {
             writeln!(out, "#[serde(tag = \"type\")]").unwrap();
@@ -756,29 +776,58 @@ fn generate_enum(
             let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
             // Combine parent fields + child fields
             let all_fields: Vec<&IRField> = parent_fields.iter().chain(child_fields.iter().copied()).collect();
-            if !all_fields.is_empty() {
+            if !all_fields.is_empty() && !variant_is_unit(v, &all_fields) {
                 writeln!(out, "    {v} {{").unwrap();
                 for f in &all_fields {
                     // Fields referencing the parent enum type need Box to break recursion
                     let needs_box = f.target == s.name;
                     let is_self_ref = needs_box
                         || self_ref_fields.contains(&(v.clone(), f.name.clone()));
+                    let resolved_target = resolve_type(TargetLang::Rust, &f.target);
                     let type_str = if let Some(vt) = &f.value_type {
-                        format!("BTreeMap<{}, {}>", f.target, vt)
+                        let resolved_vt = resolve_type(TargetLang::Rust, vt);
+                        format!("BTreeMap<{}, {}>", resolved_target, resolved_vt)
                     } else if let Some(raw) = &f.raw_union_type {
                         rust_union_type(raw, &f.mult)
                     } else {
-                        multiplicity_to_type(&f.target, &f.mult, is_self_ref)
+                        multiplicity_to_type(&resolved_target, &f.mult, is_self_ref)
                     };
                     writeln!(out, "        {}: {type_str},", f.name).unwrap();
                 }
                 writeln!(out, "    }},").unwrap();
             } else {
+                // Unit variant: collect fixed values for const methods
+                for f in &all_fields {
+                    if let Some(val) = fixed_values.get(&(v.to_string(), f.name.clone())) {
+                        let resolved_target = resolve_type(TargetLang::Rust, &f.target);
+                        if let Some(entry) = const_methods.iter_mut().find(|(name, _, _)| name == &f.name) {
+                            entry.2.push((v.clone(), *val));
+                        } else {
+                            const_methods.push((f.name.clone(), resolved_target, vec![(v.clone(), *val)]));
+                        }
+                    }
+                }
                 writeln!(out, "    {v},").unwrap();
             }
         }
     }
     writeln!(out, "}}").unwrap();
+
+    // Generate const methods for fixed-value fields
+    if !const_methods.is_empty() {
+        writeln!(out).unwrap();
+        writeln!(out, "impl {} {{", s.name).unwrap();
+        for (field_name, field_type, variant_values) in &const_methods {
+            writeln!(out, "    pub const fn {field_name}(&self) -> {field_type} {{").unwrap();
+            writeln!(out, "        match self {{").unwrap();
+            for (variant, val) in variant_values {
+                writeln!(out, "            Self::{variant} => {val},").unwrap();
+            }
+            writeln!(out, "        }}").unwrap();
+            writeln!(out, "    }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+    }
 }
 
 fn generate_struct(
@@ -1622,7 +1671,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 continue;
             }
 
+            // Detect vacuously-true tests: domains without fixtures are empty
+            let empty_domains: HashSet<String> = all_params.iter()
+                .filter(|(_, tname)| !has_fixture.contains(tname))
+                .flat_map(|(_, tname)| {
+                    // The domain is the sig name (tname), check if any quantifier uses it
+                    std::iter::once(tname.clone())
+                })
+                .collect();
+            let vacuous_a = analyze::is_vacuously_true(&ca.expr, &empty_domains);
+            let vacuous_b = analyze::is_vacuously_true(&cb.expr, &empty_domains);
+            let is_vacuous = vacuous_a || vacuous_b;
+
             writeln!(out, "    /// Coverage: {} × {}", pair.fact_a, pair.fact_b).unwrap();
+            if is_vacuous {
+                writeln!(out, "    /// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+            }
             writeln!(out, "    #[test]").unwrap();
             writeln!(out, "    #[ignore]").unwrap();
             writeln!(out, "    fn {test_name}() {{").unwrap();
@@ -2292,7 +2356,29 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                 "BTreeMap::new()".to_string()
             } else {
                 let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                {
+                // Check for value bounds (e.g., s.field > 0 → use minimum valid value)
+                let value_override = if is_native_type_alias(&f.target) {
+                    if let Some(analyze::BoundKind::AtLeast(n)) = analyze::value_bounds_for_field(ir, &s.name, &f.name) {
+                        match f.target.as_str() {
+                            "Int" => Some(format!("{}i64", n)),
+                            "Float" => Some(format!("{}.0f64", n)),
+                            _ => None,
+                        }
+                    } else if let Some(analyze::BoundKind::Exact(n)) = analyze::value_bounds_for_field(ir, &s.name, &f.name) {
+                        match f.target.as_str() {
+                            "Int" => Some(format!("{}i64", n)),
+                            "Float" => Some(format!("{}.0f64", n)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(v) = value_override {
+                    v
+                } else {
                     let safe_targets: HashSet<String> = if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
                         && is_safe_set_population(&s.name, &f.target, ir, &fixture_types)
                     {

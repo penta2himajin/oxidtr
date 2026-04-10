@@ -111,6 +111,8 @@ pub fn can_guarantee_by_type(constraint: &ConstraintInfo, lang: TargetLang) -> G
         ConstraintInfo::FieldOrdering { .. } => Guarantee::RequiresTest,
         // Prohibition: no type system can encode negated existentials
         ConstraintInfo::Prohibition { .. } => Guarantee::RequiresTest,
+        // Value bounds: no type system can encode range constraints
+        ConstraintInfo::ValueBound { .. } => Guarantee::RequiresTest,
         // Named/generic constraints: no type system can encode these
         ConstraintInfo::Named { .. } => Guarantee::RequiresTest,
     }

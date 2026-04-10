@@ -294,6 +294,11 @@ sig Exhaustive {
   exhCategories: set Expr
 }
 
+sig ValueBound {
+  vbSig:       one StructureNode,
+  vbField:     one FieldDecl
+}
+
 -------------------------------------------------------------------------------
 -- Validated newtypes (Rust TryFrom wrappers for constrained sigs)
 -------------------------------------------------------------------------------
