@@ -33,7 +33,7 @@ fn self_model_generates_rust() {
     let files = rust::generate(&ir);
 
     // Modular layout: lib.rs + module dirs; Flat layout: models.rs
-    let has_modular = files.iter().any(|f| f.path == "lib.rs");
+    let has_modular = files.iter().any(|f| f.path == "mod.rs");
     let has_flat = files.iter().any(|f| f.path == "models.rs");
     assert!(has_modular || has_flat, "should generate lib.rs (modular) or models.rs (flat)");
     assert!(files.iter().any(|f| f.path == "tests.rs"), "no tests.rs");
@@ -44,7 +44,7 @@ fn self_model_generates_rust() {
     } else {
         files.iter()
             .filter(|f| f.path.ends_with(".rs") && !f.path.ends_with("mod.rs")
-                && !f.path.ends_with("lib.rs") && f.path != "tests.rs"
+                && !f.path.ends_with("mod.rs") && f.path != "tests.rs"
                 && f.path != "fixtures.rs" && f.path != "helpers.rs"
                 && f.path != "operations.rs" && f.path != "newtypes.rs")
             .map(|f| f.content.as_str()).collect::<Vec<_>>().join("\n")
@@ -124,7 +124,7 @@ fn self_hosted_crate_content_check() {
     } else {
         files.iter()
             .filter(|f| f.path.ends_with(".rs") && !f.path.ends_with("mod.rs")
-                && !f.path.ends_with("lib.rs") && f.path != "tests.rs"
+                && !f.path.ends_with("mod.rs") && f.path != "tests.rs"
                 && f.path != "fixtures.rs" && f.path != "helpers.rs"
                 && f.path != "operations.rs" && f.path != "newtypes.rs")
             .map(|f| f.content.as_str()).collect::<Vec<_>>().join("\n")

@@ -59,7 +59,7 @@ fn rust_generates_fixtures() {
         "Rust fixtures should contain default_user()"
     );
     assert!(
-        fixtures.contains("use crate::models::*"),
+        fixtures.contains("use super::models::*"),
         "Rust fixtures should import models"
     );
 }

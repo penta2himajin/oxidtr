@@ -24,7 +24,7 @@ pub fn detect_lang(path: &Path) -> Option<String> {
         if path.join("Models.java").exists() { return Some("java".to_string()); }
         if path.join("models.rs").exists() { return Some("rust".to_string()); }
         // Modular layout: lib.rs at root with module subdirectories
-        if path.join("lib.rs").exists() { return Some("rust".to_string()); }
+        if path.join("mod.rs").exists() { return Some("rust".to_string()); }
         if path.join("Models.swift").exists() { return Some("swift".to_string()); }
         if path.join("models.go").exists() { return Some("go".to_string()); }
         if path.join("Models.cs").exists() { return Some("csharp".to_string()); }

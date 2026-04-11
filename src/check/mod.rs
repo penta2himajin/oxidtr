@@ -121,8 +121,8 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
         let extracted = extract_mined(impl_dir, "models.rs", "operations.rs", extract::rust_extractor::extract)?;
         let validation_sources = collect_validation_sources_rust(impl_dir)?;
         differ::diff_with_validation(&ir, &extracted, &validation_sources)
-    } else if impl_dir.join("lib.rs").exists() {
-        // Modular Rust layout: lib.rs + module subdirectories
+    } else if impl_dir.join("mod.rs").exists() {
+        // Modular Rust layout: mod.rs + module subdirectories
         match extract::run(config.impl_dir.as_str(), Some("rust")) {
             Ok(mined) => {
                 let mut extracted = mined_to_extracted(&mined);

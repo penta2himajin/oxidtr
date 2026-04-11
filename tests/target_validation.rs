@@ -41,7 +41,7 @@ edition = "2021"
     .unwrap();
 
     // Detect modular layout (has lib.rs) vs flat layout (has models.rs)
-    let has_lib_rs = files.iter().any(|f| f.path == "lib.rs");
+    let has_lib_rs = files.iter().any(|f| f.path == "mod.rs");
 
     if has_lib_rs {
         // Modular layout: the generator produces its own lib.rs
@@ -53,7 +53,7 @@ edition = "2021"
             }
             let mut content = String::new();
             // lib.rs and mod.rs need crate-level allow, others get file-level
-            if file.path == "lib.rs" {
+            if file.path == "mod.rs" {
                 content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
             } else if !file.path.ends_with("mod.rs") {
                 content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");

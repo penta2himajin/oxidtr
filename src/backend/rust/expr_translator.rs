@@ -476,6 +476,38 @@ fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
     None
 }
 
+/// Check if a field name is a const method on a unit-variant enum.
+/// This happens when an abstract sig has fields, all extending sigs are `one sig`,
+/// and all have fixed-value facts for those fields -> unit variants with const methods.
+pub fn is_const_method_field(field_name: &str, ir: &OxidtrIR) -> bool {
+    use crate::analyze;
+    let fixed_values = analyze::fixed_value_fields(ir);
+    let enum_parents: std::collections::HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.as_str()).collect();
+    for s in &ir.structures {
+        if !enum_parents.contains(s.name.as_str()) { continue; }
+        if !s.fields.iter().any(|f| f.name == field_name) { continue; }
+        let variants: Vec<&str> = ir.structures.iter()
+            .filter(|c| c.parent.as_deref() == Some(&s.name))
+            .map(|c| c.name.as_str())
+            .collect();
+        if variants.is_empty() { continue; }
+        let all_unit = variants.iter().all(|v| {
+            let child = ir.structures.iter().find(|c| c.name == *v);
+            let is_one = child.map_or(false, |c| c.sig_multiplicity == SigMultiplicity::One);
+            if !is_one { return false; }
+            s.fields.iter().all(|f| fixed_values.contains_key(&(v.to_string(), f.name.clone())))
+        });
+        if all_unit { return true; }
+    }
+    false
+}
+
+/// Check if a field is a `lone` (Option<T>) field.
+pub fn is_lone_field(field_name: &str, ir: &OxidtrIR) -> bool {
+    matches!(field_mult(field_name, ir), Some((Multiplicity::Lone, _)))
+}
+
 fn translate_inner_ir(
     expr: &Expr,
     parens_if_complex: bool,
@@ -506,6 +538,8 @@ fn translate_inner_ir(
             // Box<T> one-fields need deref for comparisons to work
             if let Some((Multiplicity::One, true)) = field_mult(field, ir) {
                 format!("(*{base_str}.{field})")
+            } else if is_const_method_field(field, ir) {
+                format!("{base_str}.{field}()")
             } else {
                 format!("{base_str}.{field}")
             }
@@ -529,10 +563,30 @@ fn translate_inner_ir(
                 CompareOp::NotEq => {
                     lone_comparison(left, right, "!=", ir, &|e, p| ti(e, p))
                 }
-                CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
-                CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
-                CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
-                CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
+                CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte => {
+                    let op_str = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => unreachable!(),
+                    };
+                    if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(l_field, ir) {
+                            let base_str = ti(l_base, false);
+                            let r = ti(right, false);
+                            return format!("{base_str}.{l_field}.is_none_or(|v| v {op_str} {r})");
+                        }
+                    }
+                    if let Expr::FieldAccess { base: r_base, field: r_field } = right.as_ref() {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(r_field, ir) {
+                            let l = ti(left, false);
+                            let base_str = ti(r_base, false);
+                            return format!("{base_str}.{r_field}.is_none_or(|v| {l} {op_str} v)");
+                        }
+                    }
+                    format!("{} {op_str} {}", ti(left, false), ti(right, false))
+                }
                 CompareOp::In => {
                     // Bug 2 fix: if the LEFT side is a `lone` field (Option<T>),
                     // `set.contains(&Option<T>)` is a type error.
