@@ -190,7 +190,7 @@ fn self_hosting_round_trip_rust() {
         files.iter()
             .filter(|f| f.path.ends_with(".rs")
                 && !f.path.ends_with("mod.rs")
-                && !f.path.ends_with("lib.rs")
+                && !f.path.ends_with("mod.rs")
                 && f.path != "tests.rs"
                 && f.path != "fixtures.rs"
                 && f.path != "helpers.rs"

@@ -373,7 +373,7 @@ fn self_hosting_all_targets_still_work() {
 
     // Each backend produces models + tests at minimum
     // oxidtr.als uses module declarations → Rust generates lib.rs + module dirs
-    assert!(file_exists(&rust_files, "lib.rs") || file_exists(&rust_files, "models.rs"),
+    assert!(file_exists(&rust_files, "mod.rs") || file_exists(&rust_files, "models.rs"),
         "Rust should generate lib.rs (modular) or models.rs (flat)");
     assert!(file_exists(&ts_files, "models.ts"), "TS should generate models.ts");
     assert!(file_exists(&kt_files, "Models.kt"), "Kotlin should generate Models.kt");

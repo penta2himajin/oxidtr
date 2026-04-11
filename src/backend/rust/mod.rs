@@ -221,8 +221,8 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
     if has_tc {
         writeln!(lib_rs, "pub mod helpers;").unwrap();
         let helpers_content = generate_helpers(ir)
-            .replace("use crate::models::*;",
-                &module_order.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"));
+            .replace("use super::models::*;",
+                &module_order.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"));
         files.push(GeneratedFile {
             path: "helpers.rs".to_string(),
             content: helpers_content,
@@ -236,6 +236,8 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
         });
     }
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
+        writeln!(lib_rs, "#[cfg(test)]").unwrap();
+        writeln!(lib_rs, "mod tests;").unwrap();
         files.push(GeneratedFile {
             path: "tests.rs".to_string(),
             content: generate_tests_modular(ir, &module_order),
@@ -257,7 +259,7 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
     }
 
     files.push(GeneratedFile {
-        path: "lib.rs".to_string(),
+        path: "mod.rs".to_string(),
         content: lib_rs,
     });
 
@@ -468,7 +470,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let mut out = String::new();
 
     for module in modules {
-        writeln!(out, "use crate::{module}::*;").unwrap();
+        writeln!(out, "use super::{module}::*;").unwrap();
     }
     writeln!(out).unwrap();
 
@@ -528,26 +530,26 @@ fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     // For now, reuse the existing test generation but fix imports
     let original = generate_tests(ir);
     // Replace `use crate::models::*` with module imports
-    let mut result = original.replace("use crate::models::*;",
-        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n    "));
+    let mut result = original.replace("use super::models::*;",
+        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n    "));
     // Also update fixtures import
-    result = result.replace("use crate::fixtures::*;", "use crate::fixtures::*;");
+    result = result.replace("use super::fixtures::*;", "use super::fixtures::*;");
     result
 }
 
 /// Generate fixtures.rs with modular imports
 fn generate_fixtures_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let original = generate_fixtures(ir);
-    original.replace("use crate::models::*;",
-        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"))
+    original.replace("use super::models::*;",
+        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"))
 }
 
 /// Generate newtypes.rs with modular imports
 fn generate_newtypes_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let original = generate_newtypes(ir);
     if original.is_empty() { return original; }
-    original.replace("use crate::models::*;",
-        &modules.iter().map(|m| format!("use crate::{m}::*;")).collect::<Vec<_>>().join("\n"))
+    original.replace("use super::models::*;",
+        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"))
 }
 
 
@@ -945,7 +947,7 @@ fn multiplicity_to_type(target: &str, mult: &Multiplicity, is_self_ref: bool) ->
 fn generate_operations(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
-    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out, "use super::models::*;").unwrap();
 
     // Check if any operation parameter or return type uses Set multiplicity
     let needs_btreeset = ir.operations.iter().any(|op| {
@@ -1020,7 +1022,7 @@ fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out, "use super::models::*;").unwrap();
     writeln!(out).unwrap();
 
     // Collect all TC fields and generate specific traversal functions
@@ -1088,16 +1090,15 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    writeln!(out, "#[cfg(test)]").unwrap();
-    writeln!(out, "mod property_tests {{").unwrap();
-    writeln!(out, "    #[allow(unused_imports)]").unwrap();
-    writeln!(out, "    use crate::models::*;").unwrap();
+    // tests.rs is already #[cfg(test)] gated via mod.rs, no wrapper needed
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use super::models::*;").unwrap();
     if needs_helpers {
-        writeln!(out, "    #[allow(unused_imports)]").unwrap();
-        writeln!(out, "    use crate::helpers::*;").unwrap();
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(out, "use super::helpers::*;").unwrap();
     }
-    writeln!(out, "    #[allow(unused_imports)]").unwrap();
-    writeln!(out, "    use crate::fixtures::*;").unwrap();
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use super::fixtures::*;").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -1110,20 +1111,32 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
-        writeln!(out, "    #[test]").unwrap();
-        writeln!(out, "    fn {test_name}() {{").unwrap();
+        writeln!(out, "#[test]").unwrap();
+        writeln!(out, "fn {test_name}() {{").unwrap();
 
+        // Only populate primary sig (outermost quantifier domain) with fixtures.
+        // Secondary sigs get Vec::new() to avoid vacuously-true assertions.
+        let primary_sigs: HashSet<String> = if let Some((_kind, bindings, _body)) = analyze::strip_outer_quantifier(&prop.expr) {
+            bindings.iter().flat_map(|b| {
+                if let Expr::VarRef(name) = &b.domain { Some(name.clone()) } else { None }
+            }).collect()
+        } else {
+            params.iter().map(|(_, t)| t.clone()).collect()
+        };
         for (pname, tname) in &params {
-            if has_fixture.contains(tname) {
+            if primary_sigs.contains(tname) && has_fixture.contains(tname) {
                 let snake = to_snake_case(tname);
-                writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+            } else if has_fixture.contains(tname) {
+                let snake = to_snake_case(tname);
+                writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
             } else {
-                writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
             }
         }
 
-        writeln!(out, "        assert!({body});").unwrap();
-        writeln!(out, "    }}").unwrap();
+        writeln!(out, "    assert!({body});").unwrap();
+        writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
 
@@ -1147,18 +1160,18 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             }
             let desc = analyze::describe_expr(&constraint.expr);
 
-            writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
-            writeln!(out, "    /// Verifies: pre→post state relationship ({desc})").unwrap();
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "/// @temporal Transition constraint: {fact_name}").unwrap();
+            writeln!(out, "/// Verifies: pre→post state relationship ({desc})").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
                 if has_fixture.contains(tname) {
                     let snake = to_snake_case(tname);
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
-                writeln!(out, "        let next_{pname}: Vec<{tname}> = {pname}.clone();").unwrap();
+                writeln!(out, "    let next_{pname}: Vec<{tname}> = {pname}.clone();").unwrap();
             }
             // Strip quantifier, rewrite body, generate zip assertion
             if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
@@ -1171,18 +1184,18 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 if bind_vars.len() == 1 {
                     let v = &bind_vars[0];
                     let pname = &params[0].0;
-                    writeln!(out, "        for ({v}, next_{v}) in {pname}.iter().zip(next_{pname}.iter()) {{").unwrap();
-                    writeln!(out, "            assert!({body_str});").unwrap();
-                    writeln!(out, "        }}").unwrap();
-                } else {
+                    writeln!(out, "    for ({v}, next_{v}) in {pname}.iter().zip(next_{pname}.iter()) {{").unwrap();
                     writeln!(out, "        assert!({body_str});").unwrap();
+                    writeln!(out, "    }}").unwrap();
+                } else {
+                    writeln!(out, "    assert!({body_str});").unwrap();
                 }
             } else {
                 let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
                 let body = expr_translator::translate_with_ir(&rewritten, ir);
-                writeln!(out, "        assert!({body});").unwrap();
+                writeln!(out, "    assert!({body});").unwrap();
             }
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
             continue;
         }
@@ -1227,7 +1240,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if all_fully {
-            writeln!(out, "    // Type-guaranteed: {} — no test needed (Rust type system encodes this)", fact_name).unwrap();
+            writeln!(out, "// Type-guaranteed: {} — no test needed (Rust type system encodes this)", fact_name).unwrap();
             writeln!(out).unwrap();
             continue;
         }
@@ -1238,7 +1251,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if any_partial {
-            writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
+            writeln!(out, "/// @regression Partially type-guaranteed — regression test only.").unwrap();
         }
         // Add temporal kind annotation for temporal tests
         if let Some(kind) = temporal_kind {
@@ -1250,7 +1263,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 analyze::TemporalKind::Step => "@temporal Step: relates adjacent states",
                 analyze::TemporalKind::Binary => "@temporal Binary: temporal binary constraint",
             };
-            writeln!(out, "    /// {annotation}").unwrap();
+            writeln!(out, "/// {annotation}").unwrap();
         }
 
         // Binary temporal: static test cannot meaningfully assert the body
@@ -1265,28 +1278,28 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 }
             } else { "binary" };
             let snake_name = to_snake_case(&fact_name);
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
-            writeln!(out, "        // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
+            writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
             // Liveness/past_liveness: cannot be verified with single snapshot
             let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
                 "liveness" } else { "past_liveness" };
             let snake_name = to_snake_case(&fact_name);
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
-            writeln!(out, "        // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
+            writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else {
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.
         let ownership = detect_ownership_pattern(&constraint.expr, ir);
 
-        writeln!(out, "    #[test]").unwrap();
-        writeln!(out, "    fn {test_name}() {{").unwrap();
+        writeln!(out, "#[test]").unwrap();
+        writeln!(out, "fn {test_name}() {{").unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             // Generate linked setup: create owned item, insert into owner's field
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
@@ -1294,34 +1307,57 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             if let (Some((opname, otname)), Some((cpname, ctname))) = (owned_param, owner_param) {
                 let owned_snake = to_snake_case(otname);
                 let owner_snake = to_snake_case(ctname);
-                writeln!(out, "        let item = default_{owned_snake}();").unwrap();
-                writeln!(out, "        let mut owner = default_{owner_snake}();").unwrap();
-                writeln!(out, "        owner.{field_name}.insert(item.clone());").unwrap();
-                writeln!(out, "        let {opname}: Vec<{otname}> = vec![item];").unwrap();
-                writeln!(out, "        let {cpname}: Vec<{ctname}> = vec![owner];").unwrap();
+                writeln!(out, "    let item = default_{owned_snake}();").unwrap();
+                writeln!(out, "    let mut owner = default_{owner_snake}();").unwrap();
+                writeln!(out, "    owner.{field_name}.insert(item.clone());").unwrap();
+                writeln!(out, "    let {opname}: Vec<{otname}> = vec![item];").unwrap();
+                writeln!(out, "    let {cpname}: Vec<{ctname}> = vec![owner];").unwrap();
                 // Emit remaining params normally
                 for (pname, tname) in &params {
                     if pname == opname || pname == cpname { continue; }
                     if has_fixture.contains(tname) {
                         let snake = to_snake_case(tname);
-                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                        writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                     } else {
-                        writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                        writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                     }
                 }
             }
         } else {
-            for (pname, tname) in &params {
-                if has_fixture.contains(tname) {
-                    let snake = to_snake_case(tname);
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+            // Extract primary sig and quantifier kind for fixture selection.
+            let (quant_kind, primary_sigs): (Option<&crate::parser::ast::QuantKind>, HashSet<String>) =
+                if let Some((kind, bindings, _body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+                    (Some(kind), bindings.iter().flat_map(|b| {
+                        if let Expr::VarRef(name) = &b.domain { Some(name.clone()) } else { None }
+                    }).collect())
                 } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    (None, params.iter().map(|(_, t)| t.clone()).collect())
+                };
+            let is_existential = matches!(quant_kind, Some(crate::parser::ast::QuantKind::Some));
+            for (pname, tname) in &params {
+                if primary_sigs.contains(tname) && has_fixture.contains(tname) {
+                    if is_existential {
+                        let snake = to_snake_case(tname);
+                        writeln!(out, "    let {pname} = all_{snake}s();").unwrap();
+                    } else {
+                        let snake = to_snake_case(tname);
+                        writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    }
+                } else if has_existential_fixture(tname, ir) {
+                    // Secondary sig with existential facts: use all_{plural}s()
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "    let {pname} = all_{snake}s();").unwrap();
+                } else if has_fixture.contains(tname) {
+                    // Secondary sig with fixture: use default to avoid empty collection
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                } else {
+                    writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
             }
         }
-        writeln!(out, "        assert!({body});").unwrap();
-        writeln!(out, "    }}").unwrap();
+        writeln!(out, "    assert!({body});").unwrap();
+        writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
         } // end non-binary temporal
 
@@ -1337,22 +1373,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     } else {
                         "property held in at least one past state"
                     };
-                    writeln!(out, "    /// Trace checker for {kind_label}: {semantics}.").unwrap();
-                    writeln!(out, "    #[allow(dead_code)]").unwrap();
+                    writeln!(out, "/// Trace checker for {kind_label}: {semantics}.").unwrap();
+                    writeln!(out, "#[allow(dead_code)]").unwrap();
                     // Generate trace fn signature with tuple params
                     if params.len() == 1 {
                         let (pname, tname) = &params[0];
-                        writeln!(out, "    fn check_{kind_label}_{snake_name}(trace: &[Vec<{tname}>]) -> bool {{").unwrap();
-                        writeln!(out, "        trace.iter().any(|{pname}| {{").unwrap();
+                        writeln!(out, "fn check_{kind_label}_{snake_name}(trace: &[Vec<{tname}>]) -> bool {{").unwrap();
+                        writeln!(out, "    trace.iter().any(|{pname}| {{").unwrap();
                     } else {
                         let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("Vec<{t}>")).collect();
                         let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
-                        writeln!(out, "    fn check_{kind_label}_{snake_name}(trace: &[({})]) -> bool {{", tuple_types.join(", ")).unwrap();
-                        writeln!(out, "        trace.iter().any(|({})| {{", tuple_names.join(", ")).unwrap();
+                        writeln!(out, "fn check_{kind_label}_{snake_name}(trace: &[({})]) -> bool {{", tuple_types.join(", ")).unwrap();
+                        writeln!(out, "    trace.iter().any(|({})| {{", tuple_names.join(", ")).unwrap();
                     }
-                    writeln!(out, "            {body}").unwrap();
-                    writeln!(out, "        }})").unwrap();
-                    writeln!(out, "    }}").unwrap();
+                    writeln!(out, "        {body}").unwrap();
+                    writeln!(out, "    }})").unwrap();
+                    writeln!(out, "}}").unwrap();
                     writeln!(out).unwrap();
                 }
                 analyze::TemporalKind::Binary => {
@@ -1372,70 +1408,70 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                             TemporalBinaryOp::Release => "right holds until left releases it",
                             TemporalBinaryOp::Triggered => "left triggers right",
                         };
-                        writeln!(out, "    /// Trace checker for {op_name}: {semantics}.").unwrap();
-                        writeln!(out, "    #[allow(dead_code)]").unwrap();
+                        writeln!(out, "/// Trace checker for {op_name}: {semantics}.").unwrap();
+                        writeln!(out, "#[allow(dead_code)]").unwrap();
                         if params.len() == 1 {
                             let (pname, tname) = &params[0];
-                            writeln!(out, "    fn check_{op_name}_{snake_name}(trace: &[Vec<{tname}>]) -> bool {{").unwrap();
+                            writeln!(out, "fn check_{op_name}_{snake_name}(trace: &[Vec<{tname}>]) -> bool {{").unwrap();
                             match op {
                                 TemporalBinaryOp::Until => {
-                                    writeln!(out, "        match trace.iter().position(|{pname}| {{ {right_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[..pos].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
-                                    writeln!(out, "            None => false,").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().position(|{pname}| {{ {right_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[..pos].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
+                                    writeln!(out, "        None => false,").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Since => {
-                                    writeln!(out, "        match trace.iter().rposition(|{pname}| {{ {right_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[pos..].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
-                                    writeln!(out, "            None => false,").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().rposition(|{pname}| {{ {right_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[pos..].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
+                                    writeln!(out, "        None => false,").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Release => {
                                     // Release: right holds until (and including when) left becomes true
-                                    writeln!(out, "        match trace.iter().position(|{pname}| {{ {left_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[..=pos].iter().all(|{pname}| {{ {right_body} }}),").unwrap();
-                                    writeln!(out, "            None => trace.iter().all(|{pname}| {{ {right_body} }}),").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().position(|{pname}| {{ {left_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[..=pos].iter().all(|{pname}| {{ {right_body} }}),").unwrap();
+                                    writeln!(out, "        None => trace.iter().all(|{pname}| {{ {right_body} }}),").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Triggered => {
                                     // Triggered: if right ever holds, left must hold at or before that point
-                                    writeln!(out, "        trace.iter().enumerate().all(|(i, {pname})| {{").unwrap();
-                                    writeln!(out, "            if {right_body} {{ trace[..=i].iter().any(|{pname}| {{ {left_body} }}) }} else {{ true }}").unwrap();
-                                    writeln!(out, "        }})").unwrap();
+                                    writeln!(out, "    trace.iter().enumerate().all(|(i, {pname})| {{").unwrap();
+                                    writeln!(out, "        if {right_body} {{ trace[..=i].iter().any(|{pname}| {{ {left_body} }}) }} else {{ true }}").unwrap();
+                                    writeln!(out, "    }})").unwrap();
                                 }
                             }
                         } else {
                             let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("Vec<{t}>")).collect();
                             let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
                             let pnames = tuple_names.join(", ");
-                            writeln!(out, "    fn check_{op_name}_{snake_name}(trace: &[({})]) -> bool {{", tuple_types.join(", ")).unwrap();
+                            writeln!(out, "fn check_{op_name}_{snake_name}(trace: &[({})]) -> bool {{", tuple_types.join(", ")).unwrap();
                             match op {
                                 TemporalBinaryOp::Until => {
-                                    writeln!(out, "        match trace.iter().position(|({pnames})| {{ {right_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[..pos].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
-                                    writeln!(out, "            None => false,").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().position(|({pnames})| {{ {right_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[..pos].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
+                                    writeln!(out, "        None => false,").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Since => {
-                                    writeln!(out, "        match trace.iter().rposition(|({pnames})| {{ {right_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[pos..].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
-                                    writeln!(out, "            None => false,").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().rposition(|({pnames})| {{ {right_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[pos..].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
+                                    writeln!(out, "        None => false,").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Release => {
-                                    writeln!(out, "        match trace.iter().position(|({pnames})| {{ {left_body} }}) {{").unwrap();
-                                    writeln!(out, "            Some(pos) => trace[..=pos].iter().all(|({pnames})| {{ {right_body} }}),").unwrap();
-                                    writeln!(out, "            None => trace.iter().all(|({pnames})| {{ {right_body} }}),").unwrap();
-                                    writeln!(out, "        }}").unwrap();
+                                    writeln!(out, "    match trace.iter().position(|({pnames})| {{ {left_body} }}) {{").unwrap();
+                                    writeln!(out, "        Some(pos) => trace[..=pos].iter().all(|({pnames})| {{ {right_body} }}),").unwrap();
+                                    writeln!(out, "        None => trace.iter().all(|({pnames})| {{ {right_body} }}),").unwrap();
+                                    writeln!(out, "    }}").unwrap();
                                 }
                                 TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        trace.iter().enumerate().all(|(i, ({pnames}))| {{").unwrap();
-                                    writeln!(out, "            if {right_body} {{ trace[..=i].iter().any(|({pnames})| {{ {left_body} }}) }} else {{ true }}").unwrap();
-                                    writeln!(out, "        }})").unwrap();
+                                    writeln!(out, "    trace.iter().enumerate().all(|(i, ({pnames}))| {{").unwrap();
+                                    writeln!(out, "        if {right_body} {{ trace[..=i].iter().any(|({pnames})| {{ {left_body} }}) }} else {{ true }}").unwrap();
+                                    writeln!(out, "    }})").unwrap();
                                 }
                             }
                         }
-                        writeln!(out, "    }}").unwrap();
+                        writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
                 }
@@ -1467,8 +1503,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let test_name = format!("boundary_{}", to_snake_case(&fact_name));
             // For boundary tests, use default fixtures for container types
             // (ownership pattern linking is handled by populated set fields in fixtures)
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
                     let snake = to_snake_case(tname);
                     let has_b = ir.structures.iter().any(|s| {
@@ -1478,21 +1514,21 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         })
                     });
                     if has_b {
-                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![boundary_{snake}()];").unwrap();
+                        writeln!(out, "    let {pname}: Vec<{tname}> = vec![boundary_{snake}()];").unwrap();
                     } else if has_fixture.contains(tname) {
-                        writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                        writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                     } else {
-                        writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                        writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                     }
                 }
-            writeln!(out, "        assert!({body}, \"boundary values should satisfy invariant\");").unwrap();
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "    assert!({body}, \"boundary values should satisfy invariant\");").unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
 
             // Negative test
             let test_name = format!("invalid_{}", to_snake_case(&fact_name));
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
                 let snake = to_snake_case(tname);
                 let has_b = ir.structures.iter().any(|s| {
@@ -1502,22 +1538,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     })
                 });
                 if has_b {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![invalid_{snake}()];").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![invalid_{snake}()];").unwrap();
                 } else if has_fixture.contains(tname) {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
             }
-            writeln!(out, "        assert!(!({body}), \"invalid values should violate invariant\");").unwrap();
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "    assert!(!({body}), \"invalid values should violate invariant\");").unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
     }
 
     // Cross-tests: for each (fact, operation) pair, verify fact is preserved
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
-        writeln!(out, "    // --- Cross-tests: fact × operation ---").unwrap();
+        writeln!(out, "// --- Cross-tests: fact × operation ---").unwrap();
         writeln!(out).unwrap();
 
         for constraint in &ir.constraints {
@@ -1530,9 +1566,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 let op_name = to_snake_case(&op.name);
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
-                writeln!(out, "    #[test]").unwrap();
-                writeln!(out, "    #[ignore]").unwrap();
-                writeln!(out, "    fn {test_name}() {{").unwrap();
+                writeln!(out, "#[test]").unwrap();
+                writeln!(out, "#[ignore]").unwrap();
+                writeln!(out, "fn {test_name}() {{").unwrap();
                 writeln!(
                     out,
                     "        // Verify that {} holds after {}",
@@ -1559,7 +1595,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     "        todo!(\"oxidtr: implement cross-test {test_name}\");"
                 )
                 .unwrap();
-                writeln!(out, "    }}").unwrap();
+                writeln!(out, "}}").unwrap();
                 writeln!(out).unwrap();
             }
         }
@@ -1569,7 +1605,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let anomalies = analyze::detect_anomalies(ir);
     let has_any_anomaly = !anomalies.is_empty();
     if has_any_anomaly {
-        writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
+        writeln!(out, "// --- Anomaly tests: edge-case coverage ---").unwrap();
         writeln!(out).unwrap();
 
         // Group anomalies by sig
@@ -1591,35 +1627,35 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 match pattern {
                     analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
                         let field_snake = to_snake_case(field_name);
-                        writeln!(out, "    /// Anomaly: field `{field_name}` is not constrained by any fact.").unwrap();
-                        writeln!(out, "    #[test]").unwrap();
-                        writeln!(out, "    fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
-                        writeln!(out, "        let instance = default_{snake}();").unwrap();
-                        writeln!(out, "        // {sig_name}.{field_name} is not constrained — verify it is handled").unwrap();
-                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
-                        writeln!(out, "    }}").unwrap();
+                        writeln!(out, "/// Anomaly: field `{field_name}` is not constrained by any fact.").unwrap();
+                        writeln!(out, "#[test]").unwrap();
+                        writeln!(out, "fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "    let instance = default_{snake}();").unwrap();
+                        writeln!(out, "    // {sig_name}.{field_name} is not constrained — verify it is handled").unwrap();
+                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
                         let field_snake = to_snake_case(field_name);
-                        writeln!(out, "    /// Anomaly: `{field_name}` has no cardinality upper bound.").unwrap();
-                        writeln!(out, "    #[test]").unwrap();
-                        writeln!(out, "    fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
-                        writeln!(out, "        let instance = anomaly_empty_{snake}();").unwrap();
-                        writeln!(out, "        // Verify invariants hold even with empty collection").unwrap();
-                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
-                        writeln!(out, "    }}").unwrap();
+                        writeln!(out, "/// Anomaly: `{field_name}` has no cardinality upper bound.").unwrap();
+                        writeln!(out, "#[test]").unwrap();
+                        writeln!(out, "fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "    let instance = anomaly_empty_{snake}();").unwrap();
+                        writeln!(out, "    // Verify invariants hold even with empty collection").unwrap();
+                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
                         let field_snake = to_snake_case(field_name);
-                        writeln!(out, "    /// Anomaly: self-referential field `{field_name}` without NoSelfRef/Acyclic guard.").unwrap();
-                        writeln!(out, "    #[test]").unwrap();
-                        writeln!(out, "    fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
-                        writeln!(out, "        let instance = default_{snake}();").unwrap();
-                        writeln!(out, "        // Self-referential field without guard — check for safety").unwrap();
-                        writeln!(out, "        let _ = &instance.{field_name};").unwrap();
-                        writeln!(out, "    }}").unwrap();
+                        writeln!(out, "/// Anomaly: self-referential field `{field_name}` without NoSelfRef/Acyclic guard.").unwrap();
+                        writeln!(out, "#[test]").unwrap();
+                        writeln!(out, "fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
+                        writeln!(out, "    let instance = default_{snake}();").unwrap();
+                        writeln!(out, "    // Self-referential field without guard — check for safety").unwrap();
+                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
                 }
@@ -1630,7 +1666,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     // --- Coverage tests: pairwise fact combinations ---
     let coverage = analyze::fact_coverage(ir);
     if !coverage.pairwise.is_empty() {
-        writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
+        writeln!(out, "// --- Coverage tests: fact × fact pairwise ---").unwrap();
         writeln!(out).unwrap();
 
         let mut cover_names_seen: HashSet<String> = HashSet::new();
@@ -1683,29 +1719,27 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let vacuous_b = analyze::is_vacuously_true(&cb.expr, &empty_domains);
             let is_vacuous = vacuous_a || vacuous_b;
 
-            writeln!(out, "    /// Coverage: {} × {}", pair.fact_a, pair.fact_b).unwrap();
+            writeln!(out, "/// Coverage: {} × {}", pair.fact_a, pair.fact_b).unwrap();
             if is_vacuous {
-                writeln!(out, "    /// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+                writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
             }
-            writeln!(out, "    #[test]").unwrap();
-            writeln!(out, "    #[ignore]").unwrap();
-            writeln!(out, "    fn {test_name}() {{").unwrap();
+            writeln!(out, "#[test]").unwrap();
+            writeln!(out, "#[ignore]").unwrap();
+            writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &all_params {
                 let snake = to_snake_case(tname);
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
-                    writeln!(out, "        let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                    writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
             }
-            writeln!(out, "        assert!({body_a}, \"fact {} should hold\");", pair.fact_a).unwrap();
-            writeln!(out, "        assert!({body_b}, \"fact {} should hold\");", pair.fact_b).unwrap();
-            writeln!(out, "    }}").unwrap();
+            writeln!(out, "    assert!({body_a}, \"fact {} should hold\");", pair.fact_a).unwrap();
+            writeln!(out, "    assert!({body_b}, \"fact {} should hold\");", pair.fact_b).unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
     }
-
-    writeln!(out, "}}").unwrap();
 
     out
 }
@@ -1759,15 +1793,15 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     }
 
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out, "use super::models::*;").unwrap();
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use crate::fixtures::*;").unwrap();
+    writeln!(out, "use super::fixtures::*;").unwrap();
 
     // Check if TC functions are needed → import helpers
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr));
     if needs_helpers {
         writeln!(out, "#[allow(unused_imports)]").unwrap();
-        writeln!(out, "use crate::helpers::*;").unwrap();
+        writeln!(out, "use super::helpers::*;").unwrap();
     }
     writeln!(out).unwrap();
 
@@ -1984,8 +2018,8 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         for c in &all_constraints {
             if let analyze::ConstraintInfo::Implication { sig_name: s, condition, consequent } = c {
                 if s == sig_name {
-                    let cond = translate_validator_expr_rust(condition, sig_name);
-                    let cons = translate_validator_expr_rust(consequent, sig_name);
+                    let cond = translate_validator_expr_rust(condition, sig_name, ir);
+                    let cons = translate_validator_expr_rust(consequent, sig_name, ir);
                     let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
                     writeln!(out, "        if {cond} && !({cons}) {{").unwrap();
                     writeln!(out, "            return Err(\"{}\");", desc.replace('"', "\\\"")).unwrap();
@@ -1998,8 +2032,8 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         for c in &all_constraints {
             if let analyze::ConstraintInfo::Iff { sig_name: s, left, right } = c {
                 if s == sig_name {
-                    let l = translate_validator_expr_rust(left, sig_name);
-                    let r = translate_validator_expr_rust(right, sig_name);
+                    let l = translate_validator_expr_rust(left, sig_name, ir);
+                    let r = translate_validator_expr_rust(right, sig_name, ir);
                     let desc = format!("{} iff {}", analyze::describe_expr(left), analyze::describe_expr(right));
                     writeln!(out, "        if ({l}) != ({r}) {{").unwrap();
                     writeln!(out, "            return Err(\"{}\");", desc.replace('"', "\\\"")).unwrap();
@@ -2012,7 +2046,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         for c in &all_constraints {
             if let analyze::ConstraintInfo::Prohibition { sig_name: s, condition } = c {
                 if s == sig_name {
-                    let cond = translate_validator_expr_rust(condition, sig_name);
+                    let cond = translate_validator_expr_rust(condition, sig_name, ir);
                     let desc = analyze::describe_expr(condition);
                     writeln!(out, "        if {cond} {{").unwrap();
                     writeln!(out, "            return Err(\"prohibited: {}\");", desc.replace('"', "\\\"")).unwrap();
@@ -2212,33 +2246,81 @@ pub fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
 }
 
 /// Translate an Alloy expression to Rust for single-instance validator context.
-fn translate_validator_expr_rust(expr: &Expr, sig_name: &str) -> String {
+fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> String {
     use crate::parser::ast::{LogicOp, QuantKind};
     match expr {
         Expr::VarRef(name) => {
-            if name == sig_name { "value".to_string() } else { name.clone() }
+            if name == sig_name { return "value".to_string(); }
+            // Qualify enum variants: MissingIdentity → DiagnosticRule::MissingIdentity
+            if let Some(s) = ir.structures.iter().find(|s| s.name == *name) {
+                if let Some(parent) = &s.parent {
+                    if ir.structures.iter().any(|p| p.name == *parent && p.is_enum) {
+                        return format!("{parent}::{name}");
+                    }
+                }
+            }
+            name.clone()
         }
         Expr::IntLiteral(n) => n.to_string(),
         Expr::FieldAccess { base, field } => {
-            format!("{}.{}", translate_validator_expr_rust(base, sig_name), field)
+            let base_str = translate_validator_expr_rust(base, sig_name, ir);
+            if expr_translator::is_const_method_field(field, ir) {
+                format!("{base_str}.{field}()")
+            } else {
+                format!("{base_str}.{field}")
+            }
         }
         Expr::Comparison { op, left, right } => {
-            let l = translate_validator_expr_rust(left, sig_name);
-            let r = translate_validator_expr_rust(right, sig_name);
+            let l = translate_validator_expr_rust(left, sig_name, ir);
+            let r = translate_validator_expr_rust(right, sig_name, ir);
             let o = match op {
-                CompareOp::Eq => "==",
-                CompareOp::NotEq => "!=",
+                CompareOp::Eq | CompareOp::NotEq => {
+                    let op_str = if matches!(op, CompareOp::Eq) { "==" } else { "!=" };
+                    if let Expr::FieldAccess { field: l_field, .. } = left.as_ref() {
+                        if expr_translator::is_lone_field(l_field, ir) {
+                            if let Expr::IntLiteral(n) = right.as_ref() {
+                                return format!("{l} {op_str} Some({n}i64)");
+                            }
+                            return format!("{l}.as_ref() {op_str} Some(&{r})");
+                        }
+                    }
+                    if let Expr::FieldAccess { field: r_field, .. } = right.as_ref() {
+                        if expr_translator::is_lone_field(r_field, ir) {
+                            if let Expr::IntLiteral(n) = left.as_ref() {
+                                return format!("Some({n}i64) {op_str} {r}");
+                            }
+                            return format!("Some(&{l}) {op_str} {r}.as_ref()");
+                        }
+                    }
+                    op_str
+                }
                 CompareOp::In => return format!("{r}.contains(&{l})"),
-                CompareOp::Lt => "<",
-                CompareOp::Gt => ">",
-                CompareOp::Lte => "<=",
-                CompareOp::Gte => ">=",
+                CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte => {
+                    let op_str = match op {
+                        CompareOp::Lt => "<",
+                        CompareOp::Gt => ">",
+                        CompareOp::Lte => "<=",
+                        CompareOp::Gte => ">=",
+                        _ => unreachable!(),
+                    };
+                    if let Expr::FieldAccess { field: l_field, .. } = left.as_ref() {
+                        if expr_translator::is_lone_field(l_field, ir) {
+                            return format!("{l}.is_none_or(|v| v {op_str} {r})");
+                        }
+                    }
+                    if let Expr::FieldAccess { field: r_field, .. } = right.as_ref() {
+                        if expr_translator::is_lone_field(r_field, ir) {
+                            return format!("{r}.is_none_or(|v| {l} {op_str} v)");
+                        }
+                    }
+                    op_str
+                }
             };
             format!("{l} {o} {r}")
         }
         Expr::BinaryLogic { op, left, right } => {
-            let l = translate_validator_expr_rust(left, sig_name);
-            let r = translate_validator_expr_rust(right, sig_name);
+            let l = translate_validator_expr_rust(left, sig_name, ir);
+            let r = translate_validator_expr_rust(right, sig_name, ir);
             match op {
                 LogicOp::And => format!("{l} && {r}"),
                 LogicOp::Or => format!("{l} || {r}"),
@@ -2246,9 +2328,9 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str) -> String {
                 LogicOp::Iff => format!("({l}) == ({r})"),
             }
         }
-        Expr::Not(inner) => format!("!({})", translate_validator_expr_rust(inner, sig_name)),
+        Expr::Not(inner) => format!("!({})", translate_validator_expr_rust(inner, sig_name, ir)),
         Expr::MultFormula { kind, expr: inner } => {
-            let e = translate_validator_expr_rust(inner, sig_name);
+            let e = translate_validator_expr_rust(inner, sig_name, ir);
             match kind {
                 QuantKind::Some => format!("{e}.is_some()"),
                 QuantKind::No => format!("{e}.is_none()"),
@@ -2256,7 +2338,7 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str) -> String {
             }
         }
         Expr::Cardinality(inner) => {
-            format!("{}.len()", translate_validator_expr_rust(inner, sig_name))
+            format!("{}.len()", translate_validator_expr_rust(inner, sig_name, ir))
         }
         _ => format!("/* {} */true", analyze::describe_expr(expr)), // fallback
     }
@@ -2273,7 +2355,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
     let cyclic = find_cyclic_fields(ir);
 
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use crate::models::*;").unwrap();
+    writeln!(out, "use super::models::*;").unwrap();
 
     // Check if any fixture needs BTreeSet
     let needs_btreeset = ir.structures.iter().any(|s| {
@@ -2301,7 +2383,19 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         .map(|s| (s.name.as_str(), s))
         .collect();
 
-    // Generate enum default fixtures (first variant)
+    // Collect variant names referenced in existential facts
+    let existential_variants: HashSet<String> = ir.constraints.iter().flat_map(|c| {
+        if let Some((kind, bindings, body)) = analyze::strip_outer_quantifier(&c.expr) {
+            if matches!(kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
+                let var_name = &bindings[0].vars[0];
+                return extract_equality_fields(body, var_name, ir)
+                    .into_iter().map(|(_, v)| v).collect::<Vec<_>>();
+            }
+        }
+        Vec::new()
+    }).collect();
+
+    // Generate enum default fixtures (prefer variant referenced in existential facts)
     for s in &ir.structures {
         if !s.is_enum { continue; }
         let variants = match children.get(&s.name) {
@@ -2309,11 +2403,12 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             _ => continue,
         };
         let enum_snake = to_snake_case(&s.name);
-        // Find first unit variant (no fields)
-        let first_unit = variants.iter().find(|v| {
-            struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-        });
-        if let Some(variant) = first_unit {
+        let is_unit = |v: &&String| struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty());
+        // Prefer a unit variant that's referenced in existential facts
+        let chosen = variants.iter()
+            .find(|v| is_unit(v) && existential_variants.contains(&format!("{}::{}", s.name, v)))
+            .or_else(|| variants.iter().find(|v| is_unit(v)));
+        if let Some(variant) = chosen {
             writeln!(out, "/// Factory: default value for enum {}", s.name).unwrap();
             writeln!(out, "#[allow(dead_code)]").unwrap();
             writeln!(out, "pub fn default_{}() -> {} {{", enum_snake, s.name).unwrap();
@@ -2377,7 +2472,11 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                     None
                 };
                 if let Some(v) = value_override {
-                    v
+                    if f.mult == Multiplicity::Lone {
+                        format!("Some({})", v)
+                    } else {
+                        v
+                    }
                 } else {
                     let safe_targets: HashSet<String> = if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
                         && is_safe_set_population(&s.name, &f.target, ir, &fixture_types)
@@ -2506,7 +2605,79 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         }
     }
 
+    // Generate all_{plural}() helpers for sig types with existential (some) constraints.
+    {
+        let mut existential_by_sig: HashMap<String, Vec<Vec<(String, String)>>> = HashMap::new();
+        for constraint in &ir.constraints {
+            if let Some((_kind, bindings, body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+                if matches!(_kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
+                    if let Expr::VarRef(sig_name) = &bindings[0].domain {
+                        let var_name = &bindings[0].vars[0];
+                        let fields = extract_equality_fields(body, var_name, ir);
+                        if !fields.is_empty() {
+                            existential_by_sig.entry(sig_name.clone()).or_default().push(fields);
+                        }
+                    }
+                }
+            }
+        }
+        for (sig_name, field_sets) in &existential_by_sig {
+            let s = match ir.structures.iter().find(|s| s.name == *sig_name) {
+                Some(s) => s,
+                None => continue,
+            };
+            if s.fields.is_empty() { continue; }
+            let snake_plural = to_snake_case(sig_name);
+            writeln!(out, "/// Factory: all instances needed by existential facts for {sig_name}").unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn all_{snake_plural}s() -> Vec<{sig_name}> {{").unwrap();
+            writeln!(out, "    vec![").unwrap();
+            for fields in field_sets {
+                writeln!(out, "        {sig_name} {{").unwrap();
+                for f in &s.fields {
+                    let val = if let Some((_, v)) = fields.iter().find(|(fname, _)| fname == &f.name) {
+                        v.clone()
+                    } else {
+                        let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
+                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                    };
+                    writeln!(out, "            {}: {},", f.name, val).unwrap();
+                }
+                writeln!(out, "        }},").unwrap();
+            }
+            writeln!(out, "    ]").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     out
+}
+
+/// Extract field=value equalities from an existential fact body.
+/// For `r.structure = Semigroup and r.requiredLaw = Associativity`,
+/// returns `[("structure", "AlgebraicStructure::Semigroup"), ("requiredLaw", "Law::Associativity")]`.
+fn extract_equality_fields(expr: &Expr, var_name: &str, ir: &OxidtrIR) -> Vec<(String, String)> {
+    let mut fields = Vec::new();
+    match expr {
+        Expr::BinaryLogic { op: crate::parser::ast::LogicOp::And, left, right } => {
+            fields.extend(extract_equality_fields(left, var_name, ir));
+            fields.extend(extract_equality_fields(right, var_name, ir));
+        }
+        Expr::Comparison { op: CompareOp::Eq, left, right } => {
+            // Pattern: var.field = Value
+            if let Expr::FieldAccess { base, field } = left.as_ref() {
+                if let Expr::VarRef(name) = base.as_ref() {
+                    if name == var_name {
+                        let val = expr_translator::translate_with_ir(right, ir);
+                        fields.push((field.clone(), val));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    fields
 }
 
 fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> String {
@@ -2648,4 +2819,24 @@ fn to_snake_case(s: &str) -> String {
         }
     }
     out
+}
+
+/// Check if a sig type has existential (some) constraints, meaning all_{plural}s() was generated.
+fn has_existential_fixture(sig_name: &str, ir: &OxidtrIR) -> bool {
+    for constraint in &ir.constraints {
+        if let Some((_kind, bindings, body)) = analyze::strip_outer_quantifier(&constraint.expr) {
+            if matches!(_kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
+                if let Expr::VarRef(name) = &bindings[0].domain {
+                    if name == sig_name {
+                        let var_name = &bindings[0].vars[0];
+                        let fields = extract_equality_fields(body, var_name, ir);
+                        if !fields.is_empty() {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }

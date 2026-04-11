@@ -68,7 +68,7 @@ fn generate_self_model_pipeline() {
     assert!(mult.contains("pub enum Multiplicity"));
 
     // Verify lib.rs with module declarations
-    let lib_rs = std::fs::read_to_string(out_dir.join("lib.rs")).unwrap();
+    let lib_rs = std::fs::read_to_string(out_dir.join("mod.rs")).unwrap();
     assert!(lib_rs.contains("pub mod ast;"));
     assert!(lib_rs.contains("pub mod ir;"));
 }

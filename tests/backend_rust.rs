@@ -111,7 +111,7 @@ fn rust_tests_import_fixtures() {
         fact HasRole { all u: User | u.role = u.role }
     "#);
     let content = find_file(&files, "tests.rs");
-    assert!(content.contains("use crate::fixtures::*"),
+    assert!(content.contains("use super::fixtures::*"),
         "tests should import fixtures module:\n{content}");
 }
 
