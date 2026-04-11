@@ -1,7 +1,7 @@
 /// Tests for the check command.
 /// TDD: these tests define expected behavior before full implementation.
 
-use oxidtr::check::{self, CheckConfig, ExtractedImpl, ExtractedStruct, ExtractedField, ExtractedFn};
+use oxidtr::check::{self, CheckConfig, ExtractedImpl, ExtractedStruct, ExtractedField};
 use oxidtr::check::differ::{self, DiffItem};
 use oxidtr::ir::nodes::{OxidtrIR, StructureNode, ConstraintNode, IRField, OperationNode};
 use oxidtr::parser::ast::{self, Multiplicity, SigMultiplicity, Expr};
