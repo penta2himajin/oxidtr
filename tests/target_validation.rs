@@ -47,13 +47,15 @@ edition = "2021"
         // Modular layout: the generator produces its own lib.rs
         // Write all generated files (creating subdirectories as needed)
         for file in &files {
-            let file_path = format!("{crate_dir}/src/{}", file.path);
+            // Rename top-level mod.rs → lib.rs for crate root
+            let dest = if file.path == "mod.rs" { "lib.rs".to_string() } else { file.path.clone() };
+            let file_path = format!("{crate_dir}/src/{dest}");
             if let Some(parent) = std::path::Path::new(&file_path).parent() {
                 std::fs::create_dir_all(parent).unwrap();
             }
             let mut content = String::new();
             // lib.rs and mod.rs need crate-level allow, others get file-level
-            if file.path == "mod.rs" {
+            if dest == "lib.rs" {
                 content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");
             } else if !file.path.ends_with("mod.rs") {
                 content.push_str("#![allow(dead_code, unused_variables, unused_imports, non_snake_case)]\n");

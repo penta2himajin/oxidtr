@@ -325,7 +325,7 @@ fn generate_concept_file(
         let types = needed_imports.get(module).unwrap();
         let mut sorted_types: Vec<&String> = types.iter().collect();
         sorted_types.sort();
-        writeln!(out, "use super::{}::{{{}}};", module, sorted_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap();
+        writeln!(out, "use crate::{}::{{{}}};", module, sorted_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap();
     }
 
     // Intra-module imports: types from sibling files within the same module
@@ -1127,6 +1127,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             if primary_sigs.contains(tname) && has_fixture.contains(tname) {
                 let snake = to_snake_case(tname);
                 writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+            } else if has_fixture.contains(tname) {
+                let snake = to_snake_case(tname);
+                writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
             } else {
                 writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
             }
@@ -1344,6 +1347,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     // Secondary sig with existential facts: use all_{plural}s()
                     let snake = to_snake_case(tname);
                     writeln!(out, "    let {pname} = all_{snake}s();").unwrap();
+                } else if has_fixture.contains(tname) {
+                    // Secondary sig with fixture: use default to avoid empty collection
+                    let snake = to_snake_case(tname);
+                    writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
                     writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
                 }
