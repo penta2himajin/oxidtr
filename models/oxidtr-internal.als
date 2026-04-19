@@ -57,6 +57,7 @@ one sig Pipe     extends Token {}
 one sig Plus     extends Token {}
 one sig Ampersand extends Token {}
 one sig Minus    extends Token {}
+one sig Slash    extends Token {}
 one sig Ident    extends Token {}
 one sig Int      extends Token {}
 one sig Eof      extends Token {}
@@ -253,6 +254,15 @@ sig MergeResult {
   mergedModel: one MinedModel,
   conflicts:   set MergeConflict
 }
+
+-- Multi-file renderer output: one entry per emitted `.als` file.
+sig RenderedFile {
+  renderedPath:    one SigDecl,
+  renderedContent: one SigDecl
+}
+
+-- Host-language std::path::PathBuf placeholder (external type).
+sig PathBuf {}
 
 -------------------------------------------------------------------------------
 -- Guarantee analysis

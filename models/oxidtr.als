@@ -163,7 +163,14 @@ sig ParamDecl {
   paramType: one SigDecl
 }
 
+sig ImportDecl {
+  importPath:  one SigDecl,     -- qualified path of `open foo/bar`
+  importAlias: lone SigDecl     -- optional `as Alias` suffix
+}
+
 sig AlloyModel {
+  moduleDecl: lone SigDecl,
+  imports: set ImportDecl,
   sigs:    set SigDecl,
   facts:   set FactDecl,
   preds:   set PredDecl,

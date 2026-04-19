@@ -82,8 +82,12 @@ pub struct CheckConfig {
 }
 
 pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckError> {
-    let source = std::fs::read_to_string(model_path)?;
-    let ast = parser::parse(&source)?;
+    let ast = crate::generate::load_model(model_path)
+        .map_err(|e| match e {
+            crate::generate::GenerateError::IoError(io) => CheckError::IoError(io),
+            crate::generate::GenerateError::ParseError(pe) => CheckError::ParseError(pe),
+            crate::generate::GenerateError::LoweringError(le) => CheckError::LoweringError(le),
+        })?;
     let ir = ir::lower(&ast)?;
 
     let impl_dir = Path::new(&config.impl_dir);

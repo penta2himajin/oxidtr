@@ -201,7 +201,17 @@ pub struct FunDecl {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportDecl {
+    pub path: String,             // e.g. "oxidtr/ast"
+    pub alias: Option<String>,    // from `as Foo` suffix
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlloyModel {
+    /// Qualified module name from the `module` header (Alloy 6 spec: file-level only).
+    pub module_decl: Option<String>,
+    /// `open` directives (resolved later by `parse_from_path`).
+    pub imports: Vec<ImportDecl>,
     pub sigs: Vec<SigDecl>,
     pub facts: Vec<FactDecl>,
     pub preds: Vec<PredDecl>,

@@ -103,13 +103,54 @@ pub struct GenerateResult {
     pub warnings: Vec<Warning>,
 }
 
+/// Load an Alloy model from a file or directory.
+///
+/// - File input: resolves `open` directives relative to the file's parent dir.
+/// - Directory input: auto-discovers the main file by convention
+///   (`oxidtr.als`, `main.als`, or `<dirname>.als`) and resolves `open` from there.
+pub fn load_model(input_path: &str) -> Result<parser::ast::AlloyModel, GenerateError> {
+    let p = Path::new(input_path);
+    if p.is_file() {
+        return parser::parse_from_path(p).map_err(GenerateError::ParseError);
+    }
+    if p.is_dir() {
+        let conventional = ["oxidtr.als", "main.als"]
+            .iter()
+            .map(|n| p.join(n))
+            .chain(p.file_name().and_then(|n| n.to_str()).map(|n| p.join(format!("{n}.als"))))
+            .find(|path| path.exists());
+        let main = match conventional {
+            Some(m) => m,
+            None => first_als_file(p).ok_or_else(|| {
+                GenerateError::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("no .als file found in directory: {}", p.display()),
+                ))
+            })?,
+        };
+        return parser::parse_from_path(&main).map_err(GenerateError::ParseError);
+    }
+    Err(GenerateError::IoError(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("input path not found: {input_path}"),
+    )))
+}
+
+fn first_als_file(dir: &Path) -> Option<std::path::PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |ext| ext == "als"))
+        .collect();
+    entries.sort();
+    entries.into_iter().next()
+}
+
 /// Run the generate pipeline: parse → lower → analyze → generate → write.
 pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, GenerateError> {
-    // Read input
-    let source = std::fs::read_to_string(input_path)?;
-
-    // Parse
-    let model = parser::parse(&source)?;
+    // Parse input file or directory, resolving `open` directives via parse_from_path.
+    let model = load_model(input_path)?;
 
     // Lower to IR
     let ir = ir::lower(&model)?;

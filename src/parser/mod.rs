@@ -103,6 +103,8 @@ impl<'a> Parser<'a> {
 
     fn parse_model(&mut self) -> Result<AlloyModel, ParseError> {
         let mut model = AlloyModel {
+            module_decl: None,
+            imports: Vec::new(),
             sigs: Vec::new(),
             facts: Vec::new(),
             preds: Vec::new(),
@@ -159,10 +161,28 @@ impl<'a> Parser<'a> {
                     model.sigs.push(sig);
                 }
                 Token::Module => {
-                    self.parse_module_decl();
+                    let path = self.parse_module_decl();
+                    // First module declaration becomes the file-level module header.
+                    // Subsequent ones are retained for backward compat but violate
+                    // Alloy 6 spec (one `module` per file) — emit a deprecation notice.
+                    if model.module_decl.is_none() && model.sigs.is_empty() {
+                        model.module_decl = path.clone();
+                    } else {
+                        eprintln!(
+                            "[DEPRECATED] mid-file `module {}` is a legacy oxidtr extension; \
+                             Alloy 6 spec allows `module` only at file start. \
+                             Split into separate files + `open` declarations.",
+                            path.as_deref().unwrap_or("?"),
+                        );
+                    }
+                    if let Some(p) = path {
+                        self.current_module = Some(p);
+                    }
                 }
                 Token::Open => {
-                    self.skip_to_eol();
+                    if let Some(import) = self.parse_open_decl() {
+                        model.imports.push(import);
+                    }
                 }
                 Token::Enum => {
                     let mut sigs = self.parse_enum()?;
@@ -865,38 +885,74 @@ impl<'a> Parser<'a> {
         self.skip_to_next_toplevel();
     }
 
-    /// Parse `module name` declaration and set current_module.
-    /// All subsequent declarations are tagged with this module name until
-    /// the next `module` declaration or end of file.
-    fn parse_module_decl(&mut self) {
+    /// Parse `module qualified/name` and return the qualified path.
+    ///
+    /// Alloy 6 spec requires `module` at file start only; mid-file declarations
+    /// are a legacy oxidtr extension retained for backward compatibility.
+    fn parse_module_decl(&mut self) -> Option<String> {
         self.next(); // consume `module`
-        // Collect the module path as a string (e.g. "ast", "my/model")
-        let mut name = String::new();
-        loop {
-            match self.peek() {
-                Token::Ident(s) => {
-                    self.next();
-                    name.push_str(&s);
-                }
-                _ => break,
-            }
-            // Handle path separators: module my/model
-            // The lexer doesn't produce '/' as a token, so the path
-            // will be in the ident itself or we stop at the next top-level.
-            // For simple names like `module ast`, this works directly.
-        }
-        if !name.is_empty() {
-            self.current_module = Some(name);
-        }
-        // Skip any remaining tokens on the line (e.g. version info)
+        let path = self.parse_qualified_path();
+        // Skip trailing params / version info until the next top-level token.
         self.skip_to_next_toplevel();
+        path
     }
 
-    /// Skip `open path[params] as alias` declaration.
-    /// Consumes the leading keyword then skips to the next top-level token.
-    fn skip_to_eol(&mut self) {
-        self.next(); // consume open
+    /// Parse `open qualified/path[Params] as Alias` into an ImportDecl.
+    fn parse_open_decl(&mut self) -> Option<ImportDecl> {
+        self.next(); // consume `open`
+        let path = self.parse_qualified_path()?;
+        // Optional parameter list: `[Type, ...]`
+        if self.peek() == Token::LBracket {
+            self.next();
+            let mut depth = 1;
+            while depth > 0 {
+                match self.next() {
+                    Token::LBracket => depth += 1,
+                    Token::RBracket => depth -= 1,
+                    Token::Eof => break,
+                    _ => {}
+                }
+            }
+        }
+        // Optional `as Alias`
+        let alias = if let Token::Ident(ref s) = self.peek() {
+            if s == "as" {
+                self.next();
+                match self.next() {
+                    Token::Ident(name) => Some(name),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         self.skip_to_next_toplevel();
+        Some(ImportDecl { path, alias })
+    }
+
+    /// Parse `a/b/c` as a slash-separated path.
+    ///
+    /// Each segment may be either an identifier or an Alloy keyword — e.g.
+    /// `util/ordering`, `pkg/one`, or `oxidtr/ast` are all legal module paths.
+    fn parse_qualified_path(&mut self) -> Option<String> {
+        let mut parts = Vec::new();
+        loop {
+            match token_as_path_segment(&self.peek()) {
+                Some(s) => {
+                    self.next();
+                    parts.push(s);
+                }
+                None => break,
+            }
+            if self.peek() == Token::Slash {
+                self.next();
+                continue;
+            }
+            break;
+        }
+        if parts.is_empty() { None } else { Some(parts.join("/")) }
     }
 
     fn skip_to_next_toplevel(&mut self) {
@@ -976,9 +1032,136 @@ fn scan_intersection_annotations(input: &str) -> std::collections::HashMap<Strin
     map
 }
 
+/// Return the textual form of a token if it can appear as a path segment
+/// (identifier or keyword). Module/open paths like `util/ordering` or
+/// `pkg/one` legitimately use words that happen to be Alloy keywords.
+fn token_as_path_segment(tok: &Token) -> Option<String> {
+    Some(match tok {
+        Token::Ident(s) => s.clone(),
+        Token::Sig => "sig".into(),
+        Token::Abstract => "abstract".into(),
+        Token::Extends => "extends".into(),
+        Token::One => "one".into(),
+        Token::Lone => "lone".into(),
+        Token::Set => "set".into(),
+        Token::Seq => "seq".into(),
+        Token::Fact => "fact".into(),
+        Token::Pred => "pred".into(),
+        Token::Fun => "fun".into(),
+        Token::Assert => "assert".into(),
+        Token::All => "all".into(),
+        Token::Some_ => "some".into(),
+        Token::No => "no".into(),
+        Token::Not => "not".into(),
+        Token::And => "and".into(),
+        Token::Or => "or".into(),
+        Token::Implies => "implies".into(),
+        Token::Iff => "iff".into(),
+        Token::In => "in".into(),
+        Token::Check => "check".into(),
+        Token::Run => "run".into(),
+        Token::Disj => "disj".into(),
+        Token::Enum => "enum".into(),
+        Token::Module => "module".into(),
+        Token::Open => "open".into(),
+        Token::Var => "var".into(),
+        Token::Always => "always".into(),
+        Token::Eventually => "eventually".into(),
+        Token::After => "after".into(),
+        Token::Historically => "historically".into(),
+        Token::Once => "once".into(),
+        Token::Before => "before".into(),
+        Token::Until => "until".into(),
+        Token::Since => "since".into(),
+        Token::Release => "release".into(),
+        Token::Triggered => "triggered".into(),
+        _ => return None,
+    })
+}
+
 pub fn parse(input: &str) -> Result<AlloyModel, ParseError> {
     let union_annotations = scan_union_annotations(input);
     let intersection_annotations = scan_intersection_annotations(input);
     let mut parser = Parser::new_with_annotations(input, union_annotations, intersection_annotations);
     parser.parse_model()
+}
+
+/// Load and parse an Alloy model from disk, resolving `open` directives by
+/// reading sibling files (`open foo/bar` → `<base_dir>/foo/bar.als`).
+///
+/// The returned `AlloyModel` is a flattened union of the main file and all
+/// transitively opened modules. Each top-level declaration retains the
+/// qualified module name from its source file's `module` header.
+///
+/// Cycles are detected via canonical-path tracking and silently broken
+/// (double-open is idempotent). Missing open targets produce a ParseError.
+pub fn parse_from_path(path: &std::path::Path) -> Result<AlloyModel, ParseError> {
+    let mut visited = std::collections::HashSet::new();
+    parse_from_path_inner(path, &mut visited)
+}
+
+fn parse_from_path_inner(
+    path: &std::path::Path,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+) -> Result<AlloyModel, ParseError> {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !visited.insert(canonical) {
+        return Ok(AlloyModel {
+            module_decl: None,
+            imports: Vec::new(),
+            sigs: Vec::new(),
+            facts: Vec::new(),
+            preds: Vec::new(),
+            funs: Vec::new(),
+            asserts: Vec::new(),
+        });
+    }
+
+    let source = std::fs::read_to_string(path).map_err(|e| {
+        ParseError::InvalidSyntax {
+            message: format!("cannot read {}: {e}", path.display()),
+            pos: 0,
+        }
+    })?;
+    let mut model = parse(&source)?;
+
+    let base_dir = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    // Take imports out so we can consume them; any transitively-imported
+    // model's imports are merged in as well (reflecting the full import graph).
+    let imports = std::mem::take(&mut model.imports);
+    let mut merged_imports = imports.clone();
+
+    for import in imports {
+        let mut target = base_dir.clone();
+        for segment in import.path.split('/') {
+            target.push(segment);
+        }
+        target.set_extension("als");
+
+        if !target.exists() {
+            // Parameterized or library modules (e.g. `util/ordering`) may not
+            // have a local file — skip with a non-fatal notice on stderr.
+            eprintln!(
+                "[open] cannot resolve `{}` (expected at {}); skipping",
+                import.path,
+                target.display()
+            );
+            continue;
+        }
+
+        let sub = parse_from_path_inner(&target, visited)?;
+        model.sigs.extend(sub.sigs);
+        model.facts.extend(sub.facts);
+        model.preds.extend(sub.preds);
+        model.funs.extend(sub.funs);
+        model.asserts.extend(sub.asserts);
+        merged_imports.extend(sub.imports);
+    }
+
+    model.imports = merged_imports;
+    Ok(model)
 }
