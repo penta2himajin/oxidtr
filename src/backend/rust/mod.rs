@@ -1,4 +1,7 @@
 pub mod expr_translator;
+mod import_rewrite;
+
+use self::import_rewrite::rewrite_models_import;
 
 use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
@@ -220,9 +223,11 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
     if has_tc {
         writeln!(lib_rs, "pub mod helpers;").unwrap();
-        let helpers_content = generate_helpers(ir)
-            .replace("use super::models::*;",
-                &module_order.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"));
+        let helpers_content = rewrite_models_import(
+            generate_helpers(ir),
+            &module_order,
+            !ungrouped.is_empty(),
+        );
         files.push(GeneratedFile {
             path: "helpers.rs".to_string(),
             content: helpers_content,
