@@ -742,7 +742,7 @@ fn extract_facts_from_lines(
                 let before = line[..pos].trim();
                 // Extract the last identifier/chain before .unwrap()
                 let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(').next().unwrap_or(before).trim();
-                if !field.is_empty() {
+                if looks_like_identifier_chain(field) {
                     facts.push(MinedFactCandidate {
                         alloy_text: format!("{field} is one (unsafe unwrap)"),
                         confidence: Confidence::Low,
@@ -758,7 +758,7 @@ fn extract_facts_from_lines(
             if let Some(pos) = line.find(".unwrap_or") {
                 let before = line[..pos].trim();
                 let field = before.rsplit(|c: char| c == ' ' || c == '=' || c == '(').next().unwrap_or(before).trim();
-                if !field.is_empty() {
+                if looks_like_identifier_chain(field) {
                     facts.push(MinedFactCandidate {
                         alloy_text: format!("{field} is lone (with default)"),
                         confidence: Confidence::Medium,
@@ -920,4 +920,53 @@ fn extract_contains_fact(line: &str) -> String {
 /// Extract @temporal annotations — delegates to shared implementation.
 fn extract_temporal_annotations(source: &str, facts: &mut Vec<MinedFactCandidate>) {
     super::extract_temporal_annotations(source, facts);
+}
+
+/// Checks whether a string looks like a valid Rust identifier chain
+/// (e.g. `foo`, `foo.bar`, `self.field.sub_field`) — i.e. something we can
+/// reasonably emit as an Alloy-side reference.
+///
+/// Rejects chain-call residue like `")"` or `"))"` which the rsplit-based
+/// parser used to surface as "identifiers" when the receiver of `.unwrap()`
+/// was itself a method call (e.g. `rcu.read().get().unwrap()`).
+fn looks_like_identifier_chain(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    // Must start with a letter or underscore — an identifier cannot begin
+    // with `)`, digits, or punctuation.
+    let first = s.chars().next().unwrap();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    // Every remaining char must be an identifier char or a chain separator.
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_identifier_chain;
+
+    #[test]
+    fn accepts_plain_identifiers() {
+        assert!(looks_like_identifier_chain("foo"));
+        assert!(looks_like_identifier_chain("_x"));
+        assert!(looks_like_identifier_chain("foo.bar"));
+        assert!(looks_like_identifier_chain("self.field.sub"));
+    }
+
+    #[test]
+    fn rejects_dangling_parens() {
+        assert!(!looks_like_identifier_chain(")"));
+        assert!(!looks_like_identifier_chain("))"));
+        assert!(!looks_like_identifier_chain(".foo"));
+        assert!(!looks_like_identifier_chain(""));
+    }
+
+    #[test]
+    fn rejects_call_syntax() {
+        assert!(!looks_like_identifier_chain("foo()"));
+        assert!(!looks_like_identifier_chain("foo(x)"));
+    }
 }
