@@ -137,19 +137,61 @@ fn main() {
                 }
             }
 
-            let rendered = extract::renderer::render(&result.model);
+            let sig_count = result.model.sigs.len();
+            let fact_count = result.model.fact_candidates.len();
+            let has_modules = result.model.sigs.iter().any(|s| s.module.is_some());
 
-            if let Some(path) = output {
-                if let Err(e) = std::fs::write(&path, &rendered) {
-                    eprintln!("error: cannot write {path}: {e}");
-                    std::process::exit(1);
+            match output {
+                Some(path) => {
+                    let out_path = std::path::Path::new(&path);
+                    let is_dir_output = out_path.is_dir()
+                        || (!out_path.exists() && out_path.extension().is_none());
+
+                    if is_dir_output {
+                        let files = extract::renderer::render_files(&result.model);
+                        if let Err(e) = std::fs::create_dir_all(out_path) {
+                            eprintln!("error: cannot create {path}: {e}");
+                            std::process::exit(1);
+                        }
+                        let mut written = Vec::new();
+                        for f in &files {
+                            let full = out_path.join(&f.path);
+                            if let Some(parent) = full.parent() {
+                                if let Err(e) = std::fs::create_dir_all(parent) {
+                                    eprintln!("error: cannot create {}: {e}", parent.display());
+                                    std::process::exit(1);
+                                }
+                            }
+                            if let Err(e) = std::fs::write(&full, &f.content) {
+                                eprintln!("error: cannot write {}: {e}", full.display());
+                                std::process::exit(1);
+                            }
+                            written.push(full.display().to_string());
+                        }
+                        println!("Mined {sig_count} sig(s), {fact_count} fact candidate(s) → {path}/ ({} file(s))", written.len());
+                        for w in &written {
+                            println!("  {w}");
+                        }
+                    } else {
+                        if has_modules {
+                            eprintln!(
+                                "[WARN] module-partitioned model flattened into single file ({path}); \
+                                 pass a directory path to `-o` for spec-compliant multi-file output"
+                            );
+                        }
+                        let rendered = extract::renderer::render(&result.model);
+                        if let Err(e) = std::fs::write(&path, &rendered) {
+                            eprintln!("error: cannot write {path}: {e}");
+                            std::process::exit(1);
+                        }
+                        println!("Mined {sig_count} sig(s), {fact_count} fact candidate(s) → {path}");
+                    }
                 }
-                println!("Mined {} sig(s), {} fact candidate(s) → {path}",
-                    result.model.sigs.len(), result.model.fact_candidates.len());
-            } else {
-                print!("{rendered}");
-                eprintln!("\nMined {} sig(s), {} fact candidate(s)",
-                    result.model.sigs.len(), result.model.fact_candidates.len());
+                None => {
+                    let rendered = extract::renderer::render(&result.model);
+                    print!("{rendered}");
+                    eprintln!("\nMined {sig_count} sig(s), {fact_count} fact candidate(s)");
+                }
             }
 
             // Report sources

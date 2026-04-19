@@ -159,7 +159,14 @@ sig ParamDecl {
   paramType: one SigDecl
 }
 
+sig ImportDecl {
+  importPath:  one SigDecl,
+  importAlias: lone SigDecl
+}
+
 sig AlloyModel {
+  moduleDecl: lone SigDecl,
+  imports: set ImportDecl,
   sigs:    set SigDecl,
   facts:   set FactDecl,
   preds:   set PredDecl,

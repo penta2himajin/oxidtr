@@ -40,6 +40,39 @@ mise exec rust -- cargo run -- extract generated/
 mise exec rust -- cargo run -- extract src/ --lang rust
 ```
 
+## Alloy モデルのファイル構成 (Alloy 6 spec 準拠)
+
+Alloy 6 仕様では **1 ファイル = 1 module**、`module X` 宣言はファイル先頭のみ置ける。
+oxidtr は以下の 2 形式を両方サポートする:
+
+**推奨: 複数ファイル構成** (Alloy Analyzer 互換、例 `models/oxidtr-split.als`):
+
+```
+models/
+  oxidtr-split.als          # main: open oxidtr/{ast,ir,analysis,validated}
+  oxidtr/
+    ast.als                 # module oxidtr/ast
+    ir.als                  # module oxidtr/ir    (open oxidtr/ast)
+    analysis.als            # module oxidtr/analysis
+    validated.als           # module oxidtr/validated
+```
+
+`generate` / `check` / `extract` はメインファイル (またはディレクトリ) を渡すだけで
+`open` を辿って全モジュールを解決する。
+
+```bash
+cargo run -- generate models/oxidtr-split.als --target rust --output generated
+cargo run -- check --model models/oxidtr-split.als --impl generated
+cargo run -- extract src/ --lang rust -o out/      # -o がディレクトリ → 複数ファイル出力
+cargo run -- extract src/ --lang rust -o out.als   # -o がファイル → 単一ファイル (警告)
+```
+
+**レガシー: 単一ファイルに複数 `module X`** (`models/oxidtr.als`):
+
+1 ファイル内に `module ast ... module ir ...` を書く形式。Alloy 仕様違反で
+Alloy Analyzer には食わせられないが、oxidtr は DEPRECATED warning を出しつつ
+後方互換のため読み込みを許容する。新規モデルは multi-file 形式で書くこと。
+
 ## アーキテクチャ
 
 ```

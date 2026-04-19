@@ -65,6 +65,7 @@ pub enum Token {
     Plus,
     Ampersand,
     Minus,
+    Slash,
     // Literals
     Ident(String),
     Int(i64),
@@ -211,6 +212,7 @@ impl<'a> Lexer<'a> {
             }
             b'+' => { self.advance(); return Token::Plus; }
             b'&' => { self.advance(); return Token::Ampersand; }
+            b'/' => { self.advance(); return Token::Slash; }
             b'-' => {
                 self.advance();
                 if self.peek_byte() == Some(b'>') {
