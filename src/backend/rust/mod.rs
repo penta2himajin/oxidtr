@@ -3,6 +3,12 @@ mod import_rewrite;
 
 use self::import_rewrite::rewrite_models_import;
 
+/// Convert an Alloy module path (slash-separated, e.g. `oxidtr/ast`) to a
+/// Rust module path (`oxidtr::ast`). Filesystem paths stay slash-separated.
+fn module_path_to_rust(module_name: &str) -> String {
+    module_name.replace('/', "::")
+}
+
 use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
@@ -209,13 +215,61 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
         });
     }
 
-    // Generate lib.rs (top-level module declarations)
+    // Generate lib.rs (top-level module declarations).
+    // For nested Alloy module paths (e.g. `oxidtr/ast`), only the top-level
+    // segment is declared at the crate root; intermediate `<prefix>/mod.rs`
+    // files are synthesized below to declare their children.
     let mut lib_rs = String::new();
+    let mut top_level_seen: HashSet<String> = HashSet::new();
     for module_name in &module_order {
-        writeln!(lib_rs, "pub mod {module_name};").unwrap();
+        let top = module_name.split('/').next().unwrap().to_string();
+        if top_level_seen.insert(top.clone()) {
+            writeln!(lib_rs, "pub mod {top};").unwrap();
+        }
     }
     if !ungrouped.is_empty() {
         writeln!(lib_rs, "pub mod models;").unwrap();
+    }
+
+    // Synthesize / augment intermediate mod.rs files for each path prefix so
+    // that a module like `oxidtr/ast` compiles: lib.rs needs `pub mod oxidtr;`
+    // and `oxidtr/mod.rs` needs `pub mod ast;`.
+    //
+    // `prefix_children[prefix]` lists the direct child segment names, ordered
+    // by first appearance in `module_order` so output is deterministic.
+    let mut prefix_children: Vec<(String, Vec<String>)> = Vec::new();
+    let mut prefix_index: HashMap<String, usize> = HashMap::new();
+    for module_name in &module_order {
+        let segs: Vec<&str> = module_name.split('/').collect();
+        // Intermediate prefixes only (skip the leaf index = segs.len() - 1).
+        for i in 0..segs.len().saturating_sub(1) {
+            let parent = segs[..=i].join("/");
+            let child = segs[i + 1].to_string();
+            let idx = *prefix_index.entry(parent.clone()).or_insert_with(|| {
+                prefix_children.push((parent.clone(), Vec::new()));
+                prefix_children.len() - 1
+            });
+            if !prefix_children[idx].1.contains(&child) {
+                prefix_children[idx].1.push(child);
+            }
+        }
+    }
+    for (prefix, children) in &prefix_children {
+        let path = format!("{prefix}/mod.rs");
+        let mut decls = String::new();
+        for child in children {
+            writeln!(decls, "pub mod {child};").unwrap();
+        }
+        // If the prefix itself is a leaf module (has its own sigs), merge the
+        // child declarations into the existing mod.rs content; otherwise
+        // emit a fresh intermediate mod.rs.
+        if let Some(existing) = files.iter_mut().find(|f| f.path == path) {
+            let mut merged = decls;
+            merged.push_str(&existing.content);
+            existing.content = merged;
+        } else {
+            files.push(GeneratedFile { path, content: decls });
+        }
     }
 
     // Check if TC, operations, tests, fixtures, newtypes are needed
@@ -330,7 +384,7 @@ fn generate_concept_file(
         let types = needed_imports.get(module).unwrap();
         let mut sorted_types: Vec<&String> = types.iter().collect();
         sorted_types.sort();
-        writeln!(out, "use crate::{}::{{{}}};", module, sorted_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap();
+        writeln!(out, "use crate::{}::{{{}}};", module_path_to_rust(module), sorted_types.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")).unwrap();
     }
 
     // Intra-module imports: types from sibling files within the same module
@@ -475,7 +529,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let mut out = String::new();
 
     for module in modules {
-        writeln!(out, "use super::{module}::*;").unwrap();
+        writeln!(out, "use super::{}::*;", module_path_to_rust(module)).unwrap();
     }
     writeln!(out).unwrap();
 
@@ -536,7 +590,7 @@ fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let original = generate_tests(ir);
     // Replace `use crate::models::*` with module imports
     let mut result = original.replace("use super::models::*;",
-        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n    "));
+        &modules.iter().map(|m| format!("use super::{}::*;", module_path_to_rust(m))).collect::<Vec<_>>().join("\n    "));
     // Also update fixtures import
     result = result.replace("use super::fixtures::*;", "use super::fixtures::*;");
     result
@@ -546,7 +600,7 @@ fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> String {
 fn generate_fixtures_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let original = generate_fixtures(ir);
     original.replace("use super::models::*;",
-        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"))
+        &modules.iter().map(|m| format!("use super::{}::*;", module_path_to_rust(m))).collect::<Vec<_>>().join("\n"))
 }
 
 /// Generate newtypes.rs with modular imports
@@ -554,7 +608,7 @@ fn generate_newtypes_modular(ir: &OxidtrIR, modules: &[String]) -> String {
     let original = generate_newtypes(ir);
     if original.is_empty() { return original; }
     original.replace("use super::models::*;",
-        &modules.iter().map(|m| format!("use super::{m}::*;")).collect::<Vec<_>>().join("\n"))
+        &modules.iter().map(|m| format!("use super::{}::*;", module_path_to_rust(m))).collect::<Vec<_>>().join("\n"))
 }
 
 

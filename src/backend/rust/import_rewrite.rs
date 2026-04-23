@@ -12,7 +12,9 @@ pub(super) fn rewrite_models_import(
 ) -> String {
     let mut imports: Vec<String> = modules
         .iter()
-        .map(|m| format!("use super::{m}::*;"))
+        // Alloy module paths are slash-separated (`oxidtr/ast`); Rust paths
+        // are `::`-separated. File-system paths stay unchanged elsewhere.
+        .map(|m| format!("use super::{}::*;", m.replace('/', "::")))
         .collect();
     if has_models {
         imports.push("use super::models::*;".to_string());

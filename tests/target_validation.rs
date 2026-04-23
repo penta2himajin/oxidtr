@@ -106,6 +106,39 @@ edition = "2021"
     }
 }
 
+/// Same as `rust_self_hosted_crate_compiles` but uses the Alloy-6
+/// spec-compliant multi-file variant (`models/oxidtr-split.als`). Exercises
+/// the modular codegen path — nested `module oxidtr/ast` etc. — and guards
+/// against regressions in intermediate `mod.rs` generation and `::`-path
+/// cross-module imports.
+#[test]
+#[ignore]
+fn rust_self_hosted_split_crate_compiles() {
+    let model = parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+        .expect("parse oxidtr-split.als");
+    let ir = ir::lower(&model).expect("lower oxidtr-split.als");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("selfhost_split_crate");
+    let crate_dir = crate_dir.to_str().unwrap();
+
+    write_rust_crate(&ir, crate_dir);
+
+    let output = std::process::Command::new("cargo")
+        .arg("check")
+        .current_dir(crate_dir)
+        .output()
+        .expect("failed to run cargo check");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "cargo check on split model crate failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 /// Generate a complete crate from oxidtr.als and verify it type-checks.
 #[test]
 #[ignore]
