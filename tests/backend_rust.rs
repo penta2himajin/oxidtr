@@ -837,3 +837,104 @@ fn one_sig_fixed_value_generates_unit_variant_with_const_method() {
     assert!(models.contains("Self::Magma => 0"), "Magma.rank should be 0:\n{models}");
     assert!(models.contains("Self::Monoid => 1"), "Monoid.rank should be 1:\n{models}");
 }
+
+// ─── Set-valued expression codegen ─────────────────────────────────────────
+
+/// BUG: `some field` where `field` has multiplicity `set` lowered to
+/// `field.is_some()`, which is an Option method. BTreeSet doesn't have
+/// it — the generated code fails to compile. Must emit `!field.is_empty()`.
+#[test]
+fn some_on_set_field_uses_is_empty() {
+    let files = generate_from(r#"
+        sig Node {
+          children: set Node
+        }
+        fact HasChildren {
+          all n: Node | some n.children
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("!n.children.is_empty()") || tests.contains("! n.children.is_empty()"),
+        "`some set_field` should lower to `!field.is_empty()`, got:\n{tests}"
+    );
+    assert!(
+        !tests.contains("n.children.is_some()"),
+        "`some set_field` must not emit `.is_some()` on a BTreeSet:\n{tests}"
+    );
+}
+
+/// Mirror of the above: `no set_field` must lower to `field.is_empty()`.
+#[test]
+fn no_on_set_field_uses_is_empty() {
+    let files = generate_from(r#"
+        sig Node {
+          children: set Node
+        }
+        fact NoChildren {
+          all n: Node | no n.children
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("n.children.is_empty()"),
+        "`no set_field` should lower to `field.is_empty()`, got:\n{tests}"
+    );
+    assert!(
+        !tests.contains("n.children.is_none()"),
+        "`no set_field` must not emit `.is_none()` on a BTreeSet:\n{tests}"
+    );
+}
+
+/// BUG: `set_a in set_b` (subset) was lowered to `set_b.contains(&set_a)`,
+/// which is an element-membership test and a type error besides. For two
+/// set-typed operands, must emit `set_a.is_subset(&set_b)`.
+#[test]
+fn subset_between_set_fields_uses_is_subset() {
+    let files = generate_from(r#"
+        sig Group {
+          members: set Person,
+          admins:  set Person
+        }
+        sig Person {}
+        fact AdminsAreMembers {
+          all g: Group | g.admins in g.members
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("g.admins.is_subset(&g.members)"),
+        "`set in set` should lower to `.is_subset(&...)`, got:\n{tests}"
+    );
+    assert!(
+        !tests.contains("g.members.contains(&g.admins)"),
+        "`set in set` must not emit `.contains()` with a set-valued arg:\n{tests}"
+    );
+}
+
+/// Same fix applied at the validator (newtypes.rs) emission path: when a
+/// fact's antecedent uses `some set_field`, the generated TryFrom must
+/// not call `.is_some()` on a BTreeSet. The fact includes an explicit
+/// comparison (`capacity > 0`) so newtypes.rs is emitted for Room.
+#[test]
+fn validator_handles_some_set_field() {
+    let files = generate_from(r#"
+        sig Room {
+          occupants: set Person,
+          capacity:  one Int
+        }
+        sig Person {}
+        fact NonEmptyImpliesSized {
+          all r: Room | some r.occupants implies r.capacity > 0
+        }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(
+        !newtypes.contains(".occupants.is_some()"),
+        "validator must not call `.is_some()` on a BTreeSet:\n{newtypes}"
+    );
+    assert!(
+        newtypes.contains(".occupants.is_empty()"),
+        "validator should check `!is_empty()` on the set field:\n{newtypes}"
+    );
+}

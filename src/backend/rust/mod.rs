@@ -2359,7 +2359,15 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
                     }
                     op_str
                 }
-                CompareOp::In => return format!("{r}.contains(&{l})"),
+                CompareOp::In => {
+                    // `set_a in set_b` is a subset test; `.contains()`
+                    // takes an element reference and would type-mismatch
+                    // on a set-valued LHS.
+                    if expr_translator::is_set_expr(left, ir) {
+                        return format!("{l}.is_subset(&{r})");
+                    }
+                    return format!("{r}.contains(&{l})");
+                }
                 CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte => {
                     let op_str = match op {
                         CompareOp::Lt => "<",
@@ -2396,7 +2404,12 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
         Expr::Not(inner) => format!("!({})", translate_validator_expr_rust(inner, sig_name, ir)),
         Expr::MultFormula { kind, expr: inner } => {
             let e = translate_validator_expr_rust(inner, sig_name, ir);
+            // For set/seq-valued inner expressions use `.is_empty()`;
+            // `.is_some()` / `.is_none()` belong to Option, not BTreeSet / Vec.
+            let collection = expr_translator::is_collection_expr(inner, ir);
             match kind {
+                QuantKind::Some if collection => format!("!{e}.is_empty()"),
+                QuantKind::No   if collection => format!("{e}.is_empty()"),
                 QuantKind::Some => format!("{e}.is_some()"),
                 QuantKind::No => format!("{e}.is_none()"),
                 _ => e,

@@ -483,6 +483,31 @@ fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
 }
 
+/// True when `expr` is a field access whose multiplicity is `set` or
+/// `seq` — i.e. lowers to a Rust collection (`BTreeSet` / `Vec`) where
+/// "non-empty" and "empty" are spelled `.is_empty()`, not `.is_some()` /
+/// `.is_none()`.
+pub(super) fn is_collection_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
+    if let Expr::FieldAccess { field, .. } = expr {
+        matches!(
+            field_mult(field, ir),
+            Some((Multiplicity::Set, _)) | Some((Multiplicity::Seq, _))
+        )
+    } else {
+        false
+    }
+}
+
+/// Stronger check: field access whose multiplicity is specifically `set`
+/// (not `seq`). Only `BTreeSet` has `.is_subset()`.
+pub(super) fn is_set_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
+    if let Expr::FieldAccess { field, .. } = expr {
+        matches!(field_mult(field, ir), Some((Multiplicity::Set, _)))
+    } else {
+        false
+    }
+}
+
 /// Look up the multiplicity and boxing info of a named field.
 /// Returns (multiplicity, needs_box) where needs_box is true for self-ref or cyclic-ref fields.
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
@@ -635,6 +660,13 @@ fn translate_inner_ir(
                             };
                         }
                     }
+                    // If LHS is itself a set-typed expression, `A in B`
+                    // is a subset test, not an element-containment test —
+                    // BTreeSet::contains expects `&T`, not `&BTreeSet<T>`.
+                    if is_set_expr(left, ir) {
+                        let r = ti(right, false);
+                        return format!("{l}.is_subset(&{r})");
+                    }
                     // Default: Set / One field → .contains()
                     let r = ti(right, false);
                     format!("{r}.contains(&{l})")
@@ -678,7 +710,13 @@ fn translate_inner_ir(
 
         Expr::MultFormula { kind, expr } => {
             let inner = ti(expr, false);
+            // For set/seq-valued inner expressions, `some X` / `no X`
+            // lower to `.is_empty()`-based checks — `.is_some()` /
+            // `.is_none()` belong to Option, not BTreeSet / Vec.
+            let collection = is_collection_expr(expr, ir);
             match kind {
+                QuantKind::Some if collection => format!("!{inner}.is_empty()"),
+                QuantKind::No   if collection => format!("{inner}.is_empty()"),
                 QuantKind::Some => format!("{inner}.is_some()"),
                 QuantKind::No => format!("{inner}.is_none()"),
                 _ => inner,
