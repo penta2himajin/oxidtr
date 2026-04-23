@@ -364,3 +364,86 @@ fn generate_arithmetic_plus_with_receiver() {
     // Should translate plus[1] with receiver to arithmetic: count + 1
     assert!(content.contains("+ 1"), "plus[1] should translate to arithmetic + 1:\n{content}");
 }
+
+// ── ④ Predicate call + tests import ────────────────────────────────────────
+
+/// BUG: tests.rs was missing `use super::operations::*;` so predicate
+/// calls inside translated assert bodies failed to resolve (E0425).
+#[test]
+fn tests_rs_imports_operations() {
+    let files = generate_from(r#"
+        sig Instr { op: one OpCode }
+        sig OpCode {}
+        pred is_memory[i: one Instr] { i.op = i.op }
+        assert Dummy { all i: Instr | is_memory[i] }
+    "#);
+    let tests_rs = find_file(&files, "tests.rs");
+    assert!(
+        tests_rs.contains("use super::operations::*;"),
+        "tests.rs must import operations::*; to resolve predicate calls:\n{tests_rs}"
+    );
+}
+
+/// BUG: predicates were emitted as `fn f(x: &T)` with no return type, so
+/// tests calling them in boolean contexts (`!(is_memory(i) && ...)`)
+/// failed with E0308 "expected bool, found ()".
+#[test]
+fn predicate_returns_bool() {
+    let files = generate_from(r#"
+        sig Instr { op: one OpCode }
+        sig OpCode {}
+        pred is_memory[i: one Instr] { i.op = i.op }
+    "#);
+    let ops = find_file(&files, "operations.rs");
+    // Predicate (no explicit return type) must lower to `-> bool`.
+    assert!(
+        ops.contains("fn is_memory(") && ops.contains(") -> bool"),
+        "pred should lower to `fn is_memory(...) -> bool`:\n{ops}"
+    );
+}
+
+/// BUG: `is_X(i)` was emitted with owned `i` while the signature took
+/// `&T`, producing E0308 type mismatches. Call sites targeting a known
+/// predicate/function must pass args by reference.
+#[test]
+fn predicate_call_passes_args_by_reference() {
+    let files = generate_from(r#"
+        sig Instr { op: one OpCode }
+        sig OpCode {}
+        pred is_memory[i: one Instr] { i.op = i.op }
+        assert Dummy { all i: Instr | is_memory[i] }
+    "#);
+    let tests_rs = find_file(&files, "tests.rs");
+    assert!(
+        tests_rs.contains("is_memory(&i)"),
+        "pred call in tests.rs should pass `&i`, not owned `i`:\n{tests_rs}"
+    );
+}
+
+// ── ⑤ Validator implication precedence ──────────────────────────────────────
+
+/// BUG: `(A or B) implies C` in a fact lowered to `A || B && !C` in the
+/// newtype validator, which Rust parses as `A || (B && !C)` — the wrong
+/// semantics. The condition must be parenthesized.
+#[test]
+fn validator_implication_disjunctive_antecedent_is_parenthesized() {
+    let files = generate_from(r#"
+        sig S { a: one Color, b: one Color }
+        sig Color {}
+        fact F {
+            all s: S |
+                (s.a = s.a or s.a = s.b) implies s.b = s.b
+        }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    // The implication must render as `if (A || B) && !(C)` not `if A || B && !(C)`.
+    // We conservatively require that somewhere in newtypes.rs the sequence
+    // `if (` appears followed by `||` on the same conditional line.
+    let has_parenthesized_or = newtypes
+        .lines()
+        .any(|l| l.trim_start().starts_with("if (") && l.contains("||") && l.contains(") && !("));
+    assert!(
+        has_parenthesized_or,
+        "validator must parenthesize disjunctive antecedent of implies:\n{newtypes}"
+    );
+}

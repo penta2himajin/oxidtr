@@ -448,7 +448,7 @@ fn generate_concept_file(
                         let t = rust_return_type(&rt.type_name, &rt.mult);
                         format!(" -> {t}")
                     }
-                    None => String::new(),
+                    None => " -> bool".to_string(),
                 };
 
                 let param_str = if params.is_empty() {
@@ -509,7 +509,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
                 let t = rust_return_type(&rt.type_name, &rt.mult);
                 format!(" -> {t}")
             }
-            None => String::new(),
+            None => " -> bool".to_string(),
         };
 
         if !op.body.is_empty() {
@@ -708,7 +708,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
                     let t = rust_return_type(&rt.type_name, &rt.mult);
                     format!(" -> {t}")
                 }
-                None => String::new(),
+                None => " -> bool".to_string(),
             };
 
             let param_str = if params.is_empty() {
@@ -990,7 +990,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let t = rust_return_type(&rt.type_name, &rt.mult);
                 format!(" -> {t}")
             }
-            None => String::new(),
+            None => " -> bool".to_string(),
         };
 
         // Doc comments with pre/post separation (Feature 7)
@@ -1104,6 +1104,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     }
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::fixtures::*;").unwrap();
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use super::operations::*;").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -2026,7 +2028,11 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                     let cond = translate_validator_expr_rust(condition, sig_name, ir);
                     let cons = translate_validator_expr_rust(consequent, sig_name, ir);
                     let desc = format!("{} implies {}", analyze::describe_expr(condition), analyze::describe_expr(consequent));
-                    writeln!(out, "        if {cond} && !({cons}) {{").unwrap();
+                    // Parenthesize the condition so disjunctive antecedents
+                    // (`(A or B) implies C`) keep their grouping when combined
+                    // with the `&& !(cons)` check — Rust's `&&` binds tighter
+                    // than `||` so bare `A || B && !(C)` misparses.
+                    writeln!(out, "        if ({cond}) && !({cons}) {{").unwrap();
                     writeln!(out, "            return Err(\"{}\");", desc.replace('"', "\\\"")).unwrap();
                     writeln!(out, "        }}").unwrap();
                 }

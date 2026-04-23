@@ -400,6 +400,19 @@ fn build_nested_quantifier(
 /// Translate Alloy function application. Known integer functions (plus, minus, mul, div, rem)
 /// with a receiver are translated to arithmetic operators.
 fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], translate: impl Fn(&Expr) -> String) -> String {
+    translate_fun_app_with(name, receiver, args, translate, false)
+}
+
+/// Like `translate_fun_app`, but when `args_by_ref` is true each argument of
+/// a bare function call is prefixed with `&` — matching the `&T` parameter
+/// convention used when lowering Alloy preds/funs to Rust free functions.
+fn translate_fun_app_with(
+    name: &str,
+    receiver: Option<&Expr>,
+    args: &[Expr],
+    translate: impl Fn(&Expr) -> String,
+    args_by_ref: bool,
+) -> String {
     // Alloy integer arithmetic: receiver.plus[n] → receiver + n
     if let Some(recv) = receiver {
         let op = match name {
@@ -415,13 +428,22 @@ fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], transla
             let a = translate(arg);
             return format!("{r} {op} {a}");
         }
-        // Non-arithmetic method call with receiver
+        // Non-arithmetic method call with receiver — the receiver itself
+        // carries the `&self` reference so args stay owned.
         let a: Vec<_> = args.iter().map(&translate).collect();
         let r = translate(recv);
         return format!("{r}.{name}({})", a.join(", "));
     }
-    // Bare function call: f[x, y] → f(x, y)
-    let a: Vec<_> = args.iter().map(translate).collect();
+    // Bare function call: f[x, y] → f(x, y).
+    // For calls to generated pred/fun operations the parameters are `&T`, so
+    // each arg needs a leading `&` to match the signature.
+    let a: Vec<_> = args
+        .iter()
+        .map(|e| {
+            let s = translate(e);
+            if args_by_ref { format!("&{s}") } else { s }
+        })
+        .collect();
     format!("{name}({})", a.join(", "))
 }
 
@@ -685,7 +707,10 @@ fn translate_inner_ir(
             format!("{l} && {r}")
         }
         Expr::FunApp { name, receiver, args } => {
-            translate_fun_app(name, receiver.as_deref(), args, |e| ti(e, false))
+            // Bare calls into generated operations (preds / funs) take `&T`
+            // params — ensure args are passed by reference.
+            let is_operation = receiver.is_none() && is_operation_call(name, ir);
+            translate_fun_app_with(name, receiver.as_deref(), args, |e| ti(e, false), is_operation)
         }
     };
 
@@ -694,6 +719,10 @@ fn translate_inner_ir(
     } else {
         result
     }
+}
+
+fn is_operation_call(name: &str, ir: &OxidtrIR) -> bool {
+    ir.operations.iter().any(|op| op.name == name)
 }
 
 /// Generate Eq/NotEq comparison handling lone (Option<T>) fields correctly.
