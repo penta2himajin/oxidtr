@@ -134,3 +134,113 @@ fn extract_directory_output_writes_multiple_files() {
     assert!(has_ir, "expected ir file in {:?}",
         files.iter().map(|f| f.path.display().to_string()).collect::<Vec<_>>());
 }
+
+// ─── Modular Rust codegen: nested module paths ─────────────────────────────
+
+/// BUG: when an Alloy module name contains `/` (e.g. `oxidtr/ast`), the
+/// Rust backend emitted `pub mod oxidtr/ast;` in the crate-root mod.rs,
+/// which is invalid Rust. It must emit `pub mod oxidtr;` at the root and
+/// create an intermediate `oxidtr/mod.rs` that declares `pub mod ast;`.
+#[test]
+fn modular_codegen_uses_nested_mod_declarations() {
+    let root = fresh_dir("modular-nested");
+    let sub = root.join("oxidtr");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        root.join("main.als"),
+        "module oxidtr\nopen oxidtr/ast\nopen oxidtr/ir\n",
+    ).unwrap();
+    fs::write(
+        sub.join("ast.als"),
+        "module oxidtr/ast\nsig AstNode {}\n",
+    ).unwrap();
+    fs::write(
+        sub.join("ir.als"),
+        "module oxidtr/ir\nsig IrNode { origin: one AstNode }\n",
+    ).unwrap();
+
+    let out = root.join("generated");
+    let config = GenerateConfig::new("rust", out.to_str().unwrap());
+    generate_run(root.join("main.als").to_str().unwrap(), &config)
+        .expect("generate");
+
+    // Crate root (emitted as `mod.rs`) must declare only the top-level
+    // segment, not the raw slashed path.
+    let root_mod = fs::read_to_string(out.join("mod.rs")).expect("root mod.rs");
+    assert!(
+        root_mod.contains("pub mod oxidtr;"),
+        "root mod.rs should declare `pub mod oxidtr;`, got:\n{root_mod}"
+    );
+    assert!(
+        !root_mod.contains("pub mod oxidtr/ast;")
+            && !root_mod.contains("pub mod oxidtr/ir;"),
+        "root mod.rs must not emit slash-separated `pub mod` paths:\n{root_mod}"
+    );
+
+    // An intermediate `oxidtr/mod.rs` must exist and declare its children.
+    let intermediate = fs::read_to_string(out.join("oxidtr/mod.rs"))
+        .expect("oxidtr/mod.rs should be generated as an intermediate");
+    assert!(
+        intermediate.contains("pub mod ast;"),
+        "oxidtr/mod.rs should declare `pub mod ast;`:\n{intermediate}"
+    );
+    assert!(
+        intermediate.contains("pub mod ir;"),
+        "oxidtr/mod.rs should declare `pub mod ir;`:\n{intermediate}"
+    );
+}
+
+/// BUG: cross-module imports in ops/newtypes also used raw slashed paths
+/// (`use super::oxidtr/ast::*;` or `use crate::oxidtr/ast::{...};`), which
+/// are invalid Rust. Slashes must be converted to `::` in all emitted
+/// Rust paths.
+#[test]
+fn modular_codegen_cross_module_imports_use_double_colon() {
+    let root = fresh_dir("modular-imports");
+    let sub = root.join("oxidtr");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        root.join("main.als"),
+        "module oxidtr\nopen oxidtr/ast\nopen oxidtr/ir\n",
+    ).unwrap();
+    fs::write(
+        sub.join("ast.als"),
+        "module oxidtr/ast\nsig AstNode {}\n",
+    ).unwrap();
+    fs::write(
+        sub.join("ir.als"),
+        // IrNode references AstNode across modules.
+        "module oxidtr/ir\nsig IrNode { origin: one AstNode }\n",
+    ).unwrap();
+
+    let out = root.join("generated");
+    let config = GenerateConfig::new("rust", out.to_str().unwrap());
+    generate_run(root.join("main.als").to_str().unwrap(), &config)
+        .expect("generate");
+
+    // Read every .rs file under generated/ and confirm no slashed paths
+    // appear on any `use super::` / `use crate::` line.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() { walk(&p, out); }
+            else if p.extension().map_or(false, |x| x == "rs") { out.push(p); }
+        }
+    }
+    let mut rs_files = Vec::new();
+    walk(&out, &mut rs_files);
+
+    for p in &rs_files {
+        let content = fs::read_to_string(p).unwrap();
+        for (line_no, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("use super::") || trimmed.starts_with("use crate::") {
+                assert!(
+                    !trimmed.contains('/'),
+                    "{}:{} contains slash in use path: {trimmed}",
+                    p.display(), line_no + 1,
+                );
+            }
+        }
+    }
+}
