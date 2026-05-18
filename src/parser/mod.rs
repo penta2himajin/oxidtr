@@ -116,49 +116,61 @@ impl<'a> Parser<'a> {
             match self.peek() {
                 Token::Eof => break,
                 Token::Sig => {
-                    let mut sig = self.parse_sig(false, false)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig(false, false)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::Var => {
                     // Alloy 6: `var sig` — mutable atom set
                     self.next();
-                    let mut sig = self.parse_sig(false, true)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig(false, true)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::Abstract => {
                     self.next();
                     // Alloy 6: `abstract var sig` — not typical but handle gracefully
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    let mut sig = self.parse_sig_body(true, is_var, SigMultiplicity::Default)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig_body(true, is_var, SigMultiplicity::Default)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::One => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::One)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig_body(false, is_var, SigMultiplicity::One)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::Some_ => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::Some)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig_body(false, is_var, SigMultiplicity::Some)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::Lone => {
                     self.next();
                     let is_var = if self.peek() == Token::Var { self.next(); true } else { false };
                     self.expect(&Token::Sig)?;
-                    let mut sig = self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?;
-                    sig.module = self.current_module.clone();
-                    model.sigs.push(sig);
+                    let sigs = self.parse_sig_body(false, is_var, SigMultiplicity::Lone)?;
+                    for mut sig in sigs {
+                        sig.module = self.current_module.clone();
+                        model.sigs.push(sig);
+                    }
                 }
                 Token::Module => {
                     let path = self.parse_module_decl();
@@ -269,14 +281,28 @@ impl<'a> Parser<'a> {
         Ok(sigs)
     }
 
-    fn parse_sig(&mut self, is_abstract: bool, is_var: bool) -> Result<SigDecl, ParseError> {
+    fn parse_sig(&mut self, is_abstract: bool, is_var: bool) -> Result<Vec<SigDecl>, ParseError> {
         self.expect(&Token::Sig)?;
         self.parse_sig_body(is_abstract, is_var, SigMultiplicity::Default)
     }
 
-    fn parse_sig_body(&mut self, is_abstract: bool, is_var: bool, multiplicity: SigMultiplicity) -> Result<SigDecl, ParseError> {
-        let name = self.expect_ident()?;
-        self.current_sig_name = name.clone(); // track for union annotation lookup
+    /// Parse one or more comma-separated sig names sharing the same body.
+    ///
+    /// Alloy 6 allows `one sig A, B, C extends Parent {}` — multiple sigs declared
+    /// at once. Each name produces an independent `SigDecl` with the same parent,
+    /// modifiers, and fields. Union/intersection annotations are looked up per
+    /// individual name. `current_sig_name` is left set to the first name so that
+    /// field-level union annotations (rare for the multi-name form, which is
+    /// typically used for enum-like singletons with empty bodies) remain
+    /// addressable through the conventional code path.
+    fn parse_sig_body(&mut self, is_abstract: bool, is_var: bool, multiplicity: SigMultiplicity) -> Result<Vec<SigDecl>, ParseError> {
+        let first_name = self.expect_ident()?;
+        let mut names = vec![first_name.clone()];
+        while self.peek() == Token::Comma {
+            self.next(); // consume comma
+            names.push(self.expect_ident()?);
+        }
+        self.current_sig_name = first_name; // track for union annotation lookup
 
         let parent = if self.peek() == Token::Extends {
             self.next();
@@ -297,20 +323,23 @@ impl<'a> Parser<'a> {
 
         self.expect(&Token::RBrace)?;
 
-        let intersection_of = self.intersection_annotations
-            .remove(&name)
-            .unwrap_or_default();
-
-        Ok(SigDecl {
-            name,
-            is_abstract,
-            is_var,
-            multiplicity,
-            parent,
-            fields,
-            intersection_of,
-            module: None, // set by parse_model from current_module
-        })
+        let mut sigs = Vec::with_capacity(names.len());
+        for name in names {
+            let intersection_of = self.intersection_annotations
+                .remove(&name)
+                .unwrap_or_default();
+            sigs.push(SigDecl {
+                name,
+                is_abstract,
+                is_var,
+                multiplicity: multiplicity.clone(),
+                parent: parent.clone(),
+                fields: fields.clone(),
+                intersection_of,
+                module: None, // set by parse_model from current_module
+            });
+        }
+        Ok(sigs)
     }
 
     fn parse_field(&mut self) -> Result<FieldDecl, ParseError> {
