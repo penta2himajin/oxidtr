@@ -262,6 +262,80 @@ fn parse_one_var_sig_extends() {
     assert_eq!(model.sigs[1].parent.as_deref(), Some("Base"));
 }
 
+// ── Alloy 6: comma-separated sig names sharing one body ──────────────────────
+
+#[test]
+fn parse_multi_name_one_sig() {
+    // Alloy 6 allows `one sig A, B, C extends Parent {}` — each name becomes
+    // its own SigDecl with the shared parent, modifiers, and (empty) body.
+    let model = parser::parse(
+        "abstract sig WeatherState {} one sig Clear, Cloudy, Rain extends WeatherState {}",
+    )
+    .unwrap();
+    assert_eq!(model.sigs.len(), 4);
+    assert!(model.sigs[0].is_abstract);
+
+    for (i, name) in ["Clear", "Cloudy", "Rain"].iter().enumerate() {
+        let sig = &model.sigs[i + 1];
+        assert_eq!(sig.name, *name);
+        assert_eq!(sig.multiplicity, SigMultiplicity::One);
+        assert_eq!(sig.parent.as_deref(), Some("WeatherState"));
+        assert!(sig.fields.is_empty());
+        assert!(!sig.is_abstract);
+    }
+}
+
+#[test]
+fn parse_multi_name_sig_default_multiplicity() {
+    let model = parser::parse("sig A, B {}").unwrap();
+    assert_eq!(model.sigs.len(), 2);
+    assert_eq!(model.sigs[0].name, "A");
+    assert_eq!(model.sigs[1].name, "B");
+    assert_eq!(model.sigs[0].multiplicity, SigMultiplicity::Default);
+    assert_eq!(model.sigs[1].multiplicity, SigMultiplicity::Default);
+}
+
+#[test]
+fn parse_multi_name_sig_shares_fields() {
+    // Fields declared inside a multi-name body are duplicated to every sig.
+    let model = parser::parse("sig Foo, Bar { x: one Int }").unwrap();
+    assert_eq!(model.sigs.len(), 2);
+    assert_eq!(model.sigs[0].name, "Foo");
+    assert_eq!(model.sigs[1].name, "Bar");
+    for sig in &model.sigs {
+        assert_eq!(sig.fields.len(), 1);
+        assert_eq!(sig.fields[0].name, "x");
+        assert_eq!(sig.fields[0].target, "Int");
+    }
+}
+
+#[test]
+fn parse_multi_name_some_sig_extends() {
+    let model = parser::parse("some sig A, B, C extends Base {}").unwrap();
+    assert_eq!(model.sigs.len(), 3);
+    for (i, name) in ["A", "B", "C"].iter().enumerate() {
+        assert_eq!(model.sigs[i].name, *name);
+        assert_eq!(model.sigs[i].multiplicity, SigMultiplicity::Some);
+        assert_eq!(model.sigs[i].parent.as_deref(), Some("Base"));
+    }
+}
+
+#[test]
+fn parse_multi_name_var_sig() {
+    let model = parser::parse("var sig X, Y {}").unwrap();
+    assert_eq!(model.sigs.len(), 2);
+    assert!(model.sigs[0].is_var);
+    assert!(model.sigs[1].is_var);
+}
+
+#[test]
+fn parse_single_name_sig_still_works() {
+    // Regression guard: the multi-name path must not break the common single-name case.
+    let model = parser::parse("sig Solo {}").unwrap();
+    assert_eq!(model.sigs.len(), 1);
+    assert_eq!(model.sigs[0].name, "Solo");
+}
+
 // ── intersection_of comment parsing ──────────────────────────────────────────
 
 #[test]
