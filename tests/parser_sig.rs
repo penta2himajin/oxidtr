@@ -336,6 +336,57 @@ fn parse_single_name_sig_still_works() {
     assert_eq!(model.sigs[0].name, "Solo");
 }
 
+// ── Alloy 6: comma-separated param names sharing one type ────────────────────
+
+#[test]
+fn parse_multi_name_pred_params() {
+    // Alloy 6 allows `pred Foo[a, b: T]` — two params sharing the type.
+    let model = parser::parse("pred Eq[from, to: WeatherState] { from = to }").unwrap();
+    let pred = &model.preds[0];
+    assert_eq!(pred.params.len(), 2);
+    assert_eq!(pred.params[0].name, "from");
+    assert_eq!(pred.params[1].name, "to");
+    assert_eq!(pred.params[0].type_name, "WeatherState");
+    assert_eq!(pred.params[1].type_name, "WeatherState");
+}
+
+#[test]
+fn parse_multi_name_fun_params() {
+    // Alloy 6 allows `fun Bar[a, b, c: T] : U` — three params sharing the type.
+    let model = parser::parse(
+        "sig Pos { x: Int } fun first[a, b, c: Pos] : Int { a.x }",
+    ).unwrap();
+    let fun = &model.funs[0];
+    assert_eq!(fun.params.len(), 3);
+    assert_eq!(fun.params[0].name, "a");
+    assert_eq!(fun.params[1].name, "b");
+    assert_eq!(fun.params[2].name, "c");
+    for p in &fun.params {
+        assert_eq!(p.type_name, "Pos");
+    }
+}
+
+#[test]
+fn parse_mixed_multi_and_single_params() {
+    // [a, b: T, c: U] — first two share T, third is its own decl with U.
+    let model = parser::parse(
+        "pred Foo[a, b: Int, c: Bool] { c = c }",
+    ).unwrap();
+    let pred = &model.preds[0];
+    assert_eq!(pred.params.len(), 3);
+    assert_eq!(pred.params[0].type_name, "Int");
+    assert_eq!(pred.params[1].type_name, "Int");
+    assert_eq!(pred.params[2].type_name, "Bool");
+}
+
+#[test]
+fn parse_single_param_still_works() {
+    // Regression guard for the common single-param path.
+    let model = parser::parse("pred Foo[x: Int] { x = x }").unwrap();
+    assert_eq!(model.preds[0].params.len(), 1);
+    assert_eq!(model.preds[0].params[0].name, "x");
+}
+
 // ── intersection_of comment parsing ──────────────────────────────────────────
 
 #[test]
