@@ -406,7 +406,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Token::LBracket {
             self.next();
             while self.peek() != Token::RBracket {
-                params.push(self.parse_param()?);
+                params.extend(self.parse_param()?);
                 if self.peek() == Token::Comma {
                     self.next();
                 }
@@ -441,7 +441,7 @@ impl<'a> Parser<'a> {
         if self.peek() == Token::LBracket {
             self.next();
             while self.peek() != Token::RBracket {
-                params.push(self.parse_param()?);
+                params.extend(self.parse_param()?);
                 if self.peek() == Token::Comma {
                     self.next();
                 }
@@ -461,12 +461,29 @@ impl<'a> Parser<'a> {
         Ok(FunDecl { name, receiver_sig, params, return_mult, return_type, body, module: None })
     }
 
-    fn parse_param(&mut self) -> Result<ParamDecl, ParseError> {
-        let name = self.expect_ident()?;
+    /// Parse one or more comma-separated parameter names sharing a single type.
+    ///
+    /// Alloy 6 allows `pred Foo[a, b: T]` and `fun Bar[a, b, c: T] : U` — multiple
+    /// params share one typed group. Returns one `ParamDecl` per name (each with
+    /// the same multiplicity and type). The caller's outer loop continues to use
+    /// the trailing comma (between typed groups) as a per-group separator.
+    fn parse_param(&mut self) -> Result<Vec<ParamDecl>, ParseError> {
+        let first = self.expect_ident()?;
+        let mut names = vec![first];
+        // Commas before the `:` mean another name shares the upcoming type.
+        // Commas after the `:` belong to the enclosing param list and are
+        // consumed by the caller's loop.
+        while self.peek() == Token::Comma {
+            self.next(); // consume comma
+            names.push(self.expect_ident()?);
+        }
         self.expect(&Token::Colon)?;
         let mult = self.parse_multiplicity()?;
         let type_name = self.expect_ident()?;
-        Ok(ParamDecl { name, mult, type_name })
+        Ok(names
+            .into_iter()
+            .map(|name| ParamDecl { name, mult: mult.clone(), type_name: type_name.clone() })
+            .collect())
     }
 
     fn parse_assert(&mut self) -> Result<AssertDecl, ParseError> {
