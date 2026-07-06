@@ -119,6 +119,24 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner(expr, false, &sig_names, ir)
 }
 
+/// If `name` is a `one sig` variant of an abstract sig that was lowered to an enum,
+/// return that enum's name so the reference can be qualified as `Enum.case`.
+fn enum_of_variant<'a>(name: &str, ir: &'a OxidtrIR) -> Option<&'a str> {
+    let variant = ir.structures.iter().find(|s| s.name == name)?;
+    let parent = variant.parent.as_ref()?;
+    let parent_struct = ir.structures.iter().find(|s| &s.name == parent)?;
+    if parent_struct.is_enum { Some(parent.as_str()) } else { None }
+}
+
+/// Swift enum case names are lowerCamelCase (mirrors the Swift backend's `to_swift_case_name`).
+fn enum_case_name(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => format!("{}{}", c.to_lowercase(), chars.as_str()),
+    }
+}
+
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
     for s in &ir.structures {
         for f in &s.fields {
@@ -142,7 +160,12 @@ fn translate_inner(
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
 
-        Expr::VarRef(name) => name.clone(),
+        Expr::VarRef(name) => match enum_of_variant(name, ir) {
+            // A `one sig` member lowered into an enum case is referenced as
+            // `Enum.case`, not the bare Alloy sig name (undefined in Swift).
+            Some(enum_name) => format!("{enum_name}.{}", enum_case_name(name)),
+            None => name.clone(),
+        },
 
         Expr::FieldAccess { base, field } => {
             format!("{}.{field}", ti(base, false))

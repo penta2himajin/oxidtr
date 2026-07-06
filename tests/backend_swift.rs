@@ -240,3 +240,45 @@ fn swift_derived_field_generates_computed_property() {
     let models = find_file(&files, "Models.swift");
     assert!(models.contains("var balance: Int"), "should generate computed property:\n{models}");
 }
+
+// ── Regression: enum-member references in constraint expressions ──────────────
+
+#[test]
+fn swift_enum_member_ref_in_assertion_is_qualified() {
+    // A `one sig` member lowered into an enum case must be referenced as
+    // `Enum.case` in generated expressions, not as the bare Alloy sig name
+    // (which is undefined in Swift and fails to compile).
+    let files = generate_swift(
+        "abstract sig Level {}\n\
+         one sig Low extends Level {}\n\
+         one sig High extends Level {}\n\
+         sig Node { level: one Level }\n\
+         assert HighNotLow { all n: Node | n.level = High implies n.level != Low }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("Level.high"), "expected qualified enum case, got:\n{t}");
+    assert!(t.contains("Level.low"), "expected qualified enum case, got:\n{t}");
+    assert!(!t.contains("== High"), "bare Alloy sig name leaked into Swift:\n{t}");
+    assert!(!t.contains("!= Low"), "bare Alloy sig name leaked into Swift:\n{t}");
+}
+
+#[test]
+fn swift_tests_call_bare_fixtures_and_fixtures_are_free_functions() {
+    // Generated Swift must be self-consistent: fixtures are free functions in the
+    // same module, so tests must call them bare (no `Fixtures.` namespace that is
+    // never defined), and no fixture may be emitted as a top-level `static func`
+    // (invalid Swift outside a type).
+    let files = generate_swift(
+        "abstract sig Level {}\n\
+         one sig Low extends Level {}\n\
+         one sig High extends Level {}\n\
+         sig Bag { items: set Item, level: one Level }\n\
+         sig Item {}\n\
+         assert Ok { all b: Bag | b.level = High implies b.level != Low }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(!t.contains("Fixtures."), "tests must call fixtures bare, got:\n{t}");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(!f.contains("static func"), "fixtures must be free functions, got:\n{f}");
+    assert!(f.contains("func anomalyEmptyBag()"), "expected free anomaly fixture, got:\n{f}");
+}
