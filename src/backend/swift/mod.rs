@@ -912,21 +912,21 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 match pattern {
                     analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
                         writeln!(out, "    func testAnomaly_{snake}_{field_name}_unconstrained() {{").unwrap();
-                        writeln!(out, "        let instance = Fixtures.default{sig_name}()").unwrap();
+                        writeln!(out, "        let instance = default{sig_name}()").unwrap();
                         writeln!(out, "        _ = instance.{field_name}").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
                         writeln!(out, "    func testAnomaly_{snake}_{field_name}_empty() {{").unwrap();
-                        writeln!(out, "        let instance = Fixtures.anomalyEmpty{sig_name}()").unwrap();
+                        writeln!(out, "        let instance = anomalyEmpty{sig_name}()").unwrap();
                         writeln!(out, "        _ = instance.{field_name}").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
                         writeln!(out, "    func testAnomaly_{snake}_{field_name}_selfRef() {{").unwrap();
-                        writeln!(out, "        let instance = Fixtures.default{sig_name}()").unwrap();
+                        writeln!(out, "        let instance = default{sig_name}()").unwrap();
                         writeln!(out, "        _ = instance.{field_name}").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
@@ -976,7 +976,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    func {test_name}() {{").unwrap();
             for (pname, tname) in &all_params {
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        let {pname}: [{}] = [Fixtures.default{tname}()]", tname).unwrap();
+                    writeln!(out, "        let {pname}: [{}] = [default{tname}()]", tname).unwrap();
                 } else {
                     writeln!(out, "        let {pname}: [{}] = []", tname).unwrap();
                 }
@@ -1142,7 +1142,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
 
             let _snake = to_snake_case(sig_name);
             writeln!(out, "/// Anomaly fixture: all collections empty").unwrap();
-            writeln!(out, "static func anomalyEmpty{sig_name}() -> {sig_name} {{").unwrap();
+            writeln!(out, "func anomalyEmpty{sig_name}() -> {sig_name} {{").unwrap();
             writeln!(out, "    {sig_name}(").unwrap();
             for (i, f) in s.fields.iter().enumerate() {
                 let comma = if i < s.fields.len() - 1 { "," } else { "" };
