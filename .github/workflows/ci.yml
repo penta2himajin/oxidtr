@@ -167,4 +167,4 @@ jobs:
           java-version: '21'
 
       - name: Run target validation tests
-        run: cargo test --test target_validation -- --include-ignored
+        run: cargo test --test target_validation -- --include-ignored --test-threads=1
