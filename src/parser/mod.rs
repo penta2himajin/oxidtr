@@ -1143,11 +1143,19 @@ pub fn parse(input: &str) -> Result<AlloyModel, ParseError> {
 /// (double-open is idempotent). Missing open targets produce a ParseError.
 pub fn parse_from_path(path: &std::path::Path) -> Result<AlloyModel, ParseError> {
     let mut visited = std::collections::HashSet::new();
-    parse_from_path_inner(path, &mut visited)
+    // Alloy module paths (`open oxidtr/ast`) are resolved relative to the root
+    // of the module hierarchy — i.e. the directory of the top-level main file,
+    // not each sub-module's own directory. Establish that root once here.
+    let root_dir = path
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    parse_from_path_inner(path, &root_dir, &mut visited)
 }
 
 fn parse_from_path_inner(
     path: &std::path::Path,
+    root_dir: &std::path::Path,
     visited: &mut std::collections::HashSet<std::path::PathBuf>,
 ) -> Result<AlloyModel, ParseError> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -1171,10 +1179,10 @@ fn parse_from_path_inner(
     })?;
     let mut model = parse(&source)?;
 
-    let base_dir = path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    // Resolve `open` targets from the module-hierarchy root, not this file's
+    // own directory — so a sub-module's `open oxidtr/ast` finds the same file
+    // the main file's `open oxidtr/ast` did, instead of `<here>/oxidtr/ast`.
+    let base_dir = root_dir;
 
     // Take imports out so we can consume them; any transitively-imported
     // model's imports are merged in as well (reflecting the full import graph).
@@ -1182,7 +1190,7 @@ fn parse_from_path_inner(
     let mut merged_imports = imports.clone();
 
     for import in imports {
-        let mut target = base_dir.clone();
+        let mut target = base_dir.to_path_buf();
         for segment in import.path.split('/') {
             target.push(segment);
         }
@@ -1199,7 +1207,7 @@ fn parse_from_path_inner(
             continue;
         }
 
-        let sub = parse_from_path_inner(&target, visited)?;
+        let sub = parse_from_path_inner(&target, root_dir, visited)?;
         model.sigs.extend(sub.sigs);
         model.facts.extend(sub.facts);
         model.preds.extend(sub.preds);
