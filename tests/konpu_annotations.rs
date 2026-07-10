@@ -63,6 +63,50 @@ fact Assoc { all a, b, c: S | combine[combine[a, b], c] = combine[a, combine[b, 
 }
 
 #[test]
+fn one_sig_identity_warns_suggesting_fun_form() {
+    // one-sig identity: annotation still emitted, but warn that identity-law
+    // tests need a carrier-valued `fun` identity.
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let model = dir.join("model.als");
+    fs::write(&model, MONOID).unwrap();
+
+    let mut config = GenerateConfig::new("rust", dir.to_str().unwrap());
+    config.warnings = generate::WarningLevel::Off;
+    config.konpu = true;
+    let result = generate::run(model.to_str().unwrap(), &config).unwrap();
+    assert!(
+        result.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::KonpuSingletonIdentity)),
+        "expected KonpuSingletonIdentity warning, got: {:?}",
+        result.warnings.iter().map(|w| &w.message).collect::<Vec<_>>()
+    );
+
+    // fun-form identity → no such warning
+    let n2 = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir2 = std::env::temp_dir().join(format!("oxidtr_konpu_{n2}"));
+    let _ = fs::remove_dir_all(&dir2);
+    fs::create_dir_all(&dir2).unwrap();
+    let model2 = dir2.join("model.als");
+    fs::write(&model2, r#"
+sig Money { amount: one Int }
+fun zero: Money { Money }
+fun add[a, b: Money]: Money { a }
+fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
+"#).unwrap();
+    let mut config2 = GenerateConfig::new("rust", dir2.to_str().unwrap());
+    config2.warnings = generate::WarningLevel::Off;
+    config2.konpu = true;
+    let result2 = generate::run(model2.to_str().unwrap(), &config2).unwrap();
+    assert!(
+        !result2.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::KonpuSingletonIdentity)),
+        "fun-form identity must not warn"
+    );
+}
+
+#[test]
 fn no_annotation_without_associativity() {
     // op + identity but no associativity fact → not even a semigroup
     let src = r#"

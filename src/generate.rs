@@ -98,6 +98,7 @@ pub enum WarningKind {
     UnconstrainedTransitivity,
     UnhandledResponsePattern,
     MissingErrorPropagation,
+    KonpuSingletonIdentity,
 }
 
 #[derive(Debug)]
@@ -159,7 +160,33 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     let ir = ir::lower(&model)?;
 
     // Analyze for warnings
-    let warnings = analyze_warnings(&ir);
+    let mut warnings = analyze_warnings(&ir);
+
+    // konpu: detect algebraic structures proven by facts (annotation injection below).
+    // Warn when an identity is a one-sig: the annotation resolves, but oxidtr can't
+    // construct the identity as a carrier value, so identity-law tests are skipped.
+    let konpu_facts = if config.konpu { ir::algebra::detect(&ir) } else { Vec::new() };
+    for f in &konpu_facts {
+        if let Some(id) = &f.identity {
+            let is_one_sig = ir.structures.iter().any(|s| {
+                s.name == *id && s.sig_multiplicity == SigMultiplicity::One
+            });
+            if is_one_sig {
+                warnings.push(Warning {
+                    kind: WarningKind::KonpuSingletonIdentity,
+                    message: format!(
+                        "{} の単位元 {} は one sig — carrier 値を構成できず単位元 law test は生成されない",
+                        f.sig, id
+                    ),
+                    location: format!("sig {}", f.sig),
+                    suggestion: Some(format!(
+                        "fun {}: {} {{ ... }} でモデル化すると単位元が {} 値になり law test まで書ける",
+                        id.to_lowercase(), f.sig, f.sig
+                    )),
+                });
+            }
+        }
+    }
 
     // Check warning level
     if config.warnings == WarningLevel::Error && !warnings.is_empty() {
@@ -224,12 +251,11 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
         }
     }
 
-    // konpu annotations: detect proven algebraic structures and inject them.
+    // konpu annotations: inject the detected structures (facts computed above).
     // Rust only for now — comment-style backends (ts/swift/kotlin) come next.
     if config.konpu && matches!(config.target.as_str(), "rust") {
-        let facts = ir::algebra::detect(&ir);
         for file in &mut files {
-            file.content = inject_konpu_rust(&file.content, &facts);
+            file.content = inject_konpu_rust(&file.content, &konpu_facts);
         }
     }
 
