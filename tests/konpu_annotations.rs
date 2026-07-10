@@ -106,6 +106,52 @@ fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
     );
 }
 
+const FUN_MONOID: &str = r#"
+sig Money { amount: one Int }
+fun zero: Money { Money }
+fun add[a, b: Money]: Money { a }
+fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
+"#;
+
+fn gen_target(src: &str, target: &str, models_file: &str) -> String {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let model = dir.join("model.als");
+    fs::write(&model, src).unwrap();
+    let mut config = GenerateConfig::new(target, dir.to_str().unwrap());
+    config.warnings = generate::WarningLevel::Off;
+    config.konpu = true;
+    generate::run(model.to_str().unwrap(), &config).unwrap();
+    fs::read_to_string(dir.join(models_file)).unwrap()
+}
+
+#[test]
+fn comment_directive_emitted_for_ts_swift_kotlin() {
+    // Comment form: `// konpu: monoid(op: add, identity: zero)` directly above
+    // the type declaration (konpu attaches it to the next named declaration).
+    for (target, models_file, decl) in [
+        ("typescript", "models.ts", "export interface Money"),
+        ("swift", "Models.swift", "struct Money"),
+        ("kotlin", "Models.kt", "data class Money"),
+    ] {
+        let out = gen_target(FUN_MONOID, target, models_file);
+        let directive = "// konpu: monoid(op: add, identity: zero)";
+        let d = out.find(directive).unwrap_or_else(|| {
+            panic!("{target}: expected directive, got:\n{out}")
+        });
+        // The declaration must be the next non-empty line after the directive.
+        let after = &out[d + directive.len()..];
+        let next_line = after.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        assert!(
+            next_line.trim_start().starts_with(decl),
+            "{target}: directive must sit directly above `{decl}`, next line was: {next_line}"
+        );
+    }
+}
+
 #[test]
 fn no_annotation_without_associativity() {
     // op + identity but no associativity fact → not even a semigroup

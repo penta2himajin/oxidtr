@@ -252,10 +252,28 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     }
 
     // konpu annotations: inject the detected structures (facts computed above).
-    // Rust only for now — comment-style backends (ts/swift/kotlin) come next.
-    if config.konpu && matches!(config.target.as_str(), "rust") {
+    // Rust = attribute form; ts/swift/kotlin = `// konpu:` comment above the type
+    // (konpu attaches a directive comment to the next named declaration).
+    if config.konpu {
+        let ts_prefixes: &[&str] =
+            &["export interface ", "export abstract class ", "export class ", "export enum "];
+        let swift_prefixes: &[&str] = &["struct ", "final class ", "class ", "enum "];
+        let kotlin_prefixes: &[&str] =
+            &["data class ", "sealed class ", "enum class ", "class ", "object "];
+        let comment_prefixes = match config.target.as_str() {
+            "typescript" | "ts" => Some(ts_prefixes),
+            "swift" => Some(swift_prefixes),
+            "kotlin" | "kt" => Some(kotlin_prefixes),
+            _ => None,
+        };
         for file in &mut files {
-            file.content = inject_konpu_rust(&file.content, &konpu_facts);
+            file.content = if matches!(config.target.as_str(), "rust") {
+                inject_konpu_rust(&file.content, &konpu_facts)
+            } else if let Some(prefixes) = comment_prefixes {
+                inject_konpu_comment(&file.content, &konpu_facts, prefixes)
+            } else {
+                continue;
+            };
         }
     }
 
@@ -321,6 +339,51 @@ fn inject_konpu_rust(content: &str, facts: &[ir::algebra::AlgebraFact]) -> Strin
                 let indent = &line[..line.len() - trimmed.len()];
                 out.push_str(indent);
                 out.push_str(&konpu_attr_rust(f));
+                out.push('\n');
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// Comment-form konpu directive, e.g. `// konpu: monoid(op: add, identity: zero)`.
+/// konpu parses this in ts/swift/kotlin and attaches it to the next declaration.
+fn konpu_directive_comment(f: &ir::algebra::AlgebraFact) -> String {
+    let mut kwargs = format!("op: {}", f.op);
+    if let Some(id) = &f.identity {
+        kwargs.push_str(&format!(", identity: {id}"));
+    }
+    if let Some(inv) = &f.inverse {
+        kwargs.push_str(&format!(", inverse: {inv}"));
+    }
+    format!("// konpu: {}({})", f.kind.head(), kwargs)
+}
+
+/// Insert `// konpu:` directives above matching type declarations. `prefixes`
+/// are the per-language declaration starters (e.g. `"export interface "`);
+/// the identifier right after the prefix must equal the fact's sig exactly,
+/// so `class MoneyTest` never matches sig `Money`.
+fn inject_konpu_comment(
+    content: &str,
+    facts: &[ir::algebra::AlgebraFact],
+    prefixes: &[&str],
+) -> String {
+    if facts.is_empty() {
+        return content.to_string();
+    }
+    let mut out = String::with_capacity(content.len() + 64 * facts.len());
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = prefixes.iter().find_map(|p| trimmed.strip_prefix(p)) {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if let Some(f) = facts.iter().find(|f| f.sig == name) {
+                let indent = &line[..line.len() - trimmed.len()];
+                out.push_str(indent);
+                out.push_str(&konpu_directive_comment(f));
                 out.push('\n');
             }
         }
