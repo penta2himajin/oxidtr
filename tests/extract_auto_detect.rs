@@ -88,7 +88,7 @@ fn mine_run_directory_auto_detect_rust() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     // Mine the whole generated directory — should auto-detect Rust
@@ -109,7 +109,7 @@ fn mine_run_directory_auto_detect_ts() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();
@@ -128,7 +128,7 @@ fn mine_run_directory_auto_detect_kotlin() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();
@@ -147,7 +147,7 @@ fn mine_run_directory_auto_detect_java() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();

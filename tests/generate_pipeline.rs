@@ -10,7 +10,7 @@ fn test_config(dir: &str) -> GenerateConfig {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    }
+        konpu: false,    }
 }
 
 fn write_model(dir: &Path, name: &str, content: &str) -> String {
@@ -88,7 +88,7 @@ fn generate_detects_warnings() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config).unwrap();
 
@@ -113,7 +113,7 @@ fn generate_warnings_error_level_fails() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config);
     assert!(result.is_err(), "expected error with --warnings=error and warnings present");
@@ -138,7 +138,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config).unwrap();
     assert!(
@@ -170,7 +170,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config).unwrap();
     assert!(
@@ -198,7 +198,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config).unwrap();
     assert!(
@@ -228,7 +228,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
 
     let result = generate::run(&model_path, &config).unwrap();
     assert!(
@@ -260,7 +260,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(&model_path, &config).unwrap();
 
     assert!(
@@ -291,7 +291,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(&model_path, &config).unwrap();
 
     assert!(
@@ -323,7 +323,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(&model_path, &config).unwrap();
 
     assert!(
@@ -355,7 +355,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(&model_path, &config).unwrap();
 
     assert!(

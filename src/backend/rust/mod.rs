@@ -1130,6 +1130,50 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     }
 }
 
+/// `one sig X extends <concrete Y>` — a distinguished singleton VALUE of a
+/// non-abstract parent. oxidtr renders it as a standalone unit struct whose
+/// value it cannot construct (parent fields unknown), so any generated test that
+/// uses it as a `Y` would not typecheck. Collect these names so such tests are
+/// skipped (as enum-variant references already are).
+fn concrete_parent_singletons(ir: &OxidtrIR, enum_parents: &HashSet<String>) -> HashSet<String> {
+    ir.structures
+        .iter()
+        .filter(|s| s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty())
+        .filter(|s| s.parent.as_ref().is_some_and(|p| !enum_parents.contains(p)))
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+/// Whether `expr` references any name in `names` (VarRef / FunApp callee / receiver).
+fn expr_refs_any(expr: &Expr, names: &HashSet<String>) -> bool {
+    match expr {
+        Expr::VarRef(n) => names.contains(n),
+        Expr::IntLiteral(_) => false,
+        Expr::FieldAccess { base, .. } => expr_refs_any(base, names),
+        Expr::Cardinality(e)
+        | Expr::TransitiveClosure(e)
+        | Expr::Not(e)
+        | Expr::Prime(e)
+        | Expr::MultFormula { expr: e, .. }
+        | Expr::TemporalUnary { expr: e, .. } => expr_refs_any(e, names),
+        Expr::Comparison { left, right, .. }
+        | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. }
+        | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            expr_refs_any(left, names) || expr_refs_any(right, names)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| expr_refs_any(&b.domain, names)) || expr_refs_any(body, names)
+        }
+        Expr::FunApp { name, receiver, args } => {
+            names.contains(name)
+                || receiver.as_ref().is_some_and(|r| expr_refs_any(r, names))
+                || args.iter().any(|a| expr_refs_any(a, names))
+        }
+    }
+}
+
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
@@ -1140,6 +1184,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let variant_names_set: HashSet<String> = ir.structures.iter()
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
+    let concrete_singletons = concrete_parent_singletons(ir, &enum_parents);
     let has_fixture: HashSet<String> = ir.structures.iter()
         .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
             && !is_native_type_alias(&s.name))
@@ -1168,6 +1213,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         // Skip tests that reference enum variants (not standalone types in Rust)
         if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+            continue;
+        }
+        // Skip: references a concrete-parent singleton whose value can't be constructed.
+        if expr_refs_any(&prop.expr, &concrete_singletons) {
             continue;
         }
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
@@ -1209,6 +1258,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+
+        // Skip: fact references a concrete-parent singleton whose value oxidtr
+        // cannot construct — a generated assertion using it would not typecheck.
+        if expr_refs_any(&constraint.expr, &concrete_singletons) {
+            continue;
+        }
 
         // Alloy 6: temporal facts with prime → generate transition test
         // Strips quantifier, rewrites prime refs (x') to post-state variables (next_x),
@@ -1765,6 +1820,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
             // Skip if any param is an enum variant
             if all_params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+                continue;
+            }
+            // Skip if either fact references a concrete-parent singleton (unconstructible value).
+            if expr_refs_any(&ca.expr, &concrete_singletons) || expr_refs_any(&cb.expr, &concrete_singletons) {
                 continue;
             }
 

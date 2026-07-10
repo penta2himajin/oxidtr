@@ -131,7 +131,7 @@ fn check_rust_self_hosting_with_enriched_output() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     // Verify enriched files exist
@@ -155,7 +155,7 @@ fn check_rust_serde_self_hosting() {
         features: vec!["serde".to_string()],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let check_config = CheckConfig { impl_dir: out_dir.to_str().unwrap().to_string() };
@@ -175,7 +175,7 @@ fn check_ts_self_hosting_with_enriched_output() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     assert!(out_dir.join("fixtures.ts").exists(), "fixtures.ts should be generated");
@@ -197,7 +197,7 @@ fn check_kotlin_self_hosting_with_enriched_output() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     assert!(out_dir.join("Fixtures.kt").exists(), "Fixtures.kt should be generated");
@@ -220,7 +220,7 @@ fn check_java_self_hosting_with_enriched_output() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     assert!(out_dir.join("Fixtures.java").exists(), "Fixtures.java should be generated");

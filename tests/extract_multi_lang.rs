@@ -17,7 +17,7 @@ fn multi_lang_merge_rust_and_schema() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config_rs).unwrap();
 
     // Also generate schema into same directory
@@ -48,7 +48,7 @@ fn multi_lang_merge_ts_and_schema() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config_ts).unwrap();
 
     // Also generate schema

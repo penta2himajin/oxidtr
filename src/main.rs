@@ -32,6 +32,9 @@ enum Commands {
         /// Test runner for TypeScript target (bun or vitest, default: bun)
         #[arg(long, default_value = "bun")]
         test_runner: TestRunnerArg,
+        /// Emit konpu annotations for algebraic structures proven by Alloy facts
+        #[arg(long)]
+        konpu: bool,
     },
     /// Check structural consistency between Alloy model and implementation
     Check {
@@ -81,7 +84,7 @@ fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Generate { model, target, output, warnings, features, schema, test_runner } => {
+        Commands::Generate { model, target, output, warnings, features, schema, test_runner, konpu } => {
             use oxidtr::backend::typescript::TsTestRunner;
             let config = GenerateConfig {
                 target,
@@ -97,6 +100,7 @@ fn main() {
                     TestRunnerArg::Bun => TsTestRunner::Bun,
                     TestRunnerArg::Vitest => TsTestRunner::Vitest,
                 },
+                konpu,
             };
             match generate::run(&model, &config) {
                 Ok(result) => {

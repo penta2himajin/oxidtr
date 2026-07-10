@@ -1,4 +1,5 @@
 pub mod nodes;
+pub mod algebra;
 
 use crate::parser::ast::{AlloyModel, SigDecl, FactDecl, PredDecl, FunDecl, AssertDecl};
 use nodes::*;

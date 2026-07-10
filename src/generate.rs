@@ -55,6 +55,8 @@ pub struct GenerateConfig {
     pub schema: Option<bool>,
     /// Test runner for TypeScript target (default: Bun).
     pub ts_test_runner: TsTestRunner,
+    /// Emit konpu annotations for algebraic structures proven by Alloy facts.
+    pub konpu: bool,
 }
 
 impl GenerateConfig {
@@ -67,6 +69,7 @@ impl GenerateConfig {
             features: Vec::new(),
             schema: None,
             ts_test_runner: TsTestRunner::Bun,
+            konpu: false,
         }
     }
 }
@@ -95,6 +98,7 @@ pub enum WarningKind {
     UnconstrainedTransitivity,
     UnhandledResponsePattern,
     MissingErrorPropagation,
+    KonpuSingletonIdentity,
 }
 
 #[derive(Debug)]
@@ -156,7 +160,33 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
     let ir = ir::lower(&model)?;
 
     // Analyze for warnings
-    let warnings = analyze_warnings(&ir);
+    let mut warnings = analyze_warnings(&ir);
+
+    // konpu: detect algebraic structures proven by facts (annotation injection below).
+    // Warn when an identity is a one-sig: the annotation resolves, but oxidtr can't
+    // construct the identity as a carrier value, so identity-law tests are skipped.
+    let konpu_facts = if config.konpu { ir::algebra::detect(&ir) } else { Vec::new() };
+    for f in &konpu_facts {
+        if let Some(id) = &f.identity {
+            let is_one_sig = ir.structures.iter().any(|s| {
+                s.name == *id && s.sig_multiplicity == SigMultiplicity::One
+            });
+            if is_one_sig {
+                warnings.push(Warning {
+                    kind: WarningKind::KonpuSingletonIdentity,
+                    message: format!(
+                        "{} の単位元 {} は one sig — carrier 値を構成できず単位元 law test は生成されない",
+                        f.sig, id
+                    ),
+                    location: format!("sig {}", f.sig),
+                    suggestion: Some(format!(
+                        "fun {}: {} {{ ... }} でモデル化すると単位元が {} 値になり law test まで書ける",
+                        id.to_lowercase(), f.sig, f.sig
+                    )),
+                });
+            }
+        }
+    }
 
     // Check warning level
     if config.warnings == WarningLevel::Error && !warnings.is_empty() {
@@ -221,6 +251,14 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
         }
     }
 
+    // konpu annotations: inject the detected structures (facts computed above).
+    // Rust only for now — comment-style backends (ts/swift/kotlin) come next.
+    if config.konpu && matches!(config.target.as_str(), "rust") {
+        for file in &mut files {
+            file.content = inject_konpu_rust(&file.content, &konpu_facts);
+        }
+    }
+
     // Write output files
     let output_dir = Path::new(&config.output_dir);
     std::fs::create_dir_all(output_dir)?;
@@ -249,6 +287,46 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
         files_written,
         warnings,
     })
+}
+
+/// Rust konpu attribute for a proven algebraic structure, e.g.
+/// `#[konpu::monoid(op = "add", identity = "Zero")]`.
+fn konpu_attr_rust(f: &ir::algebra::AlgebraFact) -> String {
+    let mut kwargs = format!("op = {:?}", f.op);
+    if let Some(id) = &f.identity {
+        kwargs.push_str(&format!(", identity = {id:?}"));
+    }
+    if let Some(inv) = &f.inverse {
+        kwargs.push_str(&format!(", inverse = {inv:?}"));
+    }
+    format!("#[konpu::{}({})]", f.kind.head(), kwargs)
+}
+
+/// Insert konpu attributes above the matching `pub struct <Sig>` declarations.
+// ponytail: line-scan on deterministic generated output; upgrade to threading
+// through generate_struct only if the output shape ever stops being line-simple.
+fn inject_konpu_rust(content: &str, facts: &[ir::algebra::AlgebraFact]) -> String {
+    if facts.is_empty() {
+        return content.to_string();
+    }
+    let mut out = String::with_capacity(content.len() + 64 * facts.len());
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("pub struct ") {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if let Some(f) = facts.iter().find(|f| f.sig == name) {
+                let indent = &line[..line.len() - trimmed.len()];
+                out.push_str(indent);
+                out.push_str(&konpu_attr_rust(f));
+                out.push('\n');
+            }
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 /// AST-level warning analysis from the README spec.

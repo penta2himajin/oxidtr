@@ -87,6 +87,7 @@ one sig UnreferencedSig          extends WarningKind {}
 one sig UnconstrainedTransitivity extends WarningKind {}
 one sig UnhandledResponsePattern extends WarningKind {}
 one sig MissingErrorPropagation  extends WarningKind {}
+one sig KonpuSingletonIdentity   extends WarningKind {}
 
 abstract sig WarningLevel {}
 one sig Error extends WarningLevel {}
@@ -387,6 +388,23 @@ fact ExtractedImplCardinality { all ei: ExtractedImpl | #ei.exStructs = #ei.exSt
 fact ExtractedImplFnsCardinality { all ei: ExtractedImpl | #ei.exFns = #ei.exFns }
 fact ExtractedStructFieldsCardinality { all es: ExtractedStruct | #es.exStructFields = #es.exStructFields }
 fact FactCoveragePairwiseCardinality { all fc: FactCoverage | #fc.pairwise = #fc.pairwise }
+
+-------------------------------------------------------------------------------
+-- Algebra detection (--konpu): structures proven by Alloy facts
+-------------------------------------------------------------------------------
+
+abstract sig AlgebraKind {}
+one sig Semigroup extends AlgebraKind {}
+one sig Monoid    extends AlgebraKind {}
+one sig Group     extends AlgebraKind {}
+
+sig AlgebraFact {
+  algebraSig:      one SigDecl,
+  algebraKind:     one AlgebraKind,
+  algebraOp:       one SigDecl,
+  algebraIdentity: lone SigDecl,
+  algebraInverse:  lone SigDecl
+}
 
 -------------------------------------------------------------------------------
 -- Safety assertions

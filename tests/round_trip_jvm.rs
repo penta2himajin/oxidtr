@@ -105,7 +105,7 @@ fn check_kotlin_self_hosting() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let check_config = CheckConfig {
@@ -199,7 +199,7 @@ fn check_java_self_hosting() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let check_config = CheckConfig {
