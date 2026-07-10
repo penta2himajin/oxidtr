@@ -318,6 +318,26 @@ fn rust_singleton_unit_struct_with_const() {
         "should generate INSTANCE const:\n{content}");
 }
 
+#[test]
+fn rust_concrete_parent_singleton_test_skipped_not_broken() {
+    // `one sig Zero extends Money` (concrete parent) is a distinguished Money
+    // value oxidtr can't construct. The struct is still emitted (representation
+    // unchanged), but a fact referencing it must NOT produce an assertion using
+    // `&Zero` where `&Money` is expected — that wouldn't typecheck. Such tests
+    // are skipped instead, so the generated crate compiles.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        one sig Zero extends Money {}
+        fun add[a, b: Money]: Money { a }
+        fact Ident { all a: Money | add[a, Zero] = a and add[Zero, a] = a }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(models.contains("pub struct Zero;"), "singleton struct still emitted:\n{models}");
+    let tests = find_file(&files, "tests.rs");
+    assert!(!tests.contains("&Zero"), "must not emit &Zero (type mismatch):\n{tests}");
+    assert!(!tests.contains("invariant_ident"), "identity fact test must be skipped:\n{tests}");
+}
+
 // ── Feature 3: Concrete numeric values in TryFrom ───────────────────────────
 
 #[test]
