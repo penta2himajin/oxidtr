@@ -1,8 +1,84 @@
 # oxidtr
 
-Alloy formal specification models to deterministic code generation, test scaffolding, and structural consistency verification.
+**Write your data model's invariants once in [Alloy](https://alloytools.org/), get types, validators, and tests in 8 languages — deterministically, with no AI in the loop.**
+
+Rust, TypeScript, Kotlin, Java, Swift, Go, C#, and Lean, all generated from a single `.als` spec that stays the source of truth. It also checks existing code against the model and mines Alloy back out of it, so the model and the implementation can't silently drift.
 
 > **oxidtr** is short for *oxidator* (oxidizing agent). [Alloy](https://alloytools.org/) means "alloy" (metal), [Rust](https://www.rust-lang.org/) means "rust" (iron oxide) — oxidtr is the catalyst that turns one into the other.
+
+## Example
+
+A tiny model — a task graph that must stay acyclic:
+
+```alloy
+// task.als
+sig Task {
+  deps: set Task
+}
+
+fact Acyclic {
+  no t: Task | t in t.^deps        // no task transitively depends on itself
+}
+
+assert NoSelfDependency {
+  no t: Task | t in t.deps
+}
+```
+
+```
+oxidtr generate task.als --target rust --output generated/
+```
+
+Out comes a struct, a **validated newtype that enforces the invariant**, the transitive-closure helper the invariant needs, and **real tests** — all from those 10 lines:
+
+```rust
+// generated/task/models.rs
+/// Invariant: Acyclic
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Task {
+    pub deps: BTreeSet<Task>,
+}
+
+// generated/newtypes.rs — construction that can't produce a cyclic Task
+impl TryFrom<Task> for ValidatedTask {
+    type Error = &'static str;
+    fn try_from(value: Task) -> Result<Self, Self::Error> {
+        let tasks = vec![value.clone()];
+        if !tasks.iter().any(|t| tc_deps(t).contains(t)) {
+            Ok(ValidatedTask(value))
+        } else {
+            Err("Acyclic invariant violated")
+        }
+    }
+}
+
+// generated/tests.rs — the assert becomes an executable test
+#[test]
+fn no_self_dependency() {
+    let tasks = vec![default_task()];
+    assert!(!tasks.iter().any(|t| t.deps.contains(t)));
+}
+```
+
+Point it at `--target ts` instead and the same `fact` becomes a runtime validator:
+
+```typescript
+// generated/models.ts
+export interface Task { readonly deps: Set<Task>; }
+
+// generated/validators.ts  — @covers: Acyclic
+export function validateTask(t: Task): string[] {
+  const errors: string[] = [];
+  { const seen = new Set<unknown>(); let cur: unknown = t;
+    while (cur != null) {
+      if (seen.has(cur)) { errors.push("deps must not form a cycle"); break; }
+      seen.add(cur); cur = (cur as Record<string, unknown>).deps;
+    } }
+  return errors;
+}
+```
+
+Swap `--target` for any of the eight backends below to get the equivalent types, validators, and tests in that language. Change the model, re-run, and `oxidtr check` tells you exactly where any hand-written implementation has drifted.
 
 ## What it does
 
@@ -68,6 +144,29 @@ The parser handles the full Alloy structural grammar:
 | C# | `--target cs` | class, enum, abstract class hierarchy | xUnit + boundary | factory + boundary + violation | XML doc comments | T? for nullable, List\<T> for collections |
 | Lean | `--target lean` | structure, inductive | theorem + sorry | — | — | fact → theorem, expr translator (∀/∃/∧/∨/→/↔) |
 
+## Model layout
+
+Per the Alloy 6 spec, **one file = one module**, and a `module X` header may only appear at the top of a file. The recommended layout splits a model into one file per module and wires them together with `open` — this is what the Alloy Analyzer expects:
+
+```
+models/
+  oxidtr-split.als        # main: open oxidtr/{ast,ir,analysis,validated}, cross-module facts
+  oxidtr/
+    ast.als               # module oxidtr/ast       (leaf)
+    ir.als                # module oxidtr/ir         (open oxidtr/ast)
+    analysis.als          # module oxidtr/analysis
+    validated.als         # module oxidtr/validated
+```
+
+`generate`, `check`, and `extract` all take just the main file (or its directory) and follow `open` directives to resolve the whole module graph. Module paths are root-relative (`open oxidtr/ast` resolves from the main file's directory), exactly as in Alloy.
+
+```
+oxidtr generate models/oxidtr-split.als --target rust --output generated/
+oxidtr check    --model models/oxidtr-split.als --impl generated/
+```
+
+A **legacy single-file form** — multiple `module X` blocks stacked in one `.als` — is still read (with a `DEPRECATED` warning) for backward compatibility, but it violates the Alloy spec and won't load in the Alloy Analyzer. Write new models split.
+
 ## Commands
 
 ### `oxidtr generate`
@@ -131,20 +230,20 @@ Produces Alloy `.als` text with:
 
 ## Self-hosting
 
-oxidtr's own domain is modeled in `models/oxidtr.als`. The full round-trip is verified for all targets:
+oxidtr's own domain is modeled as a split module set in `models/oxidtr/` (main file `models/oxidtr-split.als`). The full round-trip is verified for all targets:
 
 ```
-oxidtr.als → generate (Rust/TS/Kotlin/Java/Swift/Go/C#/Lean) → check → 0 diffs
-oxidtr.als → generate → extract → structural + expression match with original
-oxidtr.als → generate (all languages) → extract (multi-lang merge) → unified Alloy model
+oxidtr-split.als → generate (Rust/TS/Kotlin/Java/Swift/Go/C#/Lean) → check → 0 diffs
+oxidtr-split.als → generate → extract → structural + expression match with original
+oxidtr-split.als → generate (all languages) → extract (multi-lang merge) → unified Alloy model
 ```
 
 ## Development
 
 ```bash
-cargo test              # 768 tests
-cargo run -- generate models/oxidtr.als --target rust --output generated
-cargo run -- check --model models/oxidtr.als --impl generated
+cargo test              # 909 tests
+cargo run -- generate models/oxidtr-split.als --target rust --output generated
+cargo run -- check --model models/oxidtr-split.als --impl generated
 cargo run -- extract generated/
 ```
 
