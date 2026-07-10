@@ -164,7 +164,7 @@ fn mine_directory_round_trip_rust_with_all_enrichments() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
     // Mine the whole directory
@@ -186,7 +186,7 @@ fn mine_directory_round_trip_ts_with_all_enrichments() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     oxidtr::generate::run("models/oxidtr.als", &config).unwrap();
 
     let mined = extract::run(out_dir.to_str().unwrap(), None).unwrap();

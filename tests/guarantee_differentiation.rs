@@ -178,7 +178,7 @@ fn schema_auto_included_for_ts() {
         features: vec![],
         schema: None, // use default
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(!result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -199,7 +199,7 @@ fn schema_not_auto_included_for_java() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(!result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -220,7 +220,7 @@ fn schema_not_auto_included_for_rust() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(!result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -241,7 +241,7 @@ fn schema_not_auto_included_for_kotlin() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(!result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -263,7 +263,7 @@ fn schema_flag_overrides_default() {
         features: vec![],
         schema: Some(true),
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -285,7 +285,7 @@ fn schema_flag_disables_for_ts() {
         features: vec![],
         schema: Some(false),
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(!result.files_written.iter().any(|f| f.contains("schemas.json")),
@@ -308,7 +308,7 @@ fn ts_pipeline_generates_validators_file() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     assert!(result.files_written.iter().any(|f| f.contains("validators.ts")),

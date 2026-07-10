@@ -389,6 +389,23 @@ fact ExtractedStructFieldsCardinality { all es: ExtractedStruct | #es.exStructFi
 fact FactCoveragePairwiseCardinality { all fc: FactCoverage | #fc.pairwise = #fc.pairwise }
 
 -------------------------------------------------------------------------------
+-- Algebra detection (--konpu): structures proven by Alloy facts
+-------------------------------------------------------------------------------
+
+abstract sig AlgebraKind {}
+one sig Semigroup extends AlgebraKind {}
+one sig Monoid    extends AlgebraKind {}
+one sig Group     extends AlgebraKind {}
+
+sig AlgebraFact {
+  algebraSig:      one SigDecl,
+  algebraKind:     one AlgebraKind,
+  algebraOp:       one SigDecl,
+  algebraIdentity: lone SigDecl,
+  algebraInverse:  lone SigDecl
+}
+
+-------------------------------------------------------------------------------
 -- Safety assertions
 -------------------------------------------------------------------------------
 

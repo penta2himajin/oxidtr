@@ -87,7 +87,7 @@ fn round_trip_swift_check_consistency() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run(model_path.to_str().unwrap(), &config).unwrap();
 
     let check_config = CheckConfig {

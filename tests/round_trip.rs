@@ -273,7 +273,7 @@ fn check_ts_self_hosting() {
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     generate::run("models/oxidtr.als", &config).unwrap();
 
     let check_config = CheckConfig {

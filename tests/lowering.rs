@@ -168,7 +168,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
         !result.warnings.iter().any(|w| matches!(w.kind, WarningKind::UnhandledResponsePattern)),
@@ -230,7 +230,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     assert!(
         !result.warnings.iter().any(|w| matches!(w.kind, WarningKind::UnhandledResponsePattern)),
@@ -259,7 +259,7 @@ use oxidtr::backend::typescript::TsTestRunner;
         features: vec![],
         schema: None,
         ts_test_runner: TsTestRunner::Bun,
-    };
+        konpu: false,    };
     let result = generate::run(model_path.to_str().unwrap(), &config).unwrap();
     // ErrResponse は is_error_name() でエラー扱い → MissingErrorPropagation
     // OkResponse に pred があるが ErrResponse にはない → どちらかの警告が出ることを確認
