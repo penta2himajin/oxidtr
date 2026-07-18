@@ -172,6 +172,22 @@ fn rust_generates_tryfrom_for_newtype() {
 }
 
 #[test]
+fn rust_newtype_calling_fun_imports_operations() {
+    // Regression #61: newtype TryFrom bodies that call a fun (lowered into
+    // operations.rs) must import `super::operations::*` or they don't compile.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fun add[a, b: Money]: Money { a }
+        fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+    "#);
+    let newtypes = find_file(&files, "newtypes.rs");
+    assert!(newtypes.contains("add("),
+        "precondition: newtype body should call add:\n{newtypes}");
+    assert!(newtypes.contains("use super::operations::*;"),
+        "newtypes.rs calling a fun must import operations:\n{newtypes}");
+}
+
+#[test]
 fn rust_no_newtype_for_anonymous_fact() {
     let files = generate_from(r#"
         sig User { role: one Role }

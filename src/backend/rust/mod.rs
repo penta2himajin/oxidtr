@@ -1917,6 +1917,13 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::fixtures::*;").unwrap();
 
+    // Validator bodies may call funs, which are lowered into operations.rs.
+    // Import it whenever that module exists (same gate as its emission).
+    if !ir.operations.is_empty() {
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(out, "use super::operations::*;").unwrap();
+    }
+
     // Check if TC functions are needed → import helpers
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr));
     if needs_helpers {
