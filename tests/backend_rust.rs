@@ -188,6 +188,24 @@ fn rust_newtype_calling_fun_imports_operations() {
 }
 
 #[test]
+fn rust_nullary_fun_reference_is_called() {
+    // Regression #63: a bare reference to a nullary fun (`zero`) must be
+    // emitted as a call `zero()`, not as the fn item `zero` — otherwise
+    // `add(&a, &zero)` is `&fn() -> Money` and does not compile.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fun zero: Money { Money }
+        fun add[a, b: Money]: Money { a }
+        fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(tests.contains("zero()"),
+        "nullary fun reference should be called:\n{tests}");
+    assert!(!tests.contains("&zero)") && !tests.contains("&zero "),
+        "bare fn-item reference `&zero` must not appear:\n{tests}");
+}
+
+#[test]
 fn rust_no_newtype_for_anonymous_fact() {
     let files = generate_from(r#"
         sig User { role: one Role }

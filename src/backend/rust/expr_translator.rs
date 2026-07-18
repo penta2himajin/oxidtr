@@ -555,6 +555,17 @@ pub fn is_lone_field(field_name: &str, ir: &OxidtrIR) -> bool {
     matches!(field_mult(field_name, ir), Some((Multiplicity::Lone, _)))
 }
 
+/// True when `name` is a nullary fun — a fun with no params and no receiver,
+/// lowered to `fn name() -> T`. A bare reference to it is a call in Alloy.
+fn is_nullary_fun(name: &str, ir: &OxidtrIR) -> bool {
+    ir.operations.iter().any(|op| {
+        op.name == name
+            && op.params.is_empty()
+            && op.receiver_sig.is_none()
+            && op.return_type.is_some()
+    })
+}
+
 fn translate_inner_ir(
     expr: &Expr,
     parens_if_complex: bool,
@@ -576,6 +587,11 @@ fn translate_inner_ir(
                         return format!("{parent}::{name}");
                     }
                 }
+            }
+            // #63: a bare reference to a nullary fun (`zero`) is a call in Alloy;
+            // it lowers to `fn zero() -> T`, so emit `zero()` rather than the fn item.
+            if is_nullary_fun(name, ir) {
+                return format!("{name}()");
             }
             name.clone()
         }
