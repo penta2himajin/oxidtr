@@ -2539,6 +2539,10 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         Vec::new()
     }).collect();
 
+    // Fixed-value fields (one sig + fact { Sig.field = constant }) render as
+    // const methods on unit variants — mirror that when choosing fixture shape.
+    let fixed_values = analyze::fixed_value_fields(ir);
+
     // Generate enum default fixtures (prefer variant referenced in existential facts)
     for s in &ir.structures {
         if !s.is_enum { continue; }
@@ -2547,16 +2551,51 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             _ => continue,
         };
         let enum_snake = to_snake_case(&s.name);
-        let is_unit = |v: &&String| struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty());
-        // Prefer a unit variant that's referenced in existential facts
+        // Effective fields of a variant = the abstract parent's fields (folded
+        // into every variant during lowering) + the variant sig's own fields.
+        // This must match generate_enum, or the fixture references a shape the
+        // enum doesn't have.
+        let effective_fields = |v: &str| -> Vec<&IRField> {
+            let child_fields = struct_map.get(v).map(|st| st.fields.iter().collect::<Vec<_>>()).unwrap_or_default();
+            s.fields.iter().chain(child_fields).collect()
+        };
+        // Mirror generate_enum::variant_is_unit — a variant renders as a unit
+        // (bare `Variant`, no braces) when it has no effective fields, or is a
+        // singleton whose every field is fixed by a fact (→ const method).
+        let is_unit = |v: &&String| {
+            let fields = effective_fields(v);
+            if fields.is_empty() { return true; }
+            let is_singleton = struct_map.get(v.as_str())
+                .map_or(false, |c| c.sig_multiplicity == SigMultiplicity::One);
+            is_singleton && fields.iter()
+                .all(|f| fixed_values.contains_key(&((*v).clone(), f.name.clone())))
+        };
+        // Prefer a unit variant referenced in existential facts, then any unit
+        // variant, then simply the first variant (constructed as a struct).
         let chosen = variants.iter()
             .find(|v| is_unit(v) && existential_variants.contains(&format!("{}::{}", s.name, v)))
-            .or_else(|| variants.iter().find(|v| is_unit(v)));
+            .or_else(|| variants.iter().find(|v| is_unit(v)))
+            .or_else(|| variants.first());
         if let Some(variant) = chosen {
+            let fields = effective_fields(variant);
             writeln!(out, "/// Factory: default value for enum {}", s.name).unwrap();
             writeln!(out, "#[allow(dead_code)]").unwrap();
             writeln!(out, "pub fn default_{}() -> {} {{", enum_snake, s.name).unwrap();
-            writeln!(out, "    {}::{}", s.name, variant).unwrap();
+            if is_unit(&variant) {
+                writeln!(out, "    {}::{}", s.name, variant).unwrap();
+            } else {
+                writeln!(out, "    {}::{} {{", s.name, variant).unwrap();
+                for f in &fields {
+                    let val = if f.value_type.is_some() {
+                        "BTreeMap::new()".to_string()
+                    } else {
+                        let is_boxed = f.target == s.name || cyclic.contains(&(variant.clone(), f.name.clone()));
+                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                    };
+                    writeln!(out, "        {}: {},", f.name, val).unwrap();
+                }
+                writeln!(out, "    }}").unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }

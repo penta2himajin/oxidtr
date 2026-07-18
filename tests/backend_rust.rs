@@ -188,6 +188,26 @@ fn rust_newtype_calling_fun_imports_operations() {
 }
 
 #[test]
+fn rust_enum_struct_variant_fixture_constructs_fields() {
+    // Regression #62: an abstract sig's field is folded into every enum
+    // variant, so the variant is a struct variant. The fixture must construct
+    // its fields — `Transaction::Deposit { value: default_money() }` — not
+    // emit the bare path `Transaction::Deposit`, which does not compile.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        abstract sig Transaction { value: one Money }
+        sig Deposit extends Transaction {}
+        sig Withdrawal extends Transaction {}
+    "#);
+    let fixtures = find_file(&files, "fixtures.rs");
+    assert!(fixtures.contains("value: default_money()"),
+        "enum struct-variant fixture should construct fields:\n{fixtures}");
+    // The bare struct-variant path (no braces) must not appear as a value.
+    assert!(!fixtures.contains("Transaction::Deposit\n") && !fixtures.contains("Transaction::Withdrawal\n"),
+        "bare struct-variant path must not be emitted as a value:\n{fixtures}");
+}
+
+#[test]
 fn rust_nullary_fun_reference_is_called() {
     // Regression #63: a bare reference to a nullary fun (`zero`) must be
     // emitted as a call `zero()`, not as the fn item `zero` — otherwise
