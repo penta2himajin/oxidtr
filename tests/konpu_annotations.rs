@@ -22,6 +22,53 @@ fn gen_rust(src: &str, konpu: bool) -> String {
     fs::read_to_string(dir.join("models.rs")).unwrap()
 }
 
+fn gen_rust_tests(src: &str, konpu: bool) -> String {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
+    let _ = fs::remove_dir_all(&dir);
+    let model = dir.join("model.als");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(&model, src).unwrap();
+
+    let mut config = GenerateConfig::new("rust", dir.to_str().unwrap());
+    config.warnings = generate::WarningLevel::Off;
+    config.konpu = konpu;
+    generate::run(model.to_str().unwrap(), &config).unwrap();
+    fs::read_to_string(dir.join("tests.rs")).unwrap()
+}
+
+// Fun-form identity (not a `one sig`), so the identity law tests are actually
+// generated — this is the shape `--konpu` recommends.
+const MONOID_FUN: &str = r#"
+sig Money { amount: one Int }
+fun zero: Money { Money }
+fun add[a, b: Money]: Money { a }
+fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
+"#;
+
+#[test]
+fn konpu_law_annotations_on_invariant_tests() {
+    // Regression #65: --konpu must tag law tests so konpu doesn't warn
+    // MissingLawTest even though the laws are tested.
+    let out = gen_rust_tests(MONOID_FUN, true);
+    assert!(out.contains("#[konpu::law(associativity)]"),
+        "assoc test should carry the associativity law annotation:\n{out}");
+    assert!(out.contains("#[konpu::law(left_identity, right_identity)]"),
+        "ident test should carry both identity-side annotations:\n{out}");
+    // The annotation must sit on the matching test.
+    let idx = out.find("#[konpu::law(associativity)]").unwrap();
+    assert!(out[idx..].contains("fn invariant_assoc"),
+        "associativity annotation must precede invariant_assoc:\n{out}");
+}
+
+#[test]
+fn no_law_annotations_without_konpu_flag() {
+    let out = gen_rust_tests(MONOID_FUN, false);
+    assert!(!out.contains("konpu::law"),
+        "flag off must not emit law annotations:\n{out}");
+}
+
 const MONOID: &str = r#"
 sig Money { amount: one Int }
 one sig Zero extends Money {}

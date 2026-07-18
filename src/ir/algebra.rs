@@ -35,6 +35,11 @@ pub struct AlgebraFact {
     pub op: String,
     pub identity: Option<String>,
     pub inverse: Option<String>,
+    /// Named facts that prove each law, paired with the konpu law tokens they
+    /// witness (e.g. `("Assoc", ["associativity"])`, `("Ident", ["left_identity",
+    /// "right_identity"])`). Used to tag the generated law tests with
+    /// `#[konpu::law(...)]` so konpu doesn't report MissingLawTest.
+    pub laws: Vec<(String, Vec<String>)>,
 }
 
 /// Detect algebraic structures proven by the model's facts + assertions.
@@ -67,9 +72,58 @@ pub fn detect(ir: &OxidtrIR) -> Vec<AlgebraFact> {
             (Some(_), None) => AlgebraKind::Monoid,
             (None, _) => AlgebraKind::Semigroup,
         };
-        out.push(AlgebraFact { sig, kind, op, identity, inverse });
+        // Map each *named* fact to the konpu law tokens it proves, so the
+        // generated law tests can be annotated. Only assoc + identity are
+        // emitted — the tokens konpu expects for those are confirmed.
+        // ponytail: group `invertibility` deferred until its konpu token is
+        // confirmed; a group's inverse test stays un-annotated for now.
+        let mut laws: Vec<(String, Vec<String>)> = Vec::new();
+        for c in &ir.constraints {
+            let Some(name) = &c.name else { continue };
+            let mut tokens: Vec<String> = Vec::new();
+            if matches_assoc(&c.expr, &op, &sig) {
+                tokens.push("associativity".to_string());
+            }
+            if let Some(id) = &identity {
+                for side in identity_sides(&c.expr, &op, &sig, id) {
+                    tokens.push(side.to_string());
+                }
+            }
+            if !tokens.is_empty() {
+                laws.push((name.clone(), tokens));
+            }
+        }
+        out.push(AlgebraFact { sig, kind, op, identity, inverse, laws });
     }
     out
+}
+
+/// Which identity sides a fact proves: `op[e, a] = a` → `left_identity`,
+/// `op[a, e] = a` → `right_identity`. Returned in canonical (left, right) order.
+fn identity_sides(law: &Expr, op: &str, sig: &str, identity: &str) -> Vec<&'static str> {
+    let mut left = false;
+    let mut right = false;
+    if let Some((vars, body)) = all_over(law, sig) {
+        if let Some(&a) = vars.first() {
+            for conj in conjuncts(body) {
+                if let Expr::Comparison { op: CompareOp::Eq, left: l, right: r } = conj {
+                    if !is_var(r, a) { continue; }
+                    if let Some((name, x, y)) = as_binop(l) {
+                        if name != op { continue; }
+                        if is_var(y, a) && is_var(x, identity) {
+                            left = true;
+                        } else if is_var(x, a) && is_var(y, identity) {
+                            right = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut sides = Vec::new();
+    if left { sides.push("left_identity"); }
+    if right { sides.push("right_identity"); }
+    sides
 }
 
 /// Binary operations: `fun op[a, b: S]: S` (free) or `fun (r: S) op[b: S]: S`

@@ -268,7 +268,12 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
         };
         for file in &mut files {
             file.content = if matches!(config.target.as_str(), "rust") {
-                inject_konpu_rust(&file.content, &konpu_facts)
+                let injected = inject_konpu_rust(&file.content, &konpu_facts);
+                if file.path == "tests.rs" {
+                    inject_konpu_law_rust(&injected, &konpu_facts)
+                } else {
+                    injected
+                }
             } else if let Some(prefixes) = comment_prefixes {
                 inject_konpu_comment(&file.content, &konpu_facts, prefixes)
             } else {
@@ -343,6 +348,56 @@ fn inject_konpu_rust(content: &str, facts: &[ir::algebra::AlgebraFact]) -> Strin
             }
         }
         out.push_str(line);
+    }
+    out
+}
+
+/// Insert `#[konpu::law(...)]` above the generated law tests, so konpu sees the
+/// laws its `#[konpu::monoid(...)]` annotation requires and doesn't report
+/// MissingLawTest. Test names follow `invariant_<snake(fact)>`.
+// ponytail: line-scan on deterministic generated output, same as inject_konpu_rust.
+fn inject_konpu_law_rust(content: &str, facts: &[ir::algebra::AlgebraFact]) -> String {
+    use std::collections::HashMap;
+    let mut law_map: HashMap<String, Vec<String>> = HashMap::new();
+    for f in facts {
+        for (fact_name, tokens) in &f.laws {
+            law_map.insert(format!("invariant_{}", to_snake_case(fact_name)), tokens.clone());
+        }
+    }
+    if law_map.is_empty() {
+        return content.to_string();
+    }
+    let mut out = String::with_capacity(content.len() + 48 * law_map.len());
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        if let Some(rest) = trimmed.strip_prefix("fn ") {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if let Some(tokens) = law_map.get(&name) {
+                let indent = &line[..line.len() - trimmed.len()];
+                out.push_str(indent);
+                out.push_str(&format!("#[konpu::law({})]\n", tokens.join(", ")));
+            }
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+/// PascalCase → snake_case, matching the Rust backend's test-name derivation.
+fn to_snake_case(s: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if c.is_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_lowercase().next().unwrap());
+        } else {
+            out.push(c);
+        }
     }
     out
 }
