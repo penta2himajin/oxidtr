@@ -73,10 +73,9 @@ pub fn detect(ir: &OxidtrIR) -> Vec<AlgebraFact> {
             (None, _) => AlgebraKind::Semigroup,
         };
         // Map each *named* fact to the konpu law tokens it proves, so the
-        // generated law tests can be annotated. Only assoc + identity are
-        // emitted — the tokens konpu expects for those are confirmed.
-        // ponytail: group `invertibility` deferred until its konpu token is
-        // confirmed; a group's inverse test stays un-annotated for now.
+        // generated law tests can be annotated: associativity (semigroup),
+        // left/right_identity (monoid), inverse_left/right (group). Tokens
+        // confirmed against konpu's law_from_name / all_law_requirements.
         let mut laws: Vec<(String, Vec<String>)> = Vec::new();
         for c in &ir.constraints {
             let Some(name) = &c.name else { continue };
@@ -86,6 +85,11 @@ pub fn detect(ir: &OxidtrIR) -> Vec<AlgebraFact> {
             }
             if let Some(id) = &identity {
                 for side in identity_sides(&c.expr, &op, &sig, id) {
+                    tokens.push(side.to_string());
+                }
+            }
+            if let (Some(id), Some(inv)) = (&identity, &inverse) {
+                for side in inverse_sides(&c.expr, &op, &sig, id, inv) {
                     tokens.push(side.to_string());
                 }
             }
@@ -123,6 +127,37 @@ fn identity_sides(law: &Expr, op: &str, sig: &str, identity: &str) -> Vec<&'stat
     let mut sides = Vec::new();
     if left { sides.push("left_identity"); }
     if right { sides.push("right_identity"); }
+    sides
+}
+
+/// Which inverse sides a fact proves: `op[inv[a], a] = e` → `inverse_left`,
+/// `op[a, inv[a]] = e` → `inverse_right`. konpu's group requires both (tokens
+/// confirmed against konpu `law_from_name` / `all_law_requirements`).
+fn inverse_sides(law: &Expr, op: &str, sig: &str, identity: &str, inverse: &str) -> Vec<&'static str> {
+    let mut left = false;
+    let mut right = false;
+    if let Some((vars, body)) = all_over(law, sig) {
+        if let Some(&a) = vars.first() {
+            for conj in conjuncts(body) {
+                if let Expr::Comparison { op: CompareOp::Eq, left: l, right: r } = conj {
+                    if !is_var(r, identity) { continue; }
+                    if let Some((name, x, y)) = as_binop(l) {
+                        if name != op { continue; }
+                        let x_is_inv = unary_of(x, a) == Some(inverse);
+                        let y_is_inv = unary_of(y, a) == Some(inverse);
+                        if x_is_inv && is_var(y, a) {
+                            left = true;
+                        } else if is_var(x, a) && y_is_inv {
+                            right = true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut sides = Vec::new();
+    if left { sides.push("inverse_left"); }
+    if right { sides.push("inverse_right"); }
     sides
 }
 
