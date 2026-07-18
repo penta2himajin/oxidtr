@@ -222,6 +222,37 @@ pub fn add_user(u: &User) -> Result<(), String> { todo!() }
 }
 
 #[test]
+fn check_no_drift_on_own_enum_variant_output() {
+    // Regression #64: an abstract sig's field is folded into every enum
+    // variant during generation. check must fold those variant fields back
+    // to the parent, so its own unmodified output reports 0 diffs.
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = dir.path().join("model.als");
+    let impl_dir = dir.path().join("gen");
+
+    fs::write(&model_path, r#"
+sig Money { amount: one Int }
+abstract sig Transaction { value: one Money }
+sig Deposit extends Transaction {}
+sig Withdrawal extends Transaction {}
+"#).unwrap();
+
+    oxidtr::generate::run(
+        model_path.to_str().unwrap(),
+        &oxidtr::generate::GenerateConfig::new("rust", impl_dir.to_str().unwrap()),
+    ).expect("generate should succeed");
+
+    let result = check::run(
+        model_path.to_str().unwrap(),
+        &CheckConfig { impl_dir: impl_dir.to_str().unwrap().to_string() },
+    ).unwrap();
+
+    assert!(result.is_ok(),
+        "check on own generate output should report 0 diffs, got: {:?}", result.diffs);
+}
+
+#[test]
 fn check_run_detects_missing_struct() {
     use std::fs;
     let dir = tempfile::tempdir().unwrap();

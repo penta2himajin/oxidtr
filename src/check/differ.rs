@@ -112,6 +112,7 @@ pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
+    remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, true));
     diffs
@@ -124,6 +125,7 @@ pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, v
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
+    remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
@@ -136,6 +138,7 @@ pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validat
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
+    remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
@@ -145,8 +148,60 @@ pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validat
 pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
     remove_seq_set_mismatches(&mut diffs);
+    remove_folded_variant_fields(ir, &mut diffs);
     diffs.extend(diff_validations(ir, validation_sources, false));
     diffs
+}
+
+/// Fold abstract-parent fields into enum variants.
+///
+/// During generation an abstract sig's fields are copied into every enum
+/// variant, so the extracted impl shows the field on each variant instead of
+/// on the parent. That produces a spurious `MISSING_FIELD(parent.f)` plus one
+/// `EXTRA_FIELD(variant.f)` per variant on the tool's own output. When the
+/// model's parent field appears (as extra) on every child variant, drop the
+/// whole set — it's the same field, folded.
+fn remove_folded_variant_fields(ir: &OxidtrIR, diffs: &mut Vec<DiffItem>) {
+    use std::collections::{HashMap, HashSet};
+
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    for s in &ir.structures {
+        if let Some(p) = &s.parent {
+            children.entry(p.as_str()).or_default().push(s.name.as_str());
+        }
+    }
+
+    let mut drop_missing: HashSet<(String, String)> = HashSet::new();
+    let mut drop_extra: HashSet<(String, String)> = HashSet::new();
+
+    for parent in &ir.structures {
+        let Some(kids) = children.get(parent.name.as_str()) else { continue };
+        if kids.is_empty() { continue; }
+        for f in &parent.fields {
+            let has_missing = diffs.iter().any(|d| matches!(d,
+                DiffItem::MissingField { struct_name, field_name }
+                    if struct_name.as_str() == parent.name && field_name.as_str() == f.name));
+            if !has_missing { continue; }
+            let all_kids_carry = kids.iter().all(|k| diffs.iter().any(|d| matches!(d,
+                DiffItem::ExtraField { struct_name, field_name }
+                    if struct_name.as_str() == *k && field_name.as_str() == f.name)));
+            if all_kids_carry {
+                drop_missing.insert((parent.name.clone(), f.name.clone()));
+                for k in kids {
+                    drop_extra.insert(((*k).to_string(), f.name.clone()));
+                }
+            }
+        }
+    }
+
+    if drop_missing.is_empty() { return; }
+    diffs.retain(|d| match d {
+        DiffItem::MissingField { struct_name, field_name } =>
+            !drop_missing.contains(&(struct_name.clone(), field_name.clone())),
+        DiffItem::ExtraField { struct_name, field_name } =>
+            !drop_extra.contains(&(struct_name.clone(), field_name.clone())),
+        _ => true,
+    });
 }
 
 /// Remove VarMismatch diffs when the model has no var fields at all.
