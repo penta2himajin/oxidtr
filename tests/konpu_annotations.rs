@@ -69,6 +69,29 @@ fn no_law_annotations_without_konpu_flag() {
         "flag off must not emit law annotations:\n{out}");
 }
 
+const GROUP_FUN: &str = r#"
+sig Elem {}
+fun e: Elem { Elem }
+fun op[a, b: Elem]: Elem { a }
+fun inv[a: Elem]: Elem { a }
+fact Assoc { all a, b, c: Elem | op[op[a, b], c] = op[a, op[b, c]] }
+fact Ident { all a: Elem | op[a, e] = a and op[e, a] = a }
+fact Inverse { all a: Elem | op[a, inv[a]] = e and op[inv[a], a] = e }
+"#;
+
+#[test]
+fn konpu_group_inverse_law_annotation() {
+    // konpu's law tokens for a group's inverse are inverse_left / inverse_right
+    // (verified against konpu law_from_name / all_law_requirements) — not
+    // "invertibility". The inverse-law test must carry both.
+    let out = gen_rust_tests(GROUP_FUN, true);
+    assert!(out.contains("#[konpu::law(inverse_left, inverse_right)]"),
+        "inverse-law test should carry both inverse-side annotations:\n{out}");
+    let idx = out.find("#[konpu::law(inverse_left, inverse_right)]").unwrap();
+    assert!(out[idx..].contains("fn invariant_inverse"),
+        "inverse annotation must precede invariant_inverse:\n{out}");
+}
+
 const MONOID: &str = r#"
 sig Money { amount: one Int }
 one sig Zero extends Money {}
