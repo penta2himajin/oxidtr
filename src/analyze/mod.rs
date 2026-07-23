@@ -1077,47 +1077,6 @@ pub fn is_tautological_body(body: &[Expr]) -> bool {
     })
 }
 
-/// Collect the free variable names referenced anywhere within an expression
-/// (walks into field accesses, comparisons, logic, function args, etc.).
-/// Variables locally bound by a `Quantifier` are excluded, since they aren't
-/// free in the surrounding scope. Used to determine which of an operation's
-/// parameters a single conjunct of its body actually needs.
-pub fn collect_var_refs(expr: &Expr, out: &mut HashSet<String>) {
-    match expr {
-        Expr::VarRef(name) => {
-            out.insert(name.clone());
-        }
-        Expr::IntLiteral(_) => {}
-        Expr::FieldAccess { base, .. } => collect_var_refs(base, out),
-        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
-        | Expr::MultFormula { expr: inner, .. } | Expr::Prime(inner)
-        | Expr::TemporalUnary { expr: inner, .. } => collect_var_refs(inner, out),
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
-        | Expr::TemporalBinary { left, right, .. } => {
-            collect_var_refs(left, out);
-            collect_var_refs(right, out);
-        }
-        Expr::Quantifier { bindings, body, .. } => {
-            for b in bindings {
-                collect_var_refs(&b.domain, out);
-            }
-            let mut inner = HashSet::new();
-            collect_var_refs(body, &mut inner);
-            let bound: HashSet<&str> = bindings.iter().flat_map(|b| b.vars.iter().map(String::as_str)).collect();
-            out.extend(inner.into_iter().filter(|v| !bound.contains(v.as_str())));
-        }
-        Expr::FunApp { receiver, args, .. } => {
-            if let Some(r) = receiver {
-                collect_var_refs(r, out);
-            }
-            for a in args {
-                collect_var_refs(a, out);
-            }
-        }
-    }
-}
-
 /// Check if an expression only references parameter names (no state fields).
 fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
     match expr {
@@ -1755,47 +1714,5 @@ mod tautological_body_tests {
             right: Box::new(Expr::VarRef("b".to_string())),
         };
         assert!(!is_tautological_body(&[tauto, non_tauto]));
-    }
-}
-
-#[cfg(test)]
-mod collect_var_refs_tests {
-    use super::*;
-
-    #[test]
-    fn field_access_collects_the_base_variable() {
-        let expr = Expr::Comparison {
-            op: CompareOp::In,
-            left: Box::new(Expr::VarRef("sn".to_string())),
-            right: Box::new(Expr::FieldAccess {
-                base: Box::new(Expr::VarRef("ir".to_string())),
-                field: "structures".to_string(),
-            }),
-        };
-        let mut refs = HashSet::new();
-        collect_var_refs(&expr, &mut refs);
-        assert_eq!(refs, HashSet::from(["sn".to_string(), "ir".to_string()]));
-    }
-
-    #[test]
-    fn quantifier_bound_variables_are_excluded() {
-        let expr = Expr::Quantifier {
-            kind: QuantKind::All,
-            bindings: vec![QuantBinding {
-                vars: vec!["x".to_string()],
-                domain: Expr::VarRef("Thing".to_string()),
-                disj: false,
-            }],
-            body: Box::new(Expr::Comparison {
-                op: CompareOp::Eq,
-                left: Box::new(Expr::VarRef("x".to_string())),
-                right: Box::new(Expr::VarRef("outer".to_string())),
-            }),
-        };
-        let mut refs = HashSet::new();
-        collect_var_refs(&expr, &mut refs);
-        // "x" is bound by the quantifier, not free; "Thing" (the domain) and
-        // "outer" (referenced in the body but not bound here) are free.
-        assert_eq!(refs, HashSet::from(["Thing".to_string(), "outer".to_string()]));
     }
 }

@@ -78,16 +78,27 @@ fn generate_enum_for_abstract_sig() {
 }
 
 #[test]
-fn generate_operation_stub() {
+fn generate_operation_body_is_translated_not_stubbed() {
     let files = generate_from(r#"
         sig User {}
         sig Role {}
         pred assign[u: one User, r: one Role] { u != r }
     "#);
     let content = find_file(&files, "operations.rs");
-    assert!(content.contains("fn assign"));
-    assert!(content.contains("user: &User") || content.contains("u: &User"));
-    assert!(content.contains("todo!"));
+    assert!(content.contains("pub fn assign(u: &User, r: &Role) -> bool"));
+    assert!(content.contains("u != r"));
+    assert!(!content.contains("todo!"), "a translatable body must not be a stub");
+}
+
+#[test]
+fn generate_operation_with_no_body_is_still_a_stub() {
+    let files = generate_from(r#"
+        sig Thing {}
+        pred noop[t: one Thing] {}
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn noop"));
+    assert!(content.contains("todo!"), "an operation with no body at all has nothing to translate");
 }
 
 #[test]
@@ -103,7 +114,7 @@ fn generate_tautological_operation_body_is_not_a_stub() {
 }
 
 #[test]
-fn generate_multi_clause_operation_decomposes_into_clause_helpers() {
+fn generate_multi_clause_operation_translates_and_joins_with_and() {
     let files = generate_from(r#"
         sig Item {}
         sig Bin { held: set Item }
@@ -113,36 +124,33 @@ fn generate_multi_clause_operation_decomposes_into_clause_helpers() {
         }
     "#);
     let content = find_file(&files, "operations.rs");
-    // Two private per-clause helpers, one per conjunct.
-    assert!(content.contains("fn place_clause_1("));
-    assert!(content.contains("fn place_clause_2("));
-    assert!(!content.contains("pub fn place_clause_1("), "clause helpers must be private");
-    assert!(!content.contains("pub fn place_clause_2("), "clause helpers must be private");
-    // Each helper still gets a todo!() stub (its own clause isn't decidable at generation time).
-    assert!(content.contains("todo!(\"oxidtr: implement place_clause_1\")"));
-    assert!(content.contains("todo!(\"oxidtr: implement place_clause_2\")"));
-    // The public function's body is a mechanical composition, not a stub of its own.
-    assert!(content.contains("pub fn place("));
-    assert!(content.contains("place_clause_1("));
-    assert!(content.contains("place_clause_2("));
+    // No per-clause helper functions — both conjuncts translate directly into
+    // the public function's own body, joined with `&&`.
+    assert!(!content.contains("_clause_1"));
+    assert!(!content.contains("_clause_2"));
+    assert!(content.contains("pub fn place(b: &Bin, i: &Item, prior: &Bin) -> bool"));
+    assert!(content.contains("b.held.contains(&i)"));
+    assert!(content.contains("b != prior"));
     assert!(content.contains(" && "));
-    assert!(
-        !content[content.find("pub fn place(").unwrap()..].contains("todo!"),
-        "the composed function itself must not be a stub"
-    );
+    assert!(!content.contains("todo!"));
 }
 
 #[test]
-fn generate_single_clause_operation_is_not_decomposed() {
+fn generate_self_referential_box_field_comparison_derefs_both_sides() {
+    // Regression test for the lowerOneSig bug: a One-multiplicity
+    // self-referential field (boxed to break the type cycle) compared
+    // against a bare operation parameter needs a deref on BOTH sides, not
+    // just the field-access side, or the two operands' types don't match
+    // (`T` from the Box-deref vs `&T` from the parameter).
     let files = generate_from(r#"
-        sig Item {}
-        sig Bin { held: set Item }
-        pred holdsItem[b: one Bin, i: one Item] { i in b.held }
+        sig SigDecl { holder: lone StructureNode }
+        sig StructureNode { origin: one SigDecl }
+        pred originMatches[sn: one StructureNode, s: one SigDecl] { sn.origin = s }
     "#);
     let content = find_file(&files, "operations.rs");
-    assert!(!content.contains("_clause_1"));
-    assert!(content.contains("pub fn holds_item("));
-    assert!(content.contains("todo!(\"oxidtr: implement holdsItem\")"));
+    assert!(content.contains("pub fn origin_matches"));
+    assert!(content.contains("(*sn.origin) == (*s)"));
+    assert!(!content.contains("todo!"));
 }
 
 #[test]

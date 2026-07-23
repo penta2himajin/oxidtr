@@ -479,6 +479,46 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner_ir(expr, false, &collect_sig_names_set(ir), ir)
 }
 
+/// Translate one top-level conjunct of an OPERATION's body. Delegates to
+/// `translate_with_ir` for everything except one shape it can't safely
+/// handle on its own: a One-multiplicity self-referential field access
+/// (e.g. `sn.origin`) translates to an OWNED value via a Box-deref
+/// (`(*sn.origin)`, see the `FieldAccess` case in `translate_inner_ir`), so
+/// comparing it against a bare reference to one of `one_mult_params` — the
+/// operation's own parameter names that are `One`-multiplicity, and so are
+/// `&T`-typed in the generated signature (see `param_type_str` in
+/// `backend/rust/mod.rs`) — needs a matching deref on that side too, or the
+/// two operands' types won't line up (`T` vs `&T`).
+///
+/// This is intentionally NOT folded into `translate_with_ir`/`lone_comparison`
+/// itself: `translate_with_ir` has ~10 other call sites (tests.rs,
+/// invariants.rs, newtypes.rs, …) where a bare `VarRef` may not be a
+/// reference at all (e.g. an owned loop variable) — deref'ing it there would
+/// be wrong. The extra parameter-name context that makes this safe only
+/// exists at the operation-body call site.
+pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &HashSet<String>) -> String {
+    if let Expr::Comparison { op: cmp_op @ (CompareOp::Eq | CompareOp::NotEq), left, right } = expr {
+        let op_str = if matches!(cmp_op, CompareOp::Eq) { "==" } else { "!=" };
+        let sig_names = collect_sig_names_set(ir);
+        let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, &sig_names, ir);
+        if is_self_ref_one_field(left, ir) {
+            if let Expr::VarRef(name) = right.as_ref() {
+                if one_mult_params.contains(name) {
+                    return format!("{} {op_str} (*{name})", ti(left, false));
+                }
+            }
+        }
+        if is_self_ref_one_field(right, ir) {
+            if let Expr::VarRef(name) = left.as_ref() {
+                if one_mult_params.contains(name) {
+                    return format!("(*{name}) {op_str} {}", ti(right, false));
+                }
+            }
+        }
+    }
+    translate_with_ir(expr, ir)
+}
+
 fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
 }
@@ -828,6 +868,16 @@ where
         (None, None) => {
             format!("{} {op} {}", ti(left, false), ti(right, false))
         }
+    }
+}
+
+/// True if `expr` is a FieldAccess to a One-multiplicity self-referential
+/// field — the shape that translates to an owned value via `(*base.field)`
+/// (a Box-deref), as opposed to a borrowed one. See `lone_comparison`.
+fn is_self_ref_one_field(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::FieldAccess { field, .. } => matches!(field_mult(field, ir), Some((Multiplicity::One, true))),
+        _ => false,
     }
 }
 

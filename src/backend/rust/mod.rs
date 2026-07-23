@@ -552,7 +552,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        emit_operation_fn(&mut out, op);
+        emit_operation_fn(&mut out, op, ir);
     }
 
     out
@@ -1001,7 +1001,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        emit_operation_fn(&mut out, op);
+        emit_operation_fn(&mut out, op, ir);
     }
 
     out
@@ -1017,43 +1017,23 @@ fn param_type_str(p: &IRParam) -> String {
     }
 }
 
-/// If `op`'s body is a genuine multi-clause conjunction (more than one
-/// conjunct, not already a tautology — see `is_tautological_body`), split it
-/// into one clause per conjunct, each carrying only the subset of `op`'s
-/// parameters that specific conjunct actually references. Returns `None` if
-/// decomposition doesn't apply (a single conjunct, already a tautology, or a
-/// conjunct that references none of the operation's parameters — nothing
-/// sound to call a helper with).
-fn decompose_conjunction<'a>(op: &'a OperationNode) -> Option<Vec<(String, Vec<&'a IRParam>, &'a Expr)>> {
-    if op.body.len() <= 1 || analyze::is_tautological_body(&op.body) {
-        return None;
-    }
-    let fn_name = fn_name_for_op(&op.name);
-    let mut clauses = Vec::new();
-    for (i, expr) in op.body.iter().enumerate() {
-        let mut refs = HashSet::new();
-        analyze::collect_var_refs(expr, &mut refs);
-        let clause_params: Vec<&IRParam> = op.params.iter().filter(|p| refs.contains(&p.name)).collect();
-        if clause_params.is_empty() {
-            return None;
-        }
-        clauses.push((format!("{fn_name}_clause_{}", i + 1), clause_params, expr));
-    }
-    Some(clauses)
-}
-
 /// Emit a single free-function operation (doc comments, signature, body) to
 /// `out`. Shared by `generate_operations_modular` and `generate_operations`,
 /// which differ only in their file-level `use` headers.
 ///
-/// A genuine multi-clause body (see `decompose_conjunction`) is split into
-/// private per-clause helper functions plus a `pub` function whose body
-/// mechanically ANDs calls to those helpers — no completion needed for the
-/// composition itself, and each helper is a strictly simpler single-clause
-/// stub than the original multi-clause one (measured: a small FIM completer
-/// reliably derives+composes two clauses at once far less often than it
-/// derives one clause alone and then calls two already-named helpers).
-fn emit_operation_fn(out: &mut String, op: &OperationNode) {
+/// The body is generated, not stubbed, whenever possible: a tautological
+/// body (see `is_tautological_body`) becomes a plain `true`; otherwise each
+/// conjunct is compiled to Rust via `expr_translator::translate_with_ir` —
+/// the same deterministic Alloy-expression-to-Rust translator already used
+/// for `tests.rs`/`invariants.rs` — and conjuncts are joined with `&&`. This
+/// replaced an earlier design that asked a small FIM code-completion model to
+/// guess operation bodies (with a decompose-into-per-clause-helpers mitigation
+/// for multi-clause bodies specifically): measured to be unreliable even with
+/// full type context and per-clause decomposition, whereas the translator
+/// deterministically produces compiling, correct bodies for every predicate
+/// in oxidtr's own self-hosting model. `todo!()` remains only for operations
+/// with no body at all (nothing to translate).
+fn emit_operation_fn(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
     let fn_name = fn_name_for_op(&op.name);
     let params = op.params.iter()
         .map(|p| format!("{}: {}", to_snake_case(&p.name), param_type_str(p)))
@@ -1073,46 +1053,23 @@ fn emit_operation_fn(out: &mut String, op: &OperationNode) {
         }
     }
 
-    match decompose_conjunction(op) {
-        Some(clauses) => {
-            for (clause_name, clause_params, expr) in &clauses {
-                let clause_param_str = clause_params.iter()
-                    .map(|p| format!("{}: {}", to_snake_case(&p.name), param_type_str(p)))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                writeln!(out, "/// @clause: {}", analyze::describe_expr(expr)).unwrap();
-                writeln!(out, "fn {clause_name}({clause_param_str}) -> bool {{").unwrap();
-                if analyze::is_tautological_body(std::slice::from_ref(*expr)) {
-                    writeln!(out, "    true").unwrap();
-                } else {
-                    writeln!(out, "    todo!(\"oxidtr: implement {clause_name}\");").unwrap();
-                }
-                writeln!(out, "}}").unwrap();
-                writeln!(out).unwrap();
-            }
-            writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-            let call = clauses.iter()
-                .map(|(clause_name, clause_params, _)| {
-                    let args = clause_params.iter().map(|p| to_snake_case(&p.name)).collect::<Vec<_>>().join(", ");
-                    format!("{clause_name}({args})")
-                })
-                .collect::<Vec<_>>()
-                .join(" && ");
-            writeln!(out, "    {call}").unwrap();
-            writeln!(out, "}}").unwrap();
-            writeln!(out).unwrap();
-        }
-        None => {
-            writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-            if analyze::is_tautological_body(&op.body) {
-                writeln!(out, "    true").unwrap();
-            } else {
-                writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
-            }
-            writeln!(out, "}}").unwrap();
-            writeln!(out).unwrap();
-        }
+    writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
+    if op.body.is_empty() {
+        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+    } else if analyze::is_tautological_body(&op.body) {
+        writeln!(out, "    true").unwrap();
+    } else {
+        let one_mult_params: HashSet<String> = op.params.iter()
+            .filter(|p| p.mult == Multiplicity::One)
+            .map(|p| p.name.clone())
+            .collect();
+        let conjuncts: Vec<String> = op.body.iter()
+            .map(|expr| expr_translator::translate_operation_clause(expr, ir, &one_mult_params))
+            .collect();
+        writeln!(out, "    {}", conjuncts.join(" && ")).unwrap();
     }
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
 }
 
 fn rust_return_type(type_name: &str, mult: &Multiplicity) -> String {
