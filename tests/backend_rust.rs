@@ -82,12 +82,24 @@ fn generate_operation_stub() {
     let files = generate_from(r#"
         sig User {}
         sig Role {}
-        pred assign[u: one User, r: one Role] { u = u }
+        pred assign[u: one User, r: one Role] { u != r }
     "#);
     let content = find_file(&files, "operations.rs");
     assert!(content.contains("fn assign"));
     assert!(content.contains("user: &User") || content.contains("u: &User"));
     assert!(content.contains("todo!"));
+}
+
+#[test]
+fn generate_tautological_operation_body_is_not_a_stub() {
+    let files = generate_from(r#"
+        sig Thing {}
+        pred noop[t: one Thing] { t = t }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn noop"));
+    assert!(content.contains("true"));
+    assert!(!content.contains("todo!"));
 }
 
 #[test]

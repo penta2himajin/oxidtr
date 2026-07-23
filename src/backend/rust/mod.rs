@@ -514,7 +514,11 @@ fn generate_concept_file(
 
                 writeln!(out, "impl {sig} {{").unwrap();
                 writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
-                writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+                if analyze::is_tautological_body(&op.body) {
+                    writeln!(out, "        true").unwrap();
+                } else {
+                    writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+                }
                 writeln!(out, "    }}").unwrap();
                 writeln!(out, "}}").unwrap();
                 writeln!(out).unwrap();
@@ -577,7 +581,11 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
         }
 
         writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        if analyze::is_tautological_body(&op.body) {
+            writeln!(out, "    true").unwrap();
+        } else {
+            writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -773,7 +781,11 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
             };
 
             writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
-            writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+            if analyze::is_tautological_body(&op.body) {
+                writeln!(out, "        true").unwrap();
+            } else {
+                writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+            }
             writeln!(out, "    }}").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -1059,7 +1071,11 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         }
 
         writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        if analyze::is_tautological_body(&op.body) {
+            writeln!(out, "    true").unwrap();
+        } else {
+            writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }

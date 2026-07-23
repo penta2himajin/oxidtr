@@ -113,7 +113,7 @@ fn generate_operation_pre_post_conditions() {
     let files = generate_from(r#"
         sig Account { balance: one Account }
         pred withdraw[a: one Account, amount: one Account] {
-            a.balance = a.balance
+            a.balance = amount.balance
         }
     "#);
     let content = find_file(&files, "operations.rs");
