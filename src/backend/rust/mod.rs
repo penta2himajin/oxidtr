@@ -13,6 +13,7 @@ use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
+use crate::naming::{to_snake_case, fn_name_for_op};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -486,7 +487,7 @@ fn generate_concept_file(
         if let Some(ref sig) = op.receiver_sig {
             if member_set.contains(sig.as_str()) {
                 // Generate impl block for this receiver
-                let fn_name = to_snake_case(&op.name);
+                let fn_name = fn_name_for_op(&op.name);
                 let params = op.params.iter().map(|p| {
                     let type_str = match p.mult {
                         Multiplicity::One => format!("&{}", p.type_name),
@@ -547,7 +548,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        let fn_name = to_snake_case(&op.name);
+        let fn_name = fn_name_for_op(&op.name);
         let params = op.params.iter().map(|p| {
             let type_str = match p.mult {
                 Multiplicity::One => format!("&{}", p.type_name),
@@ -746,7 +747,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
     for (sig_name, ops) in &by_sig {
         writeln!(out, "impl {sig_name} {{").unwrap();
         for op in ops {
-            let fn_name = to_snake_case(&op.name);
+            let fn_name = fn_name_for_op(&op.name);
             let params = op.params.iter().map(|p| {
                 let type_str = match p.mult {
                     Multiplicity::One => format!("&{}", p.type_name),
@@ -1023,7 +1024,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        let fn_name = to_snake_case(&op.name);
+        let fn_name = fn_name_for_op(&op.name);
         let params = op
             .params
             .iter()
@@ -1679,7 +1680,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             };
 
             for op in &ir.operations {
-                let op_name = to_snake_case(&op.name);
+                let op_name = fn_name_for_op(&op.name);
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
                 writeln!(out, "#[test]").unwrap();
@@ -2987,21 +2988,6 @@ fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
         "Bool" => Some("false"),
         _ => None,
     }
-}
-
-fn to_snake_case(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(c.to_lowercase().next().unwrap());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Check if a sig type has existential (some) constraints, meaning all_{plural}s() was generated.
