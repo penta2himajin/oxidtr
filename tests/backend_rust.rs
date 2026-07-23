@@ -103,6 +103,49 @@ fn generate_tautological_operation_body_is_not_a_stub() {
 }
 
 #[test]
+fn generate_multi_clause_operation_decomposes_into_clause_helpers() {
+    let files = generate_from(r#"
+        sig Item {}
+        sig Bin { held: set Item }
+        pred place[b: one Bin, i: one Item, prior: one Bin] {
+            i in b.held
+            b != prior
+        }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    // Two private per-clause helpers, one per conjunct.
+    assert!(content.contains("fn place_clause_1("));
+    assert!(content.contains("fn place_clause_2("));
+    assert!(!content.contains("pub fn place_clause_1("), "clause helpers must be private");
+    assert!(!content.contains("pub fn place_clause_2("), "clause helpers must be private");
+    // Each helper still gets a todo!() stub (its own clause isn't decidable at generation time).
+    assert!(content.contains("todo!(\"oxidtr: implement place_clause_1\")"));
+    assert!(content.contains("todo!(\"oxidtr: implement place_clause_2\")"));
+    // The public function's body is a mechanical composition, not a stub of its own.
+    assert!(content.contains("pub fn place("));
+    assert!(content.contains("place_clause_1("));
+    assert!(content.contains("place_clause_2("));
+    assert!(content.contains(" && "));
+    assert!(
+        !content[content.find("pub fn place(").unwrap()..].contains("todo!"),
+        "the composed function itself must not be a stub"
+    );
+}
+
+#[test]
+fn generate_single_clause_operation_is_not_decomposed() {
+    let files = generate_from(r#"
+        sig Item {}
+        sig Bin { held: set Item }
+        pred holdsItem[b: one Bin, i: one Item] { i in b.held }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(!content.contains("_clause_1"));
+    assert!(content.contains("pub fn holds_item("));
+    assert!(content.contains("todo!(\"oxidtr: implement holdsItem\")"));
+}
+
+#[test]
 fn generate_property_test() {
     let files = generate_from(r#"
         sig A {}
