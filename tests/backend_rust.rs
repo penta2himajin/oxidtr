@@ -1000,6 +1000,26 @@ fn generate_one_mult_field_comparison_against_param_derefs_param() {
 }
 
 #[test]
+fn generate_bare_one_mult_param_comparison_against_literal_derefs_param() {
+    // Regression test: a bare One-mult scalar PARAMETER (not a field access)
+    // compared directly against a literal has no FieldAccess for the
+    // existing one-mult-field-vs-param check (above) to key off, but still
+    // needs a deref — its Rust type is `&i64` (see param_type_str), and
+    // there's no blanket PartialOrd/PartialEq impl bridging `&i64` and a
+    // bare integer literal (`&i64 >= 0` fails: "expected `&i64`, found
+    // integer"). Found generating a standalone test model outside oxidtr's
+    // own self-hosting model, which never happens to compare a bare
+    // one-mult param directly against a literal.
+    let files = generate_from(r#"
+        sig Account {}
+        pred hasNonNegativeBalance[a: one Account, amt: one Int] { amt >= 0 }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("(*amt) >= 0"), "bare one-mult param must be deref'd:\n{content}");
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
 fn enum_variant_fields_resolve_native_types() {
     let files = generate_from(r#"
         abstract sig AlgebraicStructure { rank: one Int, label: one Str }

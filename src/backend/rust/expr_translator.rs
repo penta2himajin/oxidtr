@@ -518,6 +518,41 @@ pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &
             }
         }
     }
+
+    // A bare one-mult-parameter reference has no FieldAccess for the check
+    // above to key off, but is just as `&T`-typed (param_type_str) — and
+    // needs the same deref when compared directly against a literal or
+    // another bare one-mult param, for ANY comparison operator (not just
+    // Eq/NotEq): there's no blanket PartialOrd/PartialEq impl bridging a
+    // reference and a bare value (`&i64 >= 0` fails: "expected `&i64`, found
+    // integer"). Scoped to IntLiteral/VarRef operands only, so it never
+    // second-guesses the FieldAccess-specific handling above or the
+    // Lone-field `.is_none_or()` rewriting inside `translate_with_ir` —
+    // both key off a FieldAccess operand, which this deliberately ignores.
+    if let Expr::Comparison { op, left, right } = expr {
+        let op_str = match op {
+            CompareOp::Eq => "==",
+            CompareOp::NotEq => "!=",
+            CompareOp::Lt => "<",
+            CompareOp::Gt => ">",
+            CompareOp::Lte => "<=",
+            CompareOp::Gte => ">=",
+            CompareOp::In => return translate_with_ir(expr, ir),
+        };
+        let render = |e: &Expr| match e {
+            Expr::VarRef(name) if one_mult_params.contains(name) => Some(format!("(*{name})")),
+            Expr::IntLiteral(n) => Some(n.to_string()),
+            _ => None,
+        };
+        if let (Some(l), Some(r)) = (render(left), render(right)) {
+            let either_is_param = matches!(left.as_ref(), Expr::VarRef(name) if one_mult_params.contains(name))
+                || matches!(right.as_ref(), Expr::VarRef(name) if one_mult_params.contains(name));
+            if either_is_param {
+                return format!("{l} {op_str} {r}");
+            }
+        }
+    }
+
     translate_with_ir(expr, ir)
 }
 
