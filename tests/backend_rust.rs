@@ -154,6 +154,42 @@ fn generate_self_referential_box_field_comparison_derefs_both_sides() {
 }
 
 #[test]
+fn generate_derived_field_body_is_translated_not_stubbed() {
+    // Receiver-based `fun`s (derived fields) previously always got a
+    // `todo!()` stub regardless of body content — the deterministic
+    // translation added for free-function operations didn't cover them.
+    // `this` (Alloy's implicit receiver) must map to `self`, and returning
+    // an owned field by value through `&self` needs `.clone()`.
+    let files = generate_from(r#"
+        sig Item {}
+        sig Bin { held: one Item }
+        fun Bin.contents: one Item { this.held }
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("pub fn contents(&self) -> Item"));
+    assert!(content.contains("self.held.clone()"));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_derived_field_with_tautological_shape_is_not_forced_true() {
+    // `fun`s return a VALUE, not a boolean formula. Even if a fun's body
+    // happens to be structurally shaped like a self-equality tautology (the
+    // same shape `is_tautological_body` short-circuits to `true` for
+    // `pred`s), it must not take that shortcut here: the declared return
+    // type isn't `bool`, so a bare `true` wouldn't even match the return
+    // type. Regression test for is_tautological_body being applied without
+    // checking op.return_type first.
+    let files = generate_from(r#"
+        sig Foo {}
+        fun Foo.echo: one Foo { this = this }
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("pub fn echo(&self) -> Foo"));
+    assert!(!content.contains("        true"), "a fun body must never be replaced by a bare `true`");
+}
+
+#[test]
 fn generate_property_test() {
     let files = generate_from(r#"
         sig A {}
@@ -836,7 +872,8 @@ fn rust_derived_field_generates_impl_method() {
     "#);
     let models = find_file(&files, "models.rs");
     assert!(models.contains("impl Account"), "should generate impl block:\n{models}");
-    assert!(models.contains("fn balance(&self) -> Int"), "should generate method:\n{models}");
+    // `Int` is an Alloy native-alias sig, not a real Rust type — must resolve to `i64`.
+    assert!(models.contains("fn balance(&self) -> i64"), "should generate method:\n{models}");
 }
 
 #[test]
@@ -923,6 +960,43 @@ fn rust_native_type_with_multiplicities() {
     assert!(models.contains("pub tags: BTreeSet<String>,"), "set Str → BTreeSet<String>:\n{models}");
     assert!(models.contains("pub label: Option<String>,"), "lone Str → Option<String>:\n{models}");
     assert!(models.contains("pub scores: Vec<i64>,"), "seq Int → Vec<i64>:\n{models}");
+}
+
+#[test]
+fn rust_native_alias_resolves_in_operation_signature() {
+    // Regression test: struct fields already resolved `Int`/`Str`/... to
+    // native Rust types, but operation return types and parameter types
+    // (`rust_return_type`, `param_type_str`, and their receiver-based
+    // duplicates) emitted the raw Alloy alias name verbatim (`Int`) instead
+    // of `i64` — an undefined-type compile error regardless of body content.
+    let files = generate_from(r#"
+        sig Item {}
+        pred hasCount[i: one Item, n: one Int] {}
+        fun countOf: one Int { 0 }
+    "#);
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("n: &i64"), "Int param should resolve to &i64:\n{ops}");
+    assert!(ops.contains("-> i64"), "Int return type should resolve to i64:\n{ops}");
+    assert!(!ops.contains("&Int"), "must not emit the raw Alloy alias as a param type:\n{ops}");
+    assert!(!ops.contains("-> Int"), "must not emit the raw Alloy alias as a return type:\n{ops}");
+}
+
+#[test]
+fn generate_one_mult_field_comparison_against_param_derefs_param() {
+    // Regression test: the box-deref-both-sides fix only applied to
+    // self-referential/cyclic One-mult fields (`is_self_ref_one_field`, now
+    // `is_one_mult_field_access`). But ANY One-mult field access — boxed or
+    // not — renders as an owned-`T` place, not `&T`; comparing it against a
+    // bare `&T` parameter needs the same deref regardless of boxing.
+    let files = generate_from(r#"
+        sig Cap {}
+        sig Account { cap: one Cap }
+        pred withinCap[a: one Account, c: one Cap] { a.cap = c }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("pub fn within_cap"));
+    assert!(content.contains("a.cap == (*c)"));
+    assert!(!content.contains("todo!"));
 }
 
 #[test]

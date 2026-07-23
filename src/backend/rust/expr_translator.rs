@@ -481,14 +481,16 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
 
 /// Translate one top-level conjunct of an OPERATION's body. Delegates to
 /// `translate_with_ir` for everything except one shape it can't safely
-/// handle on its own: a One-multiplicity self-referential field access
-/// (e.g. `sn.origin`) translates to an OWNED value via a Box-deref
-/// (`(*sn.origin)`, see the `FieldAccess` case in `translate_inner_ir`), so
-/// comparing it against a bare reference to one of `one_mult_params` — the
-/// operation's own parameter names that are `One`-multiplicity, and so are
-/// `&T`-typed in the generated signature (see `param_type_str` in
-/// `backend/rust/mod.rs`) — needs a matching deref on that side too, or the
-/// two operands' types won't line up (`T` vs `&T`).
+/// handle on its own: a `One`-multiplicity field access (e.g. `sn.origin`,
+/// `a.cap`) always translates to an OWNED-`T` place — via an explicit
+/// Box-deref (`(*sn.origin)`) when the field is self-referential/cyclic, or
+/// just a plain `a.cap` otherwise (see the `FieldAccess` case in
+/// `translate_inner_ir`) — never a `&T`. Comparing it against a bare
+/// reference to one of `one_mult_params` — the operation's own parameter
+/// names that are `One`-multiplicity, and so are `&T`-typed in the generated
+/// signature (see `param_type_str` in `backend/rust/mod.rs`) — needs a
+/// matching deref on that side too, or the two operands' types won't line up
+/// (`T` vs `&T`, e.g. `a.cap == c` fails to compile when `c: &Cap`).
 ///
 /// This is intentionally NOT folded into `translate_with_ir`/`lone_comparison`
 /// itself: `translate_with_ir` has ~10 other call sites (tests.rs,
@@ -501,14 +503,14 @@ pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &
         let op_str = if matches!(cmp_op, CompareOp::Eq) { "==" } else { "!=" };
         let sig_names = collect_sig_names_set(ir);
         let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, &sig_names, ir);
-        if is_self_ref_one_field(left, ir) {
+        if is_one_mult_field_access(left, ir) {
             if let Expr::VarRef(name) = right.as_ref() {
                 if one_mult_params.contains(name) {
                     return format!("{} {op_str} (*{name})", ti(left, false));
                 }
             }
         }
-        if is_self_ref_one_field(right, ir) {
+        if is_one_mult_field_access(right, ir) {
             if let Expr::VarRef(name) = left.as_ref() {
                 if one_mult_params.contains(name) {
                     return format!("(*{name}) {op_str} {}", ti(right, false));
@@ -517,6 +519,29 @@ pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &
         }
     }
     translate_with_ir(expr, ir)
+}
+
+/// Translate a derived-field (`fun`) body — the VALUE an operation returns,
+/// as opposed to a `pred`'s boolean formula. Two shapes need adjustment
+/// beyond a plain `translate_with_ir`:
+/// - A body that's just a field projection or the bare receiver
+///   (`this.field`, `this`) translates to a borrowed place through `&self`
+///   (e.g. `self.field`, or `(*self.field)` for a boxed self-referential
+///   field — see `is_one_mult_field_access`); returning that by value needs
+///   a `.clone()` or it won't compile (moving out of a shared reference).
+/// - A body that's a cardinality (`#expr`) translates to `.len()`, which is
+///   `usize` — but Alloy cardinality is always typed `Int` (`i64` here), so
+///   returning it directly needs an `as i64` cast or the return type won't
+///   match.
+/// Other shapes (arithmetic, set unions, …) already produce a correctly
+/// owned/typed value and are left as-is.
+pub fn translate_derived_field_body(expr: &Expr, ir: &OxidtrIR) -> String {
+    let translated = translate_with_ir(expr, ir);
+    match expr {
+        Expr::FieldAccess { .. } | Expr::VarRef(_) => format!("{translated}.clone()"),
+        Expr::Cardinality(_) => format!("{translated} as i64"),
+        _ => translated,
+    }
 }
 
 fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
@@ -618,6 +643,11 @@ fn translate_inner_ir(
         Expr::IntLiteral(n) => n.to_string(),
 
         Expr::VarRef(name) => {
+            // Alloy's implicit receiver keyword in `pred/fun Sig.op[...] { this... }`
+            // is always the method's `&self` — map it unconditionally, wherever it appears.
+            if name == "this" {
+                return "self".to_string();
+            }
             // Bug 3 fix: enum variants (one sig Foo extends Bar) must be qualified
             // as `Bar::Foo` in Rust. Detect by checking whether the name has a parent
             // sig that is itself an enum (abstract sig … {}).
@@ -872,11 +902,12 @@ where
 }
 
 /// True if `expr` is a FieldAccess to a One-multiplicity self-referential
-/// field — the shape that translates to an owned value via `(*base.field)`
-/// (a Box-deref), as opposed to a borrowed one. See `lone_comparison`.
-fn is_self_ref_one_field(expr: &Expr, ir: &OxidtrIR) -> bool {
+/// field — always translates to an owned-`T` place (a Box-deref `(*base.field)`
+/// when the field is self-referential/cyclic, a plain `base.field` otherwise),
+/// never a borrowed `&T`. See `translate_operation_clause`.
+fn is_one_mult_field_access(expr: &Expr, ir: &OxidtrIR) -> bool {
     match expr {
-        Expr::FieldAccess { field, .. } => matches!(field_mult(field, ir), Some((Multiplicity::One, true))),
+        Expr::FieldAccess { field, .. } => matches!(field_mult(field, ir), Some((Multiplicity::One, _))),
         _ => false,
     }
 }
