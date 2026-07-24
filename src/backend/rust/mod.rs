@@ -1798,7 +1798,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
-    // Cross-tests: for each (fact, operation) pair, verify fact is preserved
+    // Cross-tests: for each (fact, operation) pair whose sig types overlap,
+    // verify `Op(...) implies Fact(...)`. Pairs with no sig overlap at all
+    // are skipped outright — most (fact, operation) combinations in a real
+    // model share no sig and would only ever assert something unrelated to
+    // what the operation touches.
+    //
+    // Real `if Op(...) { assert!(Fact(...)); }` bodies are only generated
+    // for the mechanically simple, safe-by-construction case: a free
+    // function (no receiver) `pred` (returns bool) whose params are all
+    // `one`-mult sigs with a fixture. Op params and fact params are bound
+    // independently (no shared-entity var substitution yet — see #73 for
+    // the deeper pairwise-diversity-linked redesign), so this only checks
+    // "whenever Op holds for its own default args, Fact also holds for its
+    // own default args" — weaker than full cross-referential linkage, but
+    // real, always-safe (default fixtures already satisfy their own sig's
+    // facts by construction — same soundness argument as invariant tests),
+    // and a strict improvement over an #[ignore]d `todo!()` stub. Other
+    // shapes (receiver ops, `fun`s, non-`one` params) keep the old stub.
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
         writeln!(out, "// --- Cross-tests: fact × operation ---").unwrap();
         writeln!(out).unwrap();
@@ -1808,42 +1825,69 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 Some(name) => name.clone(),
                 None => continue,
             };
+            if expr_refs_any(&constraint.expr, &concrete_singletons) { continue; }
+            let fact_params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            if fact_params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+                continue;
+            }
+            let fact_sig_types: HashSet<&str> = fact_params.iter().map(|(_, t)| t.as_str()).collect();
 
             for op in &ir.operations {
-                let op_name = fn_name_for_op(&op.name);
-                let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
+                let mut op_sig_types: HashSet<&str> = op.params.iter().map(|p| p.type_name.as_str()).collect();
+                if let Some(r) = &op.receiver_sig { op_sig_types.insert(r.as_str()); }
+                if fact_sig_types.is_disjoint(&op_sig_types) { continue; }
 
-                writeln!(out, "#[test]").unwrap();
-                writeln!(out, "#[ignore]").unwrap();
-                writeln!(out, "fn {test_name}() {{").unwrap();
-                writeln!(
-                    out,
-                    "        // Verify that {} holds after {}",
-                    fact_name, op.name
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // pre: assert!(/* {fact_name} constraint */);",
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // {op_name}(...);"
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // post: assert!(/* {fact_name} constraint */);",
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        todo!(\"oxidtr: implement cross-test {test_name}\");"
-                )
-                .unwrap();
-                writeln!(out, "}}").unwrap();
-                writeln!(out).unwrap();
+                let op_name = fn_name_for_op(&op.name);
+                // Single-sig facts only: `default_X()` is only *guaranteed*
+                // correct against X's own single-sig facts (that's the whole
+                // fixture-generation contract). A fact quantifying 2+ sigs
+                // (e.g. an ownership pattern `some y: B | x in y.field`) can
+                // depend on a relationship between independently-constructed
+                // defaults that isn't guaranteed to hold — binding op/fact
+                // params independently below would risk a spurious failure.
+                let can_call = op.receiver_sig.is_none()
+                    && op.return_type.is_none()
+                    && fact_sig_types.len() == 1
+                    && op.params.iter().all(|p| p.mult == Multiplicity::One && has_fixture.contains(&p.type_name));
+
+                if can_call {
+                    let test_name = format!("{op_name}_implies_{}", to_snake_case(&fact_name));
+                    let fact_body = expr_translator::translate_with_ir(&constraint.expr, ir);
+                    writeln!(out, "/// Cross-test: {} implies {fact_name}", op.name).unwrap();
+                    writeln!(out, "#[test]").unwrap();
+                    writeln!(out, "fn {test_name}() {{").unwrap();
+                    for p in &op.params {
+                        let pname = to_snake_case(&p.name);
+                        let snake = to_snake_case(&p.type_name);
+                        writeln!(out, "    let {pname}: {} = default_{snake}();", p.type_name).unwrap();
+                    }
+                    for (pname, tname) in &fact_params {
+                        if has_fixture.contains(tname) {
+                            let snake = to_snake_case(tname);
+                            writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                        } else {
+                            writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                        }
+                    }
+                    let args: Vec<String> = op.params.iter().map(|p| format!("&{}", to_snake_case(&p.name))).collect();
+                    writeln!(out, "    if {op_name}({}) {{", args.join(", ")).unwrap();
+                    writeln!(out, "        assert!({fact_body}, \"{fact_name} should hold whenever {} holds\");", op.name).unwrap();
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out, "}}").unwrap();
+                    writeln!(out).unwrap();
+                } else {
+                    let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
+                    writeln!(out, "#[test]").unwrap();
+                    writeln!(out, "#[ignore]").unwrap();
+                    writeln!(out, "fn {test_name}() {{").unwrap();
+                    writeln!(out, "        // Verify that {} holds after {}", fact_name, op.name).unwrap();
+                    writeln!(out, "        // pre: assert!(/* {fact_name} constraint */);").unwrap();
+                    writeln!(out, "        // {op_name}(...);").unwrap();
+                    writeln!(out, "        // post: assert!(/* {fact_name} constraint */);").unwrap();
+                    writeln!(out, "        todo!(\"oxidtr: implement cross-test {test_name}\");").unwrap();
+                    writeln!(out, "}}").unwrap();
+                    writeln!(out).unwrap();
+                }
             }
         }
     }

@@ -167,7 +167,7 @@ fn generate_operation_pre_post_conditions() {
 fn generate_cross_test_fact_times_operation() {
     let files = generate_from(r#"
         sig User { role: one Role }
-        sig Role {}
+        sig Role { level: one Int }
         fact UserHasRole { all u: User | u.role = u.role }
         pred changeRole[u: one User, r: one Role] { u.role = r }
     "#);
@@ -176,6 +176,62 @@ fn generate_cross_test_fact_times_operation() {
     assert!(
         content.contains("user_has_role") && content.contains("change_role"),
         "missing cross-test for fact×operation"
+    );
+    // #73: single-sig fact × a free-function `one`-mult pred should get a
+    // real `if Op(...) { assert!(Fact(...)); }` body, not an #[ignore]d todo!().
+    assert!(
+        content.contains("fn change_role_implies_user_has_role"),
+        "expected a real implication cross-test:\n{content}"
+    );
+    assert!(
+        content.contains("if change_role(&u, &r) {"),
+        "expected the real cross-test to call the operation:\n{content}"
+    );
+    assert!(
+        !content.contains("todo!(\"oxidtr: implement cross-test change_role"),
+        "a real cross-test must not fall back to the todo!() stub:\n{content}"
+    );
+}
+
+/// #73: (fact, operation) pairs whose sig types don't overlap at all should
+/// not generate a cross-test — this is the mechanism that shrinks the full
+/// N×M cross product down to only pairs that could plausibly relate.
+#[test]
+fn cross_test_skipped_for_unrelated_sig_types() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        sig Widget { label: one Str }
+        fact UserHasRole { all u: User | u.role = u.role }
+        pred rename[w: one Widget] { some w.label }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        !content.contains("rename") || !content.contains("user_has_role"),
+        "unrelated fact×operation pair (User vs Widget) should not generate a cross-test:\n{content}"
+    );
+}
+
+/// #73 safety: a fact quantifying 2+ sigs (an ownership-style pattern) can
+/// depend on a relationship between independently-constructed defaults that
+/// isn't guaranteed to hold — must keep the safe #[ignore]d stub, not risk
+/// a spurious failure from binding op/fact params independently.
+#[test]
+fn cross_test_falls_back_to_stub_for_multi_sig_fact() {
+    let files = generate_from(r#"
+        sig Box { items: set Item }
+        sig Item {}
+        fact EveryItemBoxed { all i: Item | some b: Box | i in b.items }
+        pred touch[i: one Item] { some i }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("_preserved_after_") && content.contains("#[ignore]"),
+        "multi-sig fact × operation should keep the safe ignored stub:\n{content}"
+    );
+    assert!(
+        !content.contains("_implies_every_item_boxed"),
+        "must not generate a real (unsafe) implication test for a multi-sig fact:\n{content}"
     );
 }
 

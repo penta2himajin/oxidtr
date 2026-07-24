@@ -350,6 +350,14 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
             None => continue,
         };
 
+        // A structurally tautological fact (#74 Stage A: always true
+        // regardless of input, e.g. `#x.field = #x.field`) needs no
+        // validation by definition — its absence from generated sources is
+        // correct, not a gap.
+        if analyze::find_tautological_clause(&constraint.expr).is_some() {
+            continue;
+        }
+
         // Look for the fact name in the combined source texts.
         // For Rust, we look for the snake_case form.
         // For other languages, we look for the original name.
