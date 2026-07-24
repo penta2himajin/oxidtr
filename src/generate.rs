@@ -99,6 +99,7 @@ pub enum WarningKind {
     UnhandledResponsePattern,
     MissingErrorPropagation,
     KonpuSingletonIdentity,
+    TautologicalFact,
 }
 
 #[derive(Debug)]
@@ -575,6 +576,22 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
                     suggestion: None,
                 });
             }
+        }
+    }
+
+    // TAUTOLOGICAL_FACT: a fact contains a clause that's unconditionally true
+    // (e.g. `implies p.x = p.x`) regardless of the quantified variables —
+    // structural only, doesn't judge intent (a reflexivity base case can look
+    // identical to a forgotten placeholder).
+    for c in &ir.constraints {
+        if let Some(clause) = crate::analyze::find_tautological_clause(&c.expr) {
+            let name = c.name.clone().unwrap_or_default();
+            warnings.push(Warning {
+                kind: WarningKind::TautologicalFact,
+                message: format!("{name} に無条件に真となる節がある: {clause}"),
+                location: format!("fact {name}"),
+                suggestion: None,
+            });
         }
     }
 

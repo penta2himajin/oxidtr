@@ -1128,6 +1128,35 @@ pub fn is_tautological_body(body: &[Expr]) -> bool {
     })
 }
 
+/// Find a self-equality (`x = x`, structurally identical operands) reachable
+/// inside a fact's body regardless of quantified-variable values — i.e. a
+/// clause that's unconditionally true no matter what the fact is trying to
+/// constrain. Walks through `Quantifier` bodies and both sides of `and`/
+/// `implies` to find it: a tautological *consequent* of an `implies` makes
+/// the whole implication vacuous (`P implies true` is always true regardless
+/// of `P`), which is the shape most worth flagging, but a tautological
+/// conjunct anywhere is dead weight even inside an otherwise-meaningful fact.
+///
+/// This is advisory only — purely structural, says nothing about whether the
+/// fact's author intended it (a reflexivity base case or a definitional
+/// identity can look identical to a forgotten placeholder). Returns a
+/// human-readable description of the tautological clause found, or `None`.
+pub fn find_tautological_clause(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Comparison { op: CompareOp::Eq, left, right } if left == right => {
+            Some(describe_expr(expr))
+        }
+        Expr::Quantifier { body, .. } => find_tautological_clause(body),
+        Expr::BinaryLogic { op: LogicOp::Implies, left, right } => {
+            find_tautological_clause(right).or_else(|| find_tautological_clause(left))
+        }
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
+            find_tautological_clause(left).or_else(|| find_tautological_clause(right))
+        }
+        _ => None,
+    }
+}
+
 /// Check if an expression only references parameter names (no state fields).
 fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
     match expr {
@@ -1750,6 +1779,63 @@ mod tautological_body_tests {
     #[test]
     fn empty_body_is_not_tautological() {
         assert!(!is_tautological_body(&[]));
+    }
+
+    fn var(name: &str) -> Expr {
+        Expr::VarRef(name.to_string())
+    }
+
+    fn self_eq(name: &str) -> Expr {
+        Expr::Comparison { op: CompareOp::Eq, left: Box::new(var(name)), right: Box::new(var(name)) }
+    }
+
+    #[test]
+    fn find_tautological_clause_detects_implies_consequent() {
+        // The IRParentAsymmetric shape: `sn.irParent = p implies p.irParent = p.irParent`
+        // — the consequent is tautological, so the whole implication is
+        // vacuously true regardless of the antecedent.
+        let expr = Expr::Quantifier {
+            kind: QuantKind::All,
+            bindings: vec![QuantBinding { vars: vec!["sn".to_string()], domain: var("StructureNode"), disj: false }],
+            body: Box::new(Expr::BinaryLogic {
+                op: LogicOp::Implies,
+                left: Box::new(Expr::Comparison {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::FieldAccess { base: Box::new(var("sn")), field: "irParent".to_string() }),
+                    right: Box::new(var("p")),
+                }),
+                right: Box::new(Expr::Comparison {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::FieldAccess { base: Box::new(var("p")), field: "irParent".to_string() }),
+                    right: Box::new(Expr::FieldAccess { base: Box::new(var("p")), field: "irParent".to_string() }),
+                }),
+            }),
+        };
+        assert!(find_tautological_clause(&expr).is_some());
+    }
+
+    #[test]
+    fn find_tautological_clause_finds_conjunct_inside_and() {
+        let expr = Expr::BinaryLogic {
+            op: LogicOp::And,
+            left: Box::new(self_eq("a")),
+            right: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("b")), right: Box::new(var("c")) }),
+        };
+        assert!(find_tautological_clause(&expr).is_some());
+    }
+
+    #[test]
+    fn find_tautological_clause_none_when_genuinely_conditional() {
+        let expr = Expr::Quantifier {
+            kind: QuantKind::All,
+            bindings: vec![QuantBinding { vars: vec!["sn".to_string()], domain: var("StructureNode"), disj: false }],
+            body: Box::new(Expr::BinaryLogic {
+                op: LogicOp::Implies,
+                left: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("sn")), right: Box::new(var("other")) }),
+                right: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("a")), right: Box::new(var("b")) }),
+            }),
+        };
+        assert!(find_tautological_clause(&expr).is_none());
     }
 
     #[test]
