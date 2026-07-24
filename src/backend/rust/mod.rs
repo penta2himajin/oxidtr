@@ -13,6 +13,7 @@ use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
+use crate::naming::{to_snake_case, fn_name_for_op};
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
@@ -486,13 +487,14 @@ fn generate_concept_file(
         if let Some(ref sig) = op.receiver_sig {
             if member_set.contains(sig.as_str()) {
                 // Generate impl block for this receiver
-                let fn_name = to_snake_case(&op.name);
+                let fn_name = fn_name_for_op(&op.name);
                 let params = op.params.iter().map(|p| {
+                    let t = resolve_type(TargetLang::Rust, &p.type_name);
                     let type_str = match p.mult {
-                        Multiplicity::One => format!("&{}", p.type_name),
-                        Multiplicity::Lone => format!("Option<&{}>", p.type_name),
-                        Multiplicity::Set => format!("&std::collections::BTreeSet<{}>", p.type_name),
-                        Multiplicity::Seq => format!("&[{}]", p.type_name),
+                        Multiplicity::One => format!("&{t}"),
+                        Multiplicity::Lone => format!("Option<&{t}>"),
+                        Multiplicity::Set => format!("&std::collections::BTreeSet<{t}>"),
+                        Multiplicity::Seq => format!("&[{t}]"),
                     };
                     format!("{}: {type_str}", to_snake_case(&p.name))
                 }).collect::<Vec<_>>().join(", ");
@@ -513,7 +515,7 @@ fn generate_concept_file(
 
                 writeln!(out, "impl {sig} {{").unwrap();
                 writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
-                writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+                emit_operation_body(&mut out, op, ir, "        ");
                 writeln!(out, "    }}").unwrap();
                 writeln!(out, "}}").unwrap();
                 writeln!(out).unwrap();
@@ -547,38 +549,7 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        let fn_name = to_snake_case(&op.name);
-        let params = op.params.iter().map(|p| {
-            let type_str = match p.mult {
-                Multiplicity::One => format!("&{}", p.type_name),
-                Multiplicity::Lone => format!("Option<&{}>", p.type_name),
-                Multiplicity::Set => format!("&BTreeSet<{}>", p.type_name),
-                Multiplicity::Seq => format!("&[{}]", p.type_name),
-            };
-            format!("{}: {type_str}", to_snake_case(&p.name))
-        }).collect::<Vec<_>>().join(", ");
-
-        let return_str = match &op.return_type {
-            Some(rt) => {
-                let t = rust_return_type(&rt.type_name, &rt.mult);
-                format!(" -> {t}")
-            }
-            None => " -> bool".to_string(),
-        };
-
-        if !op.body.is_empty() {
-            let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
-            for expr in &op.body {
-                let desc = analyze::describe_expr(expr);
-                let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
-                writeln!(out, "/// @{tag}: {desc}").unwrap();
-            }
-        }
-
-        writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
+        emit_operation_fn(&mut out, op, ir);
     }
 
     out
@@ -746,13 +717,14 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
     for (sig_name, ops) in &by_sig {
         writeln!(out, "impl {sig_name} {{").unwrap();
         for op in ops {
-            let fn_name = to_snake_case(&op.name);
+            let fn_name = fn_name_for_op(&op.name);
             let params = op.params.iter().map(|p| {
+                let t = resolve_type(TargetLang::Rust, &p.type_name);
                 let type_str = match p.mult {
-                    Multiplicity::One => format!("&{}", p.type_name),
-                    Multiplicity::Lone => format!("Option<&{}>", p.type_name),
-                    Multiplicity::Set => format!("&std::collections::BTreeSet<{}>", p.type_name),
-                    Multiplicity::Seq => format!("&[{}]", p.type_name),
+                    Multiplicity::One => format!("&{t}"),
+                    Multiplicity::Lone => format!("Option<&{t}>"),
+                    Multiplicity::Set => format!("&std::collections::BTreeSet<{t}>"),
+                    Multiplicity::Seq => format!("&[{t}]"),
                 };
                 format!("{}: {type_str}", to_snake_case(&p.name))
             }).collect::<Vec<_>>().join(", ");
@@ -772,7 +744,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
             };
 
             writeln!(out, "    pub fn {fn_name}({param_str}){return_str} {{").unwrap();
-            writeln!(out, "        todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+            emit_operation_body(out, op, ir, "        ");
             writeln!(out, "    }}").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -1023,55 +995,115 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         if op.receiver_sig.is_some() {
             continue;
         }
-        let fn_name = to_snake_case(&op.name);
-        let params = op
-            .params
-            .iter()
-            .map(|p| {
-                let type_str = match p.mult {
-                    Multiplicity::One => format!("&{}", p.type_name),
-                    Multiplicity::Lone => format!("Option<&{}>", p.type_name),
-                    Multiplicity::Set => format!("&BTreeSet<{}>", p.type_name),
-                    Multiplicity::Seq => format!("&[{}]", p.type_name),
-                };
-                format!("{}: {type_str}", to_snake_case(&p.name))
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
-
-        let return_str = match &op.return_type {
-            Some(rt) => {
-                let t = rust_return_type(&rt.type_name, &rt.mult);
-                format!(" -> {t}")
-            }
-            None => " -> bool".to_string(),
-        };
-
-        // Doc comments with pre/post separation (Feature 7)
-        if !op.body.is_empty() {
-            let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
-            for expr in &op.body {
-                let desc = analyze::describe_expr(expr);
-                let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
-                writeln!(out, "/// @{tag}: {desc}").unwrap();
-            }
-        }
-
-        writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
-        writeln!(out, "    todo!(\"oxidtr: implement {}\");", op.name).unwrap();
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
+        emit_operation_fn(&mut out, op, ir);
     }
 
     out
 }
 
+/// Format a single operation parameter's Rust type per its Alloy multiplicity.
+fn param_type_str(p: &IRParam) -> String {
+    let t = resolve_type(TargetLang::Rust, &p.type_name);
+    match p.mult {
+        Multiplicity::One => format!("&{t}"),
+        Multiplicity::Lone => format!("Option<&{t}>"),
+        Multiplicity::Set => format!("&BTreeSet<{t}>"),
+        Multiplicity::Seq => format!("&[{t}]"),
+    }
+}
+
+/// Emit an operation's body — the `{ ... }` content, not its signature — to
+/// `out`, indented by `indent`. Shared by all four Rust operation-emission
+/// sites: free-function and receiver-based (`impl Sig { ... }`), `pred` and
+/// derived-field `fun` alike.
+///
+/// `op.return_type.is_some()` (a `fun`) is checked *before* tautology
+/// detection and routed to `translate_derived_field_body`: a `fun` body is a
+/// value expression, not a boolean formula, so `is_tautological_body` (which
+/// only makes sense for a `pred`'s conjuncts) must never see it — a `fun`
+/// body that happens to structurally look like `x = x` would be a coincidence,
+/// not a decidable-to-`true` predicate. Without this ordering, such a body
+/// would silently emit a bare `true` regardless of the fn's real return type.
+///
+/// An empty body is Alloy's empty conjunction — meaningful only for a
+/// `pred` (a `fun`'s body is a required expression in the grammar, never
+/// empty; see `parse_fun`), and vacuously true by definition, same
+/// rationale as `is_tautological_body` below just for zero conjuncts
+/// instead of one identical to itself. Checked first, before the
+/// `fun`-vs-tautology ordering below even applies.
+///
+/// A `fun` body that's a bare reference to a sig's own name (not an enum
+/// variant) is a different kind of gap: unlike the empty-body case, there's
+/// no deterministically correct value to fall back to (`Money` in
+/// `fun zero: Money { Money }` is a type, not an instance) — translating it
+/// anyway previously emitted `Money.clone()`, which doesn't compile. `todo!()`
+/// here is the honest answer, not a regression to the pre-empty-body-fix
+/// state: that case had a decidable answer being needlessly withheld, this
+/// case has no decidable answer and was previously getting a wrong guess.
+///
+/// Otherwise the body is generated, not stubbed, whenever possible: a
+/// tautological `pred` body becomes a plain `true`; a `fun` body translates
+/// via `translate_derived_field_body`; a genuine multi-clause `pred` body has
+/// each conjunct compiled via `translate_operation_clause` and joined with
+/// `&&`.
+fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, indent: &str) {
+    if op.body.is_empty() {
+        writeln!(out, "{indent}true").unwrap();
+    } else if op.return_type.is_some() && op.body.len() == 1
+        && expr_translator::is_bare_sig_self_reference(&op.body[0], ir) {
+        writeln!(out, "{indent}todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+    } else if op.return_type.is_some() {
+        writeln!(out, "{indent}{}", expr_translator::translate_derived_field_body(&op.body[0], ir)).unwrap();
+    } else if analyze::is_tautological_body(&op.body) {
+        writeln!(out, "{indent}true").unwrap();
+    } else {
+        let one_mult_params: HashSet<String> = op.params.iter()
+            .filter(|p| p.mult == Multiplicity::One)
+            .map(|p| p.name.clone())
+            .collect();
+        let conjuncts: Vec<String> = op.body.iter()
+            .map(|expr| expr_translator::translate_operation_clause(expr, ir, &one_mult_params))
+            .collect();
+        writeln!(out, "{indent}{}", conjuncts.join(" && ")).unwrap();
+    }
+}
+
+/// Emit a single free-function operation (doc comments, signature, body) to
+/// `out`. Shared by `generate_operations_modular` and `generate_operations`,
+/// which differ only in their file-level `use` headers.
+fn emit_operation_fn(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
+    let fn_name = fn_name_for_op(&op.name);
+    let params = op.params.iter()
+        .map(|p| format!("{}: {}", to_snake_case(&p.name), param_type_str(p)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let return_str = match &op.return_type {
+        Some(rt) => format!(" -> {}", rust_return_type(&rt.type_name, &rt.mult)),
+        None => " -> bool".to_string(),
+    };
+
+    if !op.body.is_empty() {
+        let param_names: Vec<String> = op.params.iter().map(|p| p.name.clone()).collect();
+        for expr in &op.body {
+            let desc = analyze::describe_expr(expr);
+            let tag = if analyze::is_pre_condition(expr, &param_names) { "pre" } else { "post" };
+            writeln!(out, "/// @{tag}: {desc}").unwrap();
+        }
+    }
+
+    writeln!(out, "pub fn {fn_name}({params}){return_str} {{").unwrap();
+    emit_operation_body(out, op, ir, "    ");
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
 fn rust_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    let t = resolve_type(TargetLang::Rust, type_name);
     match mult {
-        Multiplicity::One => type_name.to_string(),
-        Multiplicity::Lone => format!("Option<{type_name}>"),
-        Multiplicity::Set => format!("BTreeSet<{type_name}>"),
-        Multiplicity::Seq => format!("Vec<{type_name}>"),
+        Multiplicity::One => t,
+        Multiplicity::Lone => format!("Option<{t}>"),
+        Multiplicity::Set => format!("BTreeSet<{t}>"),
+        Multiplicity::Seq => format!("Vec<{t}>"),
     }
 }
 
@@ -1679,7 +1711,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             };
 
             for op in &ir.operations {
-                let op_name = to_snake_case(&op.name);
+                let op_name = fn_name_for_op(&op.name);
                 let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
 
                 writeln!(out, "#[test]").unwrap();
@@ -2987,21 +3019,6 @@ fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
         "Bool" => Some("false"),
         _ => None,
     }
-}
-
-fn to_snake_case(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.push(c.to_lowercase().next().unwrap());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// Check if a sig type has existential (some) constraints, meaning all_{plural}s() was generated.

@@ -4,6 +4,7 @@ use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
 use crate::analyze;
 use crate::backend::is_native_type_alias;
+use crate::naming::fn_name_for_op;
 use super::{ExtractedImpl, ExtractedStruct};
 
 fn to_snake_case(s: &str) -> String {
@@ -96,9 +97,10 @@ impl std::fmt::Display for DiffItem {
     }
 }
 
-/// Diff with default Rust fn name normalization (camelCase → snake_case).
+/// Diff with default Rust fn name normalization (camelCase → snake_case,
+/// with verb-prefix templates for pure-check predicates — see `fn_name_for_op`).
 pub fn diff(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> {
-    diff_with_fn_normalizer(ir, extracted, to_snake_case)
+    diff_with_fn_normalizer(ir, extracted, fn_name_for_op)
 }
 
 /// Diff with identity fn name normalization (for TS where names match directly).
@@ -108,7 +110,7 @@ pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> 
 
 /// Diff with Rust snake_case normalization, including validation coverage check.
 pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
-    let mut diffs = diff_with_fn_normalizer(ir, extracted, to_snake_case);
+    let mut diffs = diff_with_fn_normalizer(ir, extracted, fn_name_for_op);
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);

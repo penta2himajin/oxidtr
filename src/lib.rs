@@ -5,3 +5,4 @@ pub mod generate;
 pub mod check;
 pub mod extract;
 pub mod analyze;
+pub mod naming;

@@ -1066,6 +1066,17 @@ pub fn is_pre_condition(expr: &Expr, param_names: &[String]) -> bool {
     }
 }
 
+/// Returns true if `body` is trivially, statelessly true — every conjunct is a
+/// self-equality (`x = x`, structurally identical operands, e.g. from an Alloy
+/// `pred p[x: one T] { x = x }`). Such predicates have no dependency on external
+/// state and their truth value is decidable at generation time; the generated
+/// operation body can be a plain `true` instead of a stub that needs completing.
+pub fn is_tautological_body(body: &[Expr]) -> bool {
+    !body.is_empty() && body.iter().all(|conjunct| {
+        matches!(conjunct, Expr::Comparison { op: CompareOp::Eq, left, right } if left == right)
+    })
+}
+
 /// Check if an expression only references parameter names (no state fields).
 fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
     match expr {
@@ -1648,5 +1659,60 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
         Expr::TemporalBinary { left, right, .. } => {
             expr_references_sig(left, sig_name) || expr_references_sig(right, sig_name)
         }
+    }
+}
+
+#[cfg(test)]
+mod tautological_body_tests {
+    use super::*;
+
+    #[test]
+    fn self_equality_is_tautological() {
+        let body = vec![Expr::Comparison {
+            op: CompareOp::Eq,
+            left: Box::new(Expr::VarRef("e".to_string())),
+            right: Box::new(Expr::VarRef("e".to_string())),
+        }];
+        assert!(is_tautological_body(&body));
+    }
+
+    #[test]
+    fn comparison_between_different_vars_is_not_tautological() {
+        let body = vec![Expr::Comparison {
+            op: CompareOp::Eq,
+            left: Box::new(Expr::VarRef("a".to_string())),
+            right: Box::new(Expr::VarRef("b".to_string())),
+        }];
+        assert!(!is_tautological_body(&body));
+    }
+
+    #[test]
+    fn membership_check_is_not_tautological() {
+        let body = vec![Expr::Comparison {
+            op: CompareOp::In,
+            left: Box::new(Expr::VarRef("sn".to_string())),
+            right: Box::new(Expr::FieldAccess { base: Box::new(Expr::VarRef("ir".to_string())), field: "structures".to_string() }),
+        }];
+        assert!(!is_tautological_body(&body));
+    }
+
+    #[test]
+    fn empty_body_is_not_tautological() {
+        assert!(!is_tautological_body(&[]));
+    }
+
+    #[test]
+    fn mixed_conjuncts_are_not_tautological() {
+        let tauto = Expr::Comparison {
+            op: CompareOp::Eq,
+            left: Box::new(Expr::VarRef("e".to_string())),
+            right: Box::new(Expr::VarRef("e".to_string())),
+        };
+        let non_tauto = Expr::Comparison {
+            op: CompareOp::Eq,
+            left: Box::new(Expr::VarRef("a".to_string())),
+            right: Box::new(Expr::VarRef("b".to_string())),
+        };
+        assert!(!is_tautological_body(&[tauto, non_tauto]));
     }
 }

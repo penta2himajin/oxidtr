@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::naming::fn_name_for_op;
 use std::collections::{HashSet, BTreeSet};
 
 /// Info about a transitive closure field needed for function generation.
@@ -479,6 +480,106 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner_ir(expr, false, &collect_sig_names_set(ir), ir)
 }
 
+/// Translate one top-level conjunct of an OPERATION's body. Delegates to
+/// `translate_with_ir` for everything except one shape it can't safely
+/// handle on its own: a `One`-multiplicity field access (e.g. `sn.origin`,
+/// `a.cap`) always translates to an OWNED-`T` place — via an explicit
+/// Box-deref (`(*sn.origin)`) when the field is self-referential/cyclic, or
+/// just a plain `a.cap` otherwise (see the `FieldAccess` case in
+/// `translate_inner_ir`) — never a `&T`. Comparing it against a bare
+/// reference to one of `one_mult_params` — the operation's own parameter
+/// names that are `One`-multiplicity, and so are `&T`-typed in the generated
+/// signature (see `param_type_str` in `backend/rust/mod.rs`) — needs a
+/// matching deref on that side too, or the two operands' types won't line up
+/// (`T` vs `&T`, e.g. `a.cap == c` fails to compile when `c: &Cap`).
+///
+/// This is intentionally NOT folded into `translate_with_ir`/`lone_comparison`
+/// itself: `translate_with_ir` has ~10 other call sites (tests.rs,
+/// invariants.rs, newtypes.rs, …) where a bare `VarRef` may not be a
+/// reference at all (e.g. an owned loop variable) — deref'ing it there would
+/// be wrong. The extra parameter-name context that makes this safe only
+/// exists at the operation-body call site.
+pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &HashSet<String>) -> String {
+    if let Expr::Comparison { op: cmp_op @ (CompareOp::Eq | CompareOp::NotEq), left, right } = expr {
+        let op_str = if matches!(cmp_op, CompareOp::Eq) { "==" } else { "!=" };
+        let sig_names = collect_sig_names_set(ir);
+        let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, &sig_names, ir);
+        if is_one_mult_field_access(left, ir) {
+            if let Expr::VarRef(name) = right.as_ref() {
+                if one_mult_params.contains(name) {
+                    return format!("{} {op_str} (*{name})", ti(left, false));
+                }
+            }
+        }
+        if is_one_mult_field_access(right, ir) {
+            if let Expr::VarRef(name) = left.as_ref() {
+                if one_mult_params.contains(name) {
+                    return format!("(*{name}) {op_str} {}", ti(right, false));
+                }
+            }
+        }
+    }
+
+    // A bare one-mult-parameter reference has no FieldAccess for the check
+    // above to key off, but is just as `&T`-typed (param_type_str) — and
+    // needs the same deref when compared directly against a literal or
+    // another bare one-mult param, for ANY comparison operator (not just
+    // Eq/NotEq): there's no blanket PartialOrd/PartialEq impl bridging a
+    // reference and a bare value (`&i64 >= 0` fails: "expected `&i64`, found
+    // integer"). Scoped to IntLiteral/VarRef operands only, so it never
+    // second-guesses the FieldAccess-specific handling above or the
+    // Lone-field `.is_none_or()` rewriting inside `translate_with_ir` —
+    // both key off a FieldAccess operand, which this deliberately ignores.
+    if let Expr::Comparison { op, left, right } = expr {
+        let op_str = match op {
+            CompareOp::Eq => "==",
+            CompareOp::NotEq => "!=",
+            CompareOp::Lt => "<",
+            CompareOp::Gt => ">",
+            CompareOp::Lte => "<=",
+            CompareOp::Gte => ">=",
+            CompareOp::In => return translate_with_ir(expr, ir),
+        };
+        let render = |e: &Expr| match e {
+            Expr::VarRef(name) if one_mult_params.contains(name) => Some(format!("(*{name})")),
+            Expr::IntLiteral(n) => Some(n.to_string()),
+            _ => None,
+        };
+        if let (Some(l), Some(r)) = (render(left), render(right)) {
+            let either_is_param = matches!(left.as_ref(), Expr::VarRef(name) if one_mult_params.contains(name))
+                || matches!(right.as_ref(), Expr::VarRef(name) if one_mult_params.contains(name));
+            if either_is_param {
+                return format!("{l} {op_str} {r}");
+            }
+        }
+    }
+
+    translate_with_ir(expr, ir)
+}
+
+/// Translate a derived-field (`fun`) body — the VALUE an operation returns,
+/// as opposed to a `pred`'s boolean formula. Two shapes need adjustment
+/// beyond a plain `translate_with_ir`:
+/// - A body that's just a field projection or the bare receiver
+///   (`this.field`, `this`) translates to a borrowed place through `&self`
+///   (e.g. `self.field`, or `(*self.field)` for a boxed self-referential
+///   field — see `is_one_mult_field_access`); returning that by value needs
+///   a `.clone()` or it won't compile (moving out of a shared reference).
+/// - A body that's a cardinality (`#expr`) translates to `.len()`, which is
+///   `usize` — but Alloy cardinality is always typed `Int` (`i64` here), so
+///   returning it directly needs an `as i64` cast or the return type won't
+///   match.
+/// Other shapes (arithmetic, set unions, …) already produce a correctly
+/// owned/typed value and are left as-is.
+pub fn translate_derived_field_body(expr: &Expr, ir: &OxidtrIR) -> String {
+    let translated = translate_with_ir(expr, ir);
+    match expr {
+        Expr::FieldAccess { .. } | Expr::VarRef(_) => format!("{translated}.clone()"),
+        Expr::Cardinality(_) => format!("{translated} as i64"),
+        _ => translated,
+    }
+}
+
 fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
     ir.structures.iter().map(|s| s.name.clone()).collect()
 }
@@ -506,6 +607,27 @@ pub(super) fn is_set_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
     } else {
         false
     }
+}
+
+/// True when `expr` is a bare `VarRef` to a sig's own name (not an enum
+/// variant — those already resolve to `Parent::Variant` in `translate_inner_ir`
+/// and have a real value). A plain sig name used as an expression (e.g.
+/// `fun zero: Money { Money }`) has no sensible Rust value — `Money` is a
+/// type, not an instance — so unlike a legitimate local variable/parameter
+/// reference, there's no deterministically correct translation to fall back
+/// to. Checked by `emit_operation_body` before calling the translator at all,
+/// so a caller asking "is this body safe to translate" doesn't need to
+/// inspect the (wrong) translated string after the fact.
+pub(super) fn is_bare_sig_self_reference(expr: &Expr, ir: &OxidtrIR) -> bool {
+    if let Expr::VarRef(name) = expr {
+        if let Some(s) = ir.structures.iter().find(|s| s.name == *name) {
+            let is_enum_variant = s.parent.as_ref().is_some_and(|parent| {
+                ir.structures.iter().any(|p| p.name == *parent && p.is_enum)
+            });
+            return !is_enum_variant;
+        }
+    }
+    false
 }
 
 /// Look up the multiplicity and boxing info of a named field.
@@ -578,6 +700,11 @@ fn translate_inner_ir(
         Expr::IntLiteral(n) => n.to_string(),
 
         Expr::VarRef(name) => {
+            // Alloy's implicit receiver keyword in `pred/fun Sig.op[...] { this... }`
+            // is always the method's `&self` — map it unconditionally, wherever it appears.
+            if name == "this" {
+                return "self".to_string();
+            }
             // Bug 3 fix: enum variants (one sig Foo extends Bar) must be qualified
             // as `Bar::Foo` in Rust. Detect by checking whether the name has a parent
             // sig that is itself an enum (abstract sig … {}).
@@ -762,9 +889,15 @@ fn translate_inner_ir(
         }
         Expr::FunApp { name, receiver, args } => {
             // Bare calls into generated operations (preds / funs) take `&T`
-            // params — ensure args are passed by reference.
+            // params — ensure args are passed by reference. The callee's Rust
+            // name comes from `fn_name_for_op`, same as its definition site
+            // (`emit_operation_fn` in backend/rust/mod.rs) — a bare call must
+            // resolve through the same naming rule its target was declared
+            // under (e.g. `addField[s, f]` → `field_is_present(&s, &f)`, not
+            // the raw Alloy name), or the two never agree.
             let is_operation = receiver.is_none() && is_operation_call(name, ir);
-            translate_fun_app_with(name, receiver.as_deref(), args, |e| ti(e, false), is_operation)
+            let callee = if is_operation { fn_name_for_op(name) } else { name.clone() };
+            translate_fun_app_with(&callee, receiver.as_deref(), args, |e| ti(e, false), is_operation)
         }
     };
 
@@ -828,6 +961,17 @@ where
         (None, None) => {
             format!("{} {op} {}", ti(left, false), ti(right, false))
         }
+    }
+}
+
+/// True if `expr` is a FieldAccess to a One-multiplicity self-referential
+/// field — always translates to an owned-`T` place (a Box-deref `(*base.field)`
+/// when the field is self-referential/cyclic, a plain `base.field` otherwise),
+/// never a borrowed `&T`. See `translate_operation_clause`.
+fn is_one_mult_field_access(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::FieldAccess { field, .. } => matches!(field_mult(field, ir), Some((Multiplicity::One, _))),
+        _ => false,
     }
 }
 

@@ -78,16 +78,165 @@ fn generate_enum_for_abstract_sig() {
 }
 
 #[test]
-fn generate_operation_stub() {
+fn generate_operation_body_is_translated_not_stubbed() {
     let files = generate_from(r#"
         sig User {}
         sig Role {}
-        pred assign[u: one User, r: one Role] { u = u }
+        pred assign[u: one User, r: one Role] { u != r }
     "#);
     let content = find_file(&files, "operations.rs");
-    assert!(content.contains("fn assign"));
-    assert!(content.contains("user: &User") || content.contains("u: &User"));
-    assert!(content.contains("todo!"));
+    assert!(content.contains("pub fn assign(u: &User, r: &Role) -> bool"));
+    assert!(content.contains("u != r"));
+    assert!(!content.contains("todo!"), "a translatable body must not be a stub");
+}
+
+#[test]
+fn generate_pred_with_no_body_is_vacuously_true() {
+    // An empty `pred` body is Alloy's empty conjunction — vacuously true by
+    // definition, same as `is_tautological_body`'s identical-conjuncts case
+    // below, just for zero conjuncts instead of one. Decidable at generation
+    // time; no `todo!()`, no LLM/tinycodr completion needed. (A `fun`'s body
+    // can never be empty this way — the parser requires an expression for
+    // `fun`, confirmed by `parse_fun`'s non-optional body parse — so this
+    // case is structurally always a `pred`.)
+    let files = generate_from(r#"
+        sig Thing {}
+        pred noop[t: one Thing] {}
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn noop"));
+    assert!(content.contains("true"));
+    assert!(!content.contains("todo!"), "an empty pred body is vacuously true, not a stub");
+}
+
+#[test]
+fn generate_tautological_operation_body_is_not_a_stub() {
+    let files = generate_from(r#"
+        sig Thing {}
+        pred noop[t: one Thing] { t = t }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn noop"));
+    assert!(content.contains("true"));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_multi_clause_operation_translates_and_joins_with_and() {
+    let files = generate_from(r#"
+        sig Item {}
+        sig Bin { held: set Item }
+        pred place[b: one Bin, i: one Item, prior: one Bin] {
+            i in b.held
+            b != prior
+        }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    // No per-clause helper functions — both conjuncts translate directly into
+    // the public function's own body, joined with `&&`.
+    assert!(!content.contains("_clause_1"));
+    assert!(!content.contains("_clause_2"));
+    assert!(content.contains("pub fn place(b: &Bin, i: &Item, prior: &Bin) -> bool"));
+    assert!(content.contains("b.held.contains(&i)"));
+    assert!(content.contains("b != prior"));
+    assert!(content.contains(" && "));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_self_referential_box_field_comparison_derefs_both_sides() {
+    // Regression test for the lowerOneSig bug: a One-multiplicity
+    // self-referential field (boxed to break the type cycle) compared
+    // against a bare operation parameter needs a deref on BOTH sides, not
+    // just the field-access side, or the two operands' types don't match
+    // (`T` from the Box-deref vs `&T` from the parameter).
+    let files = generate_from(r#"
+        sig SigDecl { holder: lone StructureNode }
+        sig StructureNode { origin: one SigDecl }
+        pred originMatches[sn: one StructureNode, s: one SigDecl] { sn.origin = s }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("pub fn origin_matches"));
+    assert!(content.contains("(*sn.origin) == (*s)"));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_derived_field_body_is_translated_not_stubbed() {
+    // Receiver-based `fun`s (derived fields) previously always got a
+    // `todo!()` stub regardless of body content — the deterministic
+    // translation added for free-function operations didn't cover them.
+    // `this` (Alloy's implicit receiver) must map to `self`, and returning
+    // an owned field by value through `&self` needs `.clone()`.
+    let files = generate_from(r#"
+        sig Item {}
+        sig Bin { held: one Item }
+        fun Bin.contents: one Item { this.held }
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("pub fn contents(&self) -> Item"));
+    assert!(content.contains("self.held.clone()"));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_derived_field_with_tautological_shape_is_not_forced_true() {
+    // `fun`s return a VALUE, not a boolean formula. Even if a fun's body
+    // happens to be structurally shaped like a self-equality tautology (the
+    // same shape `is_tautological_body` short-circuits to `true` for
+    // `pred`s), it must not take that shortcut here: the declared return
+    // type isn't `bool`, so a bare `true` wouldn't even match the return
+    // type. Regression test for is_tautological_body being applied without
+    // checking op.return_type first.
+    let files = generate_from(r#"
+        sig Foo {}
+        fun Foo.echo: one Foo { this = this }
+    "#);
+    let content = find_file(&files, "models.rs");
+    assert!(content.contains("pub fn echo(&self) -> Foo"));
+    assert!(!content.contains("        true"), "a fun body must never be replaced by a bare `true`");
+}
+
+#[test]
+fn generate_fun_body_referencing_bare_sig_name_is_a_stub_not_wrong_code() {
+    // A `fun` body that's just a bare reference to a SIG's own name (not an
+    // enum variant) has no sensible Rust value — `Money` is a type, not an
+    // instance. Before this fix, VarRef translation fell through to
+    // `name.clone()` for any non-enum sig name, producing e.g. `Money.clone()`
+    // — a compile error (E0423: expected value, found struct `Money`), not a
+    // stub asking for help. Unlike the empty-body-pred case (vacuously `true`,
+    // a decidable answer), there's no deterministically correct value here —
+    // the honest answer is `todo!()`, not a silent guess. Found generating a
+    // hand-written model (`fun zero: Money { Money }`) outside oxidtr's own
+    // self-hosting corpus.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fun zero: Money { Money }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn zero"));
+    assert!(content.contains("todo!"), "a bare sig-name self-reference has no translatable value, must stub:\n{content}");
+    assert!(!content.contains("Money.clone()"), "must never emit a type name as if it were a value:\n{content}");
+}
+
+#[test]
+fn generate_operation_call_to_another_operation_uses_generated_fn_name() {
+    // Regression test: a bare call from one operation's body into another
+    // (`addField[s, f]`) previously translated to the raw Alloy name
+    // (`addField(&s, &f)`), not the callee's actual generated Rust name
+    // (`field_is_present`, via fn_name_for_op) — a call to a function that
+    // doesn't exist. The callee must be resolved through the same naming
+    // rule its definition site uses.
+    let files = generate_from(r#"
+        sig SigDecl { fields: set FieldDecl }
+        sig FieldDecl {}
+        pred addField[s: one SigDecl, f: one FieldDecl] { f in s.fields }
+        pred wrapper[s: one SigDecl, f: one FieldDecl] { addField[s, f] }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("pub fn field_is_present"));
+    assert!(content.contains("field_is_present(&s, &f)"), "call site must use the callee's generated name:\n{content}");
+    assert!(!content.contains("addField("), "must not call the operation under its raw Alloy name:\n{content}");
 }
 
 #[test]
@@ -773,7 +922,8 @@ fn rust_derived_field_generates_impl_method() {
     "#);
     let models = find_file(&files, "models.rs");
     assert!(models.contains("impl Account"), "should generate impl block:\n{models}");
-    assert!(models.contains("fn balance(&self) -> Int"), "should generate method:\n{models}");
+    // `Int` is an Alloy native-alias sig, not a real Rust type — must resolve to `i64`.
+    assert!(models.contains("fn balance(&self) -> i64"), "should generate method:\n{models}");
 }
 
 #[test]
@@ -860,6 +1010,63 @@ fn rust_native_type_with_multiplicities() {
     assert!(models.contains("pub tags: BTreeSet<String>,"), "set Str → BTreeSet<String>:\n{models}");
     assert!(models.contains("pub label: Option<String>,"), "lone Str → Option<String>:\n{models}");
     assert!(models.contains("pub scores: Vec<i64>,"), "seq Int → Vec<i64>:\n{models}");
+}
+
+#[test]
+fn rust_native_alias_resolves_in_operation_signature() {
+    // Regression test: struct fields already resolved `Int`/`Str`/... to
+    // native Rust types, but operation return types and parameter types
+    // (`rust_return_type`, `param_type_str`, and their receiver-based
+    // duplicates) emitted the raw Alloy alias name verbatim (`Int`) instead
+    // of `i64` — an undefined-type compile error regardless of body content.
+    let files = generate_from(r#"
+        sig Item {}
+        pred hasCount[i: one Item, n: one Int] {}
+        fun countOf: one Int { 0 }
+    "#);
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("n: &i64"), "Int param should resolve to &i64:\n{ops}");
+    assert!(ops.contains("-> i64"), "Int return type should resolve to i64:\n{ops}");
+    assert!(!ops.contains("&Int"), "must not emit the raw Alloy alias as a param type:\n{ops}");
+    assert!(!ops.contains("-> Int"), "must not emit the raw Alloy alias as a return type:\n{ops}");
+}
+
+#[test]
+fn generate_one_mult_field_comparison_against_param_derefs_param() {
+    // Regression test: the box-deref-both-sides fix only applied to
+    // self-referential/cyclic One-mult fields (`is_self_ref_one_field`, now
+    // `is_one_mult_field_access`). But ANY One-mult field access — boxed or
+    // not — renders as an owned-`T` place, not `&T`; comparing it against a
+    // bare `&T` parameter needs the same deref regardless of boxing.
+    let files = generate_from(r#"
+        sig Cap {}
+        sig Account { cap: one Cap }
+        pred withinCap[a: one Account, c: one Cap] { a.cap = c }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("pub fn within_cap"));
+    assert!(content.contains("a.cap == (*c)"));
+    assert!(!content.contains("todo!"));
+}
+
+#[test]
+fn generate_bare_one_mult_param_comparison_against_literal_derefs_param() {
+    // Regression test: a bare One-mult scalar PARAMETER (not a field access)
+    // compared directly against a literal has no FieldAccess for the
+    // existing one-mult-field-vs-param check (above) to key off, but still
+    // needs a deref — its Rust type is `&i64` (see param_type_str), and
+    // there's no blanket PartialOrd/PartialEq impl bridging `&i64` and a
+    // bare integer literal (`&i64 >= 0` fails: "expected `&i64`, found
+    // integer"). Found generating a standalone test model outside oxidtr's
+    // own self-hosting model, which never happens to compare a bare
+    // one-mult param directly against a literal.
+    let files = generate_from(r#"
+        sig Account {}
+        pred hasNonNegativeBalance[a: one Account, amt: one Int] { amt >= 0 }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("(*amt) >= 0"), "bare one-mult param must be deref'd:\n{content}");
+    assert!(!content.contains("todo!"));
 }
 
 #[test]
