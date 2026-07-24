@@ -3021,6 +3021,261 @@ fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
     }
 }
 
+/// Render a candidate integer as a Rust literal of the given native type.
+// TODO(#74 Stage B): wired into invariant-test generation in a follow-up commit.
+#[allow(dead_code)]
+fn native_scalar_literal(target: &str, n: i64) -> String {
+    match target {
+        "Int" => format!("{n}i64"),
+        "Float" => format!("{n}.0f64"),
+        "Bool" => (n != 0).to_string(),
+        _ => n.to_string(),
+    }
+}
+
+/// Render `n` elements of a set/seq field's target type — the same default
+/// element repeated, since this varies cardinality (how many), not element
+/// identity (which ones). `n <= 0` renders an empty collection.
+#[allow(dead_code)]
+fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
+    if n <= 0 {
+        return match mult {
+            Multiplicity::Set => "BTreeSet::new()".to_string(),
+            _ => "Vec::new()".to_string(),
+        };
+    }
+    let elem = rust_native_default(target)
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| format!("default_{}()", to_snake_case(target)));
+    let elems = vec![elem; n as usize].join(", ");
+    match mult {
+        Multiplicity::Set => format!("BTreeSet::from([{elems}])"),
+        _ => format!("vec![{elems}]"),
+    }
+}
+
+/// Find a diversity source for a single field — two rendered value
+/// expressions for that field, mult-appropriately wrapped (`Some(..)` for
+/// `lone`, `Box::new(..)` for a boxed/cyclic reference) — or `None` if this
+/// field can't offer one. Map fields (`value_type.is_some()`) are skipped;
+/// their construction is more involved and not handled here.
+#[allow(dead_code)]
+fn field_diversity_values(
+    ir: &OxidtrIR,
+    sig_name: &str,
+    f: &IRField,
+    cyclic: &HashSet<(String, String)>,
+    visiting: &mut HashSet<String>,
+) -> Option<(String, String)> {
+    if f.value_type.is_some() {
+        return None;
+    }
+    match f.mult {
+        Multiplicity::One if is_native_type_alias(&f.target) => {
+            let candidates = analyze::boundary_candidates_for_field(ir, sig_name, &f.name);
+            if candidates.len() < 2 {
+                return None;
+            }
+            Some((
+                native_scalar_literal(&f.target, candidates[0]),
+                native_scalar_literal(&f.target, candidates[1]),
+            ))
+        }
+        Multiplicity::Lone if is_native_type_alias(&f.target) => {
+            let candidates = analyze::boundary_candidates_for_field(ir, sig_name, &f.name);
+            let v = native_scalar_literal(&f.target, *candidates.first()?);
+            Some(("None".to_string(), format!("Some({v})")))
+        }
+        Multiplicity::Set | Multiplicity::Seq => {
+            let candidates = analyze::cardinality_candidates_for_field(ir, sig_name, &f.name);
+            if candidates.len() < 2 || candidates[0] == candidates[1] {
+                return None;
+            }
+            Some((
+                cardinality_literal(&f.mult, &f.target, candidates[0]),
+                cardinality_literal(&f.mult, &f.target, candidates[1]),
+            ))
+        }
+        Multiplicity::One | Multiplicity::Lone if !is_native_type_alias(&f.target) => {
+            let sub = diverse_fixture_literals(ir, &f.target, cyclic, visiting);
+            if sub.len() < 2 {
+                return None;
+            }
+            let is_boxed = cyclic.contains(&(sig_name.to_string(), f.name.clone()));
+            let wrap = |v: &str| -> String {
+                let boxed = if is_boxed { format!("Box::new({v})") } else { v.to_string() };
+                if f.mult == Multiplicity::Lone { format!("Some({boxed})") } else { boxed }
+            };
+            Some((wrap(&sub[0]), wrap(&sub[1])))
+        }
+        _ => None,
+    }
+}
+
+/// Render up to 2 structurally-distinct instance-construction expressions
+/// for `sig_name`: find the first field (in declaration order) that offers
+/// a diversity source (its own boundary/cardinality candidates, an enum
+/// field's variant choice, or — recursively — a One/Lone-mult sig-reference
+/// field whose target itself has one) and build both variants via struct
+/// update syntax against the existing `default_{sig}()` factory, overriding
+/// only that one field. Every other field is left exactly as `default_X()`
+/// already builds it — this only reuses that existing, already-correct
+/// construction, never reimplements it.
+///
+/// `visiting` guards cyclic sig references: a field targeting a sig already
+/// being diversified up the call stack falls back to that sig's plain
+/// default rather than recursing infinitely.
+///
+/// Returns a single-element vec (just `default_{sig}()`) when no field
+/// anywhere offers diversity — callers use this to detect "can't safely
+/// diversify this sig" and should fall back to oxidtr's existing
+/// single-fixture behavior, with an honest disclosure that it's a
+/// single-point check (see #74 / the fixture-diversity design).
+#[allow(dead_code)]
+fn diverse_fixture_literals(
+    ir: &OxidtrIR,
+    sig_name: &str,
+    cyclic: &HashSet<(String, String)>,
+    visiting: &mut HashSet<String>,
+) -> Vec<String> {
+    let default_call = format!("default_{}()", to_snake_case(sig_name));
+    if visiting.contains(sig_name) || is_native_type_alias(sig_name) {
+        return vec![default_call];
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == sig_name) else {
+        return vec![default_call];
+    };
+
+    if s.is_enum {
+        let unit_variants: Vec<&str> = ir.structures.iter()
+            .filter(|c| c.parent.as_deref() == Some(sig_name) && c.fields.is_empty() && s.fields.is_empty())
+            .map(|c| c.name.as_str())
+            .collect();
+        return if unit_variants.len() >= 2 {
+            vec![format!("{sig_name}::{}", unit_variants[0]), format!("{sig_name}::{}", unit_variants[1])]
+        } else {
+            vec![default_call]
+        };
+    }
+
+    if s.fields.is_empty() {
+        return vec![default_call];
+    }
+
+    visiting.insert(sig_name.to_string());
+    let found = s.fields.iter().find_map(|f| {
+        field_diversity_values(ir, sig_name, f, cyclic, visiting).map(|(v0, v1)| (f.name.clone(), v0, v1))
+    });
+    visiting.remove(sig_name);
+
+    match found {
+        Some((field_name, v0, v1)) => vec![
+            format!("{sig_name} {{ {field_name}: {v0}, ..{default_call} }}"),
+            format!("{sig_name} {{ {field_name}: {v1}, ..{default_call} }}"),
+        ],
+        None => vec![default_call],
+    }
+}
+
+#[cfg(test)]
+mod diverse_fixture_literals_tests {
+    use super::*;
+
+    fn ir_from(input: &str) -> OxidtrIR {
+        let model = crate::parser::parse(input).expect("parse");
+        crate::ir::lower(&model).expect("lower")
+    }
+
+    #[test]
+    fn scalar_boundary_field_produces_two_variants() {
+        let ir = ir_from("sig Account { balance: one Int }\nfact NonNegative { all a: Account | a.balance >= 0 }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Account", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Account { balance: 0i64, ..default_account() }".to_string(),
+            "Account { balance: 1i64, ..default_account() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn sig_with_no_diversity_source_falls_back_to_single_default() {
+        // No scalar, no set/seq, no sig-reference fields at all: nothing to vary.
+        let ir = ir_from("sig Leaf {}");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Leaf", &cyclic, &mut visiting);
+        assert_eq!(literals, vec!["default_leaf()".to_string()]);
+    }
+
+    #[test]
+    fn recursive_sig_reference_inherits_target_diversity() {
+        // Wrapper has no scalar of its own, but its `inner` field's target
+        // (Inner) does — diversity should flow through the reference.
+        let ir = ir_from(r#"
+            sig Wrapper { inner: one Inner }
+            sig Inner { value: one Int }
+            fact NonNegative { all i: Inner | i.value >= 0 }
+        "#);
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Wrapper", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Wrapper { inner: Inner { value: 0i64, ..default_inner() }, ..default_wrapper() }".to_string(),
+            "Wrapper { inner: Inner { value: 1i64, ..default_inner() }, ..default_wrapper() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn cyclic_self_reference_does_not_recurse_infinitely() {
+        let ir = ir_from("sig Node { next: lone Node }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        // Must terminate (no stack overflow) and, since Node has no other
+        // diversity source, fall back to the single default.
+        let literals = diverse_fixture_literals(&ir, "Node", &cyclic, &mut visiting);
+        assert_eq!(literals, vec!["default_node()".to_string()]);
+    }
+
+    #[test]
+    fn set_field_cardinality_produces_two_variants() {
+        // No scalar field at all — only a set field with no explicit
+        // CardinalityBound fact, so cardinality_candidates_for_field's
+        // generic [0, 1] fallback should still yield real diversity.
+        let ir = ir_from("sig Item {}\nsig Bin { items: set Item }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Bin", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Bin { items: BTreeSet::new(), ..default_bin() }".to_string(),
+            "Bin { items: BTreeSet::from([default_item()]), ..default_bin() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn real_self_hosting_structure_node_diversifies_via_irfields_cardinality() {
+        // Regression test for the actual motivating case (#74): StructureNode
+        // has no scalar field anywhere in its own fields or in SigMultiplicity
+        // (a single-variant enum reached via origin), so scalar boundary
+        // derivation alone can't diversify it. Set/seq cardinality diversity —
+        // found here one hop into the recursion, via origin -> SigDecl.fields —
+        // is what actually resolves it.
+        let model = crate::parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+            .expect("parse_from_path resolves all opens");
+        let ir = crate::ir::lower(&model).expect("lower");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "StructureNode", &cyclic, &mut visiting);
+        assert_eq!(literals.len(), 2, "StructureNode should diversify, got: {literals:?}");
+        // Diversity is actually found through origin -> SigDecl.fields (a set
+        // field), one hop of recursion earlier than StructureNode's own
+        // irFields — StructureNode's fields are declared origin first, and
+        // `origin` is a boxed (cyclic) reference, which this must render
+        // correctly as `Box::new(...)`.
+        assert!(literals[0].contains("Box::new(SigDecl"), "expected boxed recursive SigDecl, got: {literals:?}");
+    }
+}
+
 /// Check if a sig type has existential (some) constraints, meaning all_{plural}s() was generated.
 fn has_existential_fixture(sig_name: &str, ir: &OxidtrIR) -> bool {
     for constraint in &ir.constraints {
