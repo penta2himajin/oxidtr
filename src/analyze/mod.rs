@@ -2,6 +2,7 @@
 /// Used by fixtures, schemas, doc comments, Bean Validation, and TryFrom generation.
 
 pub mod guarantee;
+pub mod pairwise;
 
 use crate::parser::ast::*;
 use crate::ir::nodes::*;
