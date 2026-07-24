@@ -872,6 +872,29 @@ fn rust_anomaly_test_generated_for_unconstrained() {
     // name is unconstrained → should generate anomaly test
     assert!(tests.contains("anomaly_"),
         "should generate anomaly tests:\n{tests}");
+    // #73: must contain a real assertion, not just `let _ = &instance.field;`
+    assert!(
+        !tests.contains("let _ = &instance."),
+        "anomaly tests must not use the no-op placeholder body:\n{tests}"
+    );
+    assert!(
+        tests.contains("assert_eq!(instance.name, cloned.name"),
+        "expected a real clone-preservation assertion for the unconstrained field:\n{tests}"
+    );
+}
+
+#[test]
+fn rust_anomaly_test_for_unbounded_collection_asserts_emptiness() {
+    let files = generate_from(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact AnyTeam { all t: Team | t = t }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("assert!(instance.members.is_empty()"),
+        "expected a real emptiness assertion for the unbounded-collection anomaly:\n{tests}"
+    );
 }
 
 #[test]

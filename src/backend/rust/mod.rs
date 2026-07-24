@@ -1845,8 +1845,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = default_{snake}();").unwrap();
-                        writeln!(out, "    // {sig_name}.{field_name} is not constrained — verify it is handled").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    let cloned = instance.clone();").unwrap();
+                        writeln!(out, "    assert_eq!(instance.{field_name}, cloned.{field_name}, \"clone must preserve unconstrained field {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -1856,8 +1856,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = anomaly_empty_{snake}();").unwrap();
-                        writeln!(out, "    // Verify invariants hold even with empty collection").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    assert!(instance.{field_name}.is_empty(), \"anomaly fixture should have empty {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -1867,8 +1866,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = default_{snake}();").unwrap();
-                        writeln!(out, "    // Self-referential field without guard — check for safety").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    let cloned = instance.clone();").unwrap();
+                        writeln!(out, "    assert_eq!(instance.{field_name}, cloned.{field_name}, \"clone must preserve self-referential field {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
