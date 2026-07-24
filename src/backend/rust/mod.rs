@@ -1542,8 +1542,17 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     .collect::<Vec<_>>()
                     .join(", ");
                 let pattern = chain.group_vars.join(", ");
+                // Destructuring `combos.iter()` (`&[Sig; n]`) binds each
+                // variable as `&Sig`, not owned `Sig` — fine for facts that
+                // only ever pass the bound vars BY REFERENCE into another
+                // call (`add(&a, &b)`), but a fact comparing a bound var
+                // directly (`add(a, zero) = a`) needs it owned, same as the
+                // single-fixture path's `let a = a.clone();` wrapper below.
+                let clones: String = chain.group_vars.iter()
+                    .map(|v| format!("let {v} = {v}.clone(); "))
+                    .collect();
                 writeln!(out, "    let combos: Vec<[{sig_name}; {n}]> = vec![{combos_str}];").unwrap();
-                writeln!(out, "    assert!(combos.iter().all(|[{pattern}]| {inner_str}));").unwrap();
+                writeln!(out, "    assert!(combos.iter().all(|[{pattern}]| {{ {clones}{inner_str} }}));").unwrap();
             }
         } else if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             // Generate linked setup: create owned item, insert into owner's field
@@ -3225,12 +3234,60 @@ fn resolve_domain_sig(ir: &OxidtrIR, domain: &Expr, var_sig: &HashMap<String, St
     }
 }
 
+/// True when `expr` contains a call to a NULLARY operation (no params, no
+/// receiver — `Expr::VarRef` in Alloy's own bare-reference-is-a-call
+/// convention, see `is_nullary_fun` in `expr_translator.rs`) whose declared
+/// return type is `sig_name` (e.g. `zero` in `add[a, zero] = a`). A single
+/// quantified variable compared against such a call still needs
+/// diversifying: the call's actual return value isn't known at generation
+/// time, so the one shared default fixture might coincidentally equal it,
+/// masking a real violation — found via a broken `add` (always returns its
+/// first argument) that only violates `Ident` for a non-default Money
+/// value, invisible when the sole tested value was the same amount-0
+/// default `zero()` itself resolves to.
+fn references_nullary_fun_of_sig(expr: &Expr, ir: &OxidtrIR, sig_name: &str) -> bool {
+    let is_target_nullary_fun = |name: &str| {
+        ir.operations.iter().any(|op| {
+            op.name == name
+                && op.params.is_empty()
+                && op.receiver_sig.is_none()
+                && op.return_type.as_ref().is_some_and(|rt| rt.type_name == sig_name)
+        })
+    };
+    match expr {
+        Expr::VarRef(name) => is_target_nullary_fun(name),
+        Expr::FunApp { name, receiver: None, args } if args.is_empty() => is_target_nullary_fun(name),
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(|r| references_nullary_fun_of_sig(r, ir, sig_name))
+                || args.iter().any(|a| references_nullary_fun_of_sig(a, ir, sig_name))
+        }
+        Expr::FieldAccess { base, .. } => references_nullary_fun_of_sig(base, ir, sig_name),
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
+        | Expr::Prime(inner) | Expr::TemporalUnary { expr: inner, .. } => {
+            references_nullary_fun_of_sig(inner, ir, sig_name)
+        }
+        Expr::MultFormula { expr: inner, .. } => references_nullary_fun_of_sig(inner, ir, sig_name),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            references_nullary_fun_of_sig(left, ir, sig_name) || references_nullary_fun_of_sig(right, ir, sig_name)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| references_nullary_fun_of_sig(&b.domain, ir, sig_name))
+                || references_nullary_fun_of_sig(body, ir, sig_name)
+        }
+        Expr::IntLiteral(_) => false,
+    }
+}
+
 /// Walk a chain of single-binding nested `all` quantifiers from `expr`,
 /// stopping at the first domain that can't be resolved to a sig (or at a
 /// non-quantifier / non-`all` / multi-binding node). Returns the trailing
-/// maximal run of chain steps sharing one sig as a `DiversifiableChain`
-/// (only when that run has 2+ variables total) plus the innermost body,
-/// or `None` if the chain is empty or the trailing run is too small.
+/// maximal run of chain steps sharing one sig as a `DiversifiableChain` —
+/// when that run has 2+ variables total, or has exactly 1 variable but the
+/// body references a nullary same-sig fun call (see
+/// `references_nullary_fun_of_sig`) — plus the innermost body, or `None` if
+/// the chain is empty or the trailing run doesn't qualify either way.
 fn find_diversifiable_chain<'a>(ir: &OxidtrIR, expr: &'a Expr) -> Option<(DiversifiableChain, &'a Expr)> {
     let mut steps: Vec<(Vec<String>, String)> = Vec::new();
     let mut var_sig: HashMap<String, String> = HashMap::new();
@@ -3252,10 +3309,10 @@ fn find_diversifiable_chain<'a>(ir: &OxidtrIR, expr: &'a Expr) -> Option<(Divers
     let last_sig = &steps.last()?.1;
     let split = steps.iter().rposition(|(_, s)| s != last_sig).map(|i| i + 1).unwrap_or(0);
     let group_vars: Vec<String> = steps[split..].iter().flat_map(|(vs, _)| vs.clone()).collect();
-    if group_vars.len() < 2 {
+    let group_sig = steps[split].1.clone();
+    if group_vars.len() < 2 && !references_nullary_fun_of_sig(cur, ir, &group_sig) {
         return None;
     }
-    let group_sig = steps[split].1.clone();
     let context_vars: Vec<(String, String)> = steps[..split].iter()
         .flat_map(|(vs, s)| vs.iter().map(move |v| (v.clone(), s.clone())))
         .collect();
