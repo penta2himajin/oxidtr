@@ -243,16 +243,21 @@ fn binary_temporal_static_test_does_not_assert_body() {
     let content = find_file(&files, "tests.rs");
     // The static test should exist (for check diff purposes)
     assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
-    // But it should NOT assert the body — binary temporal requires trace-based verification
-    // The test body should trivially pass, not contain a meaningless snapshot assertion
+    // But it should NOT assert the untranslated snapshot body — binary
+    // temporal needs a trace, not one instant.
     assert!(
         !content.contains("assert!(s.iter()"),
         "binary temporal static test should NOT assert body inline:\n{content}"
     );
-    // Should contain a comment about trace-based verification
+    // #73: should actually CALL the real trace checker with a deterministic
+    // empty trace (until on an empty trace is always false), not just a comment.
     assert!(
-        content.contains("binary temporal: requires trace-based verification"),
-        "binary temporal static test should document the limitation:\n{content}"
+        content.contains("Vec::new()") && content.contains("check_until_"),
+        "binary temporal static test should call the real trace checker:\n{content}"
+    );
+    assert!(
+        content.contains("assert!(!check_until_"),
+        "until on an empty trace is always false:\n{content}"
     );
 }
 
@@ -265,8 +270,24 @@ fn binary_temporal_since_static_test_does_not_assert_body() {
     let content = find_file(&files, "tests.rs");
     assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
     assert!(
-        content.contains("binary temporal: requires trace-based verification"),
-        "since static test should document the limitation:\n{content}"
+        content.contains("assert!(!check_since_"),
+        "since on an empty trace is always false:\n{content}"
+    );
+}
+
+/// `release`/`triggered` are `all`-based on the fallback path (unlike
+/// until/since's `position`-based short circuit), so an empty trace makes
+/// them always TRUE rather than always false — opposite sign from until/since.
+#[test]
+fn binary_temporal_release_static_test_asserts_true_on_empty_trace() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact ReleasedByX { (all s: S | s.x = s.x) release (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("assert!(check_release_") && !content.contains("assert!(!check_release_"),
+        "release on an empty trace is always true:\n{content}"
     );
 }
 
@@ -281,15 +302,17 @@ fn liveness_static_test_references_trace_checker_rust() {
     let content = find_file(&files, "tests.rs");
     // Liveness test should exist
     assert!(content.contains("fn liveness_"), "missing liveness test:\n{content}");
-    // But should NOT assert body — liveness cannot be verified with single snapshot
+    // But should NOT assert the untranslated snapshot body — liveness cannot
+    // be verified from a single instant.
     assert!(
         !content.contains("assert!(s.iter()"),
         "liveness static test should NOT assert body inline:\n{content}"
     );
-    // Should reference trace checker
+    // #73: should actually CALL check_liveness_* with a deterministic empty
+    // trace (`.any()` on an empty trace is always false).
     assert!(
-        content.contains("liveness: requires trace-based verification; see check_liveness_"),
-        "liveness static test should reference trace checker:\n{content}"
+        content.contains("assert!(!check_liveness_"),
+        "liveness static test should call the real trace checker:\n{content}"
     );
 }
 
@@ -302,8 +325,8 @@ fn past_liveness_static_test_references_trace_checker_rust() {
     let content = find_file(&files, "tests.rs");
     assert!(content.contains("fn past_liveness_"), "missing past_liveness test:\n{content}");
     assert!(
-        content.contains("past_liveness: requires trace-based verification; see check_past_liveness_"),
-        "past_liveness static test should reference trace checker:\n{content}"
+        content.contains("assert!(!check_past_liveness_"),
+        "past_liveness static test should call the real trace checker:\n{content}"
     );
 }
 

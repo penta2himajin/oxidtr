@@ -1426,31 +1426,64 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "/// {annotation}").unwrap();
         }
 
-        // Binary temporal: static test cannot meaningfully assert the body
-        // (e.g. `p until q` requires a trace, not a snapshot)
+        // Trace type shared by binary/liveness static tests below: a trace is
+        // a sequence of states, one state per quantified param (or a tuple of
+        // them). Used only to call the real check_* trace-checker function
+        // with a deterministic, always-safe empty trace (see below).
+        let trace_state_ty = if params.len() == 1 {
+            Some(format!("Vec<{}>", params[0].1))
+        } else if !params.is_empty() {
+            Some(format!("({})", params.iter().map(|(_, t)| format!("Vec<{t}>")).collect::<Vec<_>>().join(", ")))
+        } else {
+            None
+        };
+
+        // Binary temporal: a static snapshot can't meaningfully assert the
+        // body (e.g. `p until q` needs a trace, not one instant), but an
+        // EMPTY trace has operator-fixed, model-independent semantics —
+        // `position`-based ops (until/since) are always false, `all`-based
+        // ops (release/triggered) are always true on an empty slice —
+        // regardless of the fact's own predicate. Call the real checker with
+        // one and assert that fixed outcome: real coverage of the checker's
+        // control flow (slicing, position/rposition) without ever risking a
+        // false failure on someone else's model.
         if temporal_kind == Some(analyze::TemporalKind::Binary) {
-            let op_label = if let Some((op, _, _)) = analyze::find_temporal_binary(&constraint.expr) {
-                match op {
-                    TemporalBinaryOp::Until => "until",
-                    TemporalBinaryOp::Since => "since",
-                    TemporalBinaryOp::Release => "release",
-                    TemporalBinaryOp::Triggered => "triggered",
-                }
-            } else { "binary" };
+            let op = analyze::find_temporal_binary(&constraint.expr).map(|(op, _, _)| op);
+            let op_label = match op {
+                Some(TemporalBinaryOp::Until) => "until",
+                Some(TemporalBinaryOp::Since) => "since",
+                Some(TemporalBinaryOp::Release) => "release",
+                Some(TemporalBinaryOp::Triggered) => "triggered",
+                None => "binary",
+            };
             let snake_name = to_snake_case(&fact_name);
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
-            writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            if let (Some(op), Some(state_ty)) = (op, &trace_state_ty) {
+                let always_true = matches!(op, TemporalBinaryOp::Release | TemporalBinaryOp::Triggered);
+                let call = format!("check_{op_label}_{snake_name}(&trace)");
+                let assertion = if always_true { call } else { format!("!{call}") };
+                writeln!(out, "    let trace: Vec<{state_ty}> = Vec::new();").unwrap();
+                writeln!(out, "    assert!({assertion}, \"empty trace has fixed {op_label} semantics\");").unwrap();
+            } else {
+                writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
-            // Liveness/past_liveness: cannot be verified with single snapshot
+            // Liveness/past_liveness: `trace.iter().any(..)` is always false
+            // on an empty trace, regardless of the fact's own predicate.
             let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
                 "liveness" } else { "past_liveness" };
             let snake_name = to_snake_case(&fact_name);
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
-            writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            if let Some(state_ty) = &trace_state_ty {
+                writeln!(out, "    let trace: Vec<{state_ty}> = Vec::new();").unwrap();
+                writeln!(out, "    assert!(!check_{kind_label}_{snake_name}(&trace), \"empty trace must never satisfy {kind_label}\");").unwrap();
+            } else {
+                writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else {

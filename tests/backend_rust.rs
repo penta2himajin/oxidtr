@@ -729,8 +729,11 @@ fn rust_binary_temporal_static_test_is_comment_only() {
     let tests = find_file(&files, "tests.rs");
     assert!(tests.contains("fn temporal_wait_until_done"),
         "should generate temporal test:\n{tests}");
-    assert!(tests.contains("binary temporal: requires trace-based verification; see check_until_wait_until_done"),
-        "should document trace-based verification:\n{tests}");
+    // #73: the static test now actually calls the real trace checker with a
+    // deterministic empty trace (until on an empty trace is always false)
+    // instead of just documenting the limitation in a comment.
+    assert!(tests.contains("assert!(!check_until_wait_until_done"),
+        "should call the real trace checker:\n{tests}");
     assert!(tests.contains("fn check_until_wait_until_done"),
         "trace checker should still be generated:\n{tests}");
 }
