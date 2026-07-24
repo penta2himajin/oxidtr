@@ -91,14 +91,22 @@ fn generate_operation_body_is_translated_not_stubbed() {
 }
 
 #[test]
-fn generate_operation_with_no_body_is_still_a_stub() {
+fn generate_pred_with_no_body_is_vacuously_true() {
+    // An empty `pred` body is Alloy's empty conjunction — vacuously true by
+    // definition, same as `is_tautological_body`'s identical-conjuncts case
+    // below, just for zero conjuncts instead of one. Decidable at generation
+    // time; no `todo!()`, no LLM/tinycodr completion needed. (A `fun`'s body
+    // can never be empty this way — the parser requires an expression for
+    // `fun`, confirmed by `parse_fun`'s non-optional body parse — so this
+    // case is structurally always a `pred`.)
     let files = generate_from(r#"
         sig Thing {}
         pred noop[t: one Thing] {}
     "#);
     let content = find_file(&files, "operations.rs");
     assert!(content.contains("fn noop"));
-    assert!(content.contains("todo!"), "an operation with no body at all has nothing to translate");
+    assert!(content.contains("true"));
+    assert!(!content.contains("todo!"), "an empty pred body is vacuously true, not a stub");
 }
 
 #[test]

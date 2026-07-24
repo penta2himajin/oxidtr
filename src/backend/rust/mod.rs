@@ -1025,15 +1025,21 @@ fn param_type_str(p: &IRParam) -> String {
 /// not a decidable-to-`true` predicate. Without this ordering, such a body
 /// would silently emit a bare `true` regardless of the fn's real return type.
 ///
+/// An empty body is Alloy's empty conjunction — meaningful only for a
+/// `pred` (a `fun`'s body is a required expression in the grammar, never
+/// empty; see `parse_fun`), and vacuously true by definition, same
+/// rationale as `is_tautological_body` below just for zero conjuncts
+/// instead of one identical to itself. Checked first, before the
+/// `fun`-vs-tautology ordering below even applies.
+///
 /// Otherwise the body is generated, not stubbed, whenever possible: a
 /// tautological `pred` body becomes a plain `true`; a `fun` body translates
 /// via `translate_derived_field_body`; a genuine multi-clause `pred` body has
 /// each conjunct compiled via `translate_operation_clause` and joined with
-/// `&&`. `todo!()` remains only for operations with no body at all (nothing
-/// to translate).
+/// `&&`.
 fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, indent: &str) {
     if op.body.is_empty() {
-        writeln!(out, "{indent}todo!(\"oxidtr: implement {}\");", op.name).unwrap();
+        writeln!(out, "{indent}true").unwrap();
     } else if op.return_type.is_some() {
         writeln!(out, "{indent}{}", expr_translator::translate_derived_field_body(&op.body[0], ir)).unwrap();
     } else if analyze::is_tautological_body(&op.body) {
