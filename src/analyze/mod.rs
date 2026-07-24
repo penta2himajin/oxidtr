@@ -375,7 +375,7 @@ pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
     for c in &ir.constraints {
         let name = c.name.clone().unwrap_or_default();
-        results.extend(analyze_expr(&c.expr, &name));
+        results.extend(analyze_expr(&c.expr, &name, ir));
     }
     results
 }
@@ -503,7 +503,7 @@ pub fn describe_expr(expr: &Expr) -> String {
     }
 }
 
-fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
+fn analyze_expr(expr: &Expr, fact_name: &str, ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
 
     match expr {
@@ -514,7 +514,7 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                 let var = &bindings[0].vars[0];
                 let domain = &bindings[0].domain;
                 if let Expr::VarRef(sig_name) = domain {
-                    analyze_body_for_sig(body, sig_name, var, &mut results);
+                    analyze_body_for_sig(body, sig_name, var, ir, &mut results);
                 }
             }
         }
@@ -582,12 +582,12 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
         }
         // Alloy 6: temporal operators — unwrap and analyze inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
-            results.extend(analyze_expr(inner, ""));
+            results.extend(analyze_expr(inner, "", ir));
         }
         // Alloy 6: binary temporal operators — analyze both sides
         Expr::TemporalBinary { left, right, .. } => {
-            results.extend(analyze_expr(left, ""));
-            results.extend(analyze_expr(right, ""));
+            results.extend(analyze_expr(left, "", ir));
+            results.extend(analyze_expr(right, "", ir));
         }
         _ => {}
     }
@@ -603,10 +603,20 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
     results
 }
 
+/// Look up a field's declared multiplicity on a given sig.
+fn field_multiplicity(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Option<Multiplicity> {
+    ir.structures.iter()
+        .find(|s| s.name == sig_name)?
+        .fields.iter()
+        .find(|f| f.name == field_name)
+        .map(|f| f.mult.clone())
+}
+
 fn analyze_body_for_sig(
     body: &Expr,
     sig_name: &str,
     var: &str,
+    ir: &OxidtrIR,
     results: &mut Vec<ConstraintInfo>,
 ) {
     match body {
@@ -627,9 +637,50 @@ fn analyze_body_for_sig(
                 }
             }
         }
+        // some s.field / no s.field → Presence(Required/Absent). Only meaningful
+        // for a `lone` field: that's the only multiplicity Rust maps to
+        // `Option<T>`, where presence is actually type-encoded. `set`/`seq`
+        // fields map to collections (`BTreeSet<T>`/`Vec<T>`) where `some`/`no`
+        // means emptiness, not optionality — a `BTreeSet` can always be empty
+        // regardless of type, so that's not type-guaranteed and must stay a
+        // real test (it isn't classified as Presence at all here).
+        Expr::MultFormula { kind, expr } => {
+            if let Expr::FieldAccess { base, field } = expr.as_ref() {
+                if let Expr::VarRef(b) = base.as_ref() {
+                    if b == var && field_multiplicity(ir, sig_name, field) == Some(Multiplicity::Lone) {
+                        let kind = match kind {
+                            QuantKind::Some => Some(PresenceKind::Required),
+                            QuantKind::No => Some(PresenceKind::Absent),
+                            _ => None,
+                        };
+                        if let Some(kind) = kind {
+                            results.push(ConstraintInfo::Presence {
+                                sig_name: sig_name.to_string(),
+                                field_name: field.clone(),
+                                kind,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // #s.field = N or #s.field <= N etc. (via Comparison on Cardinality)
         // OR s.fieldA op s.fieldB → FieldOrdering
+        // OR s.x in s.field (non-self-referential) → Membership
         Expr::Comparison { op, left, right } => {
+            // x in s.field, where x isn't s itself (that's NoSelfRef territory) → Membership
+            if matches!(op, CompareOp::In) {
+                if let Expr::FieldAccess { base, field } = right.as_ref() {
+                    if let Expr::VarRef(b) = base.as_ref() {
+                        if b == var && !matches!(left.as_ref(), Expr::VarRef(v) if v == var) {
+                            results.push(ConstraintInfo::Membership {
+                                sig_name: sig_name.to_string(),
+                                field_name: field.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             // Look for cardinality on left
             if let Expr::Cardinality(inner) = left.as_ref() {
                 if let Expr::FieldAccess { field, .. } = inner.as_ref() {
@@ -709,8 +760,8 @@ fn analyze_body_for_sig(
         }
         // Conjunction: analyze both sides
         Expr::BinaryLogic { op: LogicOp::And, left, right } => {
-            analyze_body_for_sig(left, sig_name, var, results);
-            analyze_body_for_sig(right, sig_name, var, results);
+            analyze_body_for_sig(left, sig_name, var, ir, results);
+            analyze_body_for_sig(right, sig_name, var, ir, results);
         }
         // Iff: A iff B → biconditional constraint
         Expr::BinaryLogic { op: LogicOp::Iff, left, right } => {
@@ -727,7 +778,7 @@ fn analyze_body_for_sig(
                 condition: substitute_var(left, var, sig_name),
                 consequent: substitute_var(right, var, sig_name),
             });
-            analyze_body_for_sig(right, sig_name, var, results);
+            analyze_body_for_sig(right, sig_name, var, ir, results);
         }
         _ => {}
     }

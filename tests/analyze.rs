@@ -29,6 +29,53 @@ fn analyze_no_self_ref_constraint() {
 }
 
 #[test]
+fn analyze_presence_required_constraint() {
+    let infos = analyze_from(
+        "sig User { role: lone Role }\nsig Role {}\nfact RoleRequired { all u: User | some u.role }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Presence { sig_name, field_name, kind: analyze::PresenceKind::Required }
+        if sig_name == "User" && field_name == "role"
+    )), "expected a Presence(Required) constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_presence_absent_constraint() {
+    let infos = analyze_from(
+        "sig User { banned: lone Role }\nsig Role {}\nfact NoBan { all u: User | no u.banned }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Presence { sig_name, field_name, kind: analyze::PresenceKind::Absent }
+        if sig_name == "User" && field_name == "banned"
+    )), "expected a Presence(Absent) constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_membership_constraint() {
+    let infos = analyze_from(
+        "sig User { active: one Role, roles: set Role }\nsig Role {}\nfact ActiveIsAssigned { all u: User | u.active in u.roles }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Membership { sig_name, field_name }
+        if sig_name == "User" && field_name == "roles"
+    )), "expected a Membership constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_presence_does_not_fire_on_set_field() {
+    // `some`/`no` on a `set`/`seq` field means non-empty/empty, not
+    // optionality — Rust maps those to BTreeSet<T>/Vec<T>, which the type
+    // system never guarantees to be non-empty. Must not be classified as
+    // Presence (which can_guarantee_by_type treats as FullyByType and skips
+    // the test for) — that would silently drop a real, necessary test.
+    let infos = analyze_from(
+        "sig Role {}\nsig User { roles: set Role }\nfact HasRoles { all u: User | some u.roles }"
+    );
+    assert!(!infos.iter().any(|c| matches!(c, ConstraintInfo::Presence { .. })),
+        "set-mult field must not be classified as Presence, got: {infos:?}");
+}
+
+#[test]
 fn analyze_named_constraint() {
     let infos = analyze_from("sig User {}\nfact AllValid { all u: User | u = u }");
     assert!(infos.iter().any(|c| matches!(c,
