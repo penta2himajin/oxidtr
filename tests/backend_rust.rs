@@ -220,6 +220,26 @@ fn generate_fun_body_referencing_bare_sig_name_is_a_stub_not_wrong_code() {
 }
 
 #[test]
+fn generate_operation_call_to_another_operation_uses_generated_fn_name() {
+    // Regression test: a bare call from one operation's body into another
+    // (`addField[s, f]`) previously translated to the raw Alloy name
+    // (`addField(&s, &f)`), not the callee's actual generated Rust name
+    // (`field_is_present`, via fn_name_for_op) — a call to a function that
+    // doesn't exist. The callee must be resolved through the same naming
+    // rule its definition site uses.
+    let files = generate_from(r#"
+        sig SigDecl { fields: set FieldDecl }
+        sig FieldDecl {}
+        pred addField[s: one SigDecl, f: one FieldDecl] { f in s.fields }
+        pred wrapper[s: one SigDecl, f: one FieldDecl] { addField[s, f] }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("pub fn field_is_present"));
+    assert!(content.contains("field_is_present(&s, &f)"), "call site must use the callee's generated name:\n{content}");
+    assert!(!content.contains("addField("), "must not call the operation under its raw Alloy name:\n{content}");
+}
+
+#[test]
 fn generate_property_test() {
     let files = generate_from(r#"
         sig A {}

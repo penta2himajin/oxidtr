@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::naming::fn_name_for_op;
 use std::collections::{HashSet, BTreeSet};
 
 /// Info about a transitive closure field needed for function generation.
@@ -888,9 +889,15 @@ fn translate_inner_ir(
         }
         Expr::FunApp { name, receiver, args } => {
             // Bare calls into generated operations (preds / funs) take `&T`
-            // params — ensure args are passed by reference.
+            // params — ensure args are passed by reference. The callee's Rust
+            // name comes from `fn_name_for_op`, same as its definition site
+            // (`emit_operation_fn` in backend/rust/mod.rs) — a bare call must
+            // resolve through the same naming rule its target was declared
+            // under (e.g. `addField[s, f]` → `field_is_present(&s, &f)`, not
+            // the raw Alloy name), or the two never agree.
             let is_operation = receiver.is_none() && is_operation_call(name, ir);
-            translate_fun_app_with(name, receiver.as_deref(), args, |e| ti(e, false), is_operation)
+            let callee = if is_operation { fn_name_for_op(name) } else { name.clone() };
+            translate_fun_app_with(&callee, receiver.as_deref(), args, |e| ti(e, false), is_operation)
         }
     };
 
