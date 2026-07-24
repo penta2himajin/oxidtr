@@ -1221,6 +1221,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
             && !is_native_type_alias(&s.name))
         .map(|s| s.name.clone()).collect();
+    let cyclic = find_cyclic_fields(ir);
 
     // Check if any expression uses TC functions → need helpers import
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
@@ -1237,6 +1238,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "use super::fixtures::*;").unwrap();
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::operations::*;").unwrap();
+    // Pairwise-diversified fixture literals (see diverse_fixture_literals) can
+    // render `BTreeSet::from([..])`/`BTreeSet::new()` for set-mult fields.
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use std::collections::BTreeSet;").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -1446,9 +1451,54 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // These need linked fixture setup where B.field contains x.
         let ownership = detect_ownership_pattern(&constraint.expr, ir);
 
+        // Detect the fixture-collapse-prone shape: a chain of nested `all`
+        // quantifiers whose trailing run binds 2+ variables to the SAME sig
+        // — either directly (`all a, b, c: Money | ...`) or via a shared
+        // field domain (`all ir: OxidtrIR | all s1: ir.structures | all s2:
+        // ir.structures | ...`, oxidtr's own UniqueStructurePerSig). Today's
+        // single shared `default_X()` fixture makes every trailing variable
+        // equal, so a fact comparing them silently passes regardless of
+        // correctness. Build a small pairwise-covering set of distinct
+        // fixtures instead; leading (context) variables keep a plain default.
+        let multi_var_diversify = if ownership.is_none() && temporal_kind.is_none() {
+            find_diversifiable_chain(ir, &constraint.expr)
+                .filter(|(chain, _)| has_fixture.contains(&chain.group_sig))
+        } else {
+            None
+        };
+
+        let used_diversify = multi_var_diversify.is_some();
         writeln!(out, "#[test]").unwrap();
         writeln!(out, "fn {test_name}() {{").unwrap();
-        if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
+        if let Some((chain, inner_body)) = multi_var_diversify {
+            for (var, sig) in &chain.context_vars {
+                writeln!(out, "    let {var} = default_{}();", to_snake_case(sig)).unwrap();
+            }
+            let mut visiting = HashSet::new();
+            let literals = diverse_fixture_literals(ir, &chain.group_sig, &cyclic, &mut visiting);
+            let snake = to_snake_case(&chain.group_sig);
+            let inner_str = expr_translator::translate_with_ir(inner_body, ir);
+            if literals.len() < 2 {
+                writeln!(out, "    // @coverage single-point check: no fixture diversity found for `{}`;", chain.group_sig).unwrap();
+                writeln!(out, "    // all {} quantified variables below share one value.", chain.group_vars.len()).unwrap();
+                for v in &chain.group_vars {
+                    writeln!(out, "    let {v} = default_{snake}();").unwrap();
+                }
+                writeln!(out, "    assert!({inner_str});").unwrap();
+            } else {
+                let n = chain.group_vars.len();
+                let pools: Vec<Vec<String>> = vec![literals; n];
+                let tuples = analyze::pairwise::pairwise_covering_tuples(&pools);
+                let sig_name = &chain.group_sig;
+                let combos_str = tuples.iter()
+                    .map(|t| format!("[{}]", t.join(", ")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let pattern = chain.group_vars.join(", ");
+                writeln!(out, "    let combos: Vec<[{sig_name}; {n}]> = vec![{combos_str}];").unwrap();
+                writeln!(out, "    assert!(combos.iter().all(|[{pattern}]| {inner_str}));").unwrap();
+            }
+        } else if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             // Generate linked setup: create owned item, insert into owner's field
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
             let owner_param = params.iter().find(|(p, _)| p == owner_var);
@@ -1504,7 +1554,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 }
             }
         }
-        writeln!(out, "    assert!({body});").unwrap();
+        if !used_diversify {
+            writeln!(out, "    assert!({body});").unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
         } // end non-binary temporal
@@ -3022,8 +3074,6 @@ fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
 }
 
 /// Render a candidate integer as a Rust literal of the given native type.
-// TODO(#74 Stage B): wired into invariant-test generation in a follow-up commit.
-#[allow(dead_code)]
 fn native_scalar_literal(target: &str, n: i64) -> String {
     match target {
         "Int" => format!("{n}i64"),
@@ -3036,7 +3086,6 @@ fn native_scalar_literal(target: &str, n: i64) -> String {
 /// Render `n` elements of a set/seq field's target type — the same default
 /// element repeated, since this varies cardinality (how many), not element
 /// identity (which ones). `n <= 0` renders an empty collection.
-#[allow(dead_code)]
 fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
     if n <= 0 {
         return match mult {
@@ -3054,12 +3103,80 @@ fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
     }
 }
 
+/// A chain of nested `all` quantifiers ending in a trailing run of 2+
+/// variables bound to the same sig — the shape that collapses to a
+/// single-point check under today's one-shared-fixture generation. Leading
+/// `context_vars` (e.g. `ir: OxidtrIR` in `all ir: OxidtrIR | all s1:
+/// ir.structures | all s2: ir.structures | ...`) sit outside the group and
+/// keep a plain single default fixture; `group_vars` all range over
+/// `group_sig` and get pairwise-diversified fixtures.
+struct DiversifiableChain {
+    context_vars: Vec<(String, String)>,
+    group_sig: String,
+    group_vars: Vec<String>,
+}
+
+/// Resolve a quantifier binding's domain to the sig it ranges over: a bare
+/// sig reference (`s: Money`), or a field access on an earlier-bound
+/// variable in the same chain (`s1: ir.structures`, resolved via `ir`'s
+/// already-known sig and that sig's `structures` field's target type).
+fn resolve_domain_sig(ir: &OxidtrIR, domain: &Expr, var_sig: &HashMap<String, String>) -> Option<String> {
+    match domain {
+        Expr::VarRef(name) if ir.structures.iter().any(|s| s.name == *name) => Some(name.clone()),
+        Expr::FieldAccess { base, field } => {
+            let Expr::VarRef(base_name) = base.as_ref() else { return None };
+            let base_sig = var_sig.get(base_name)?;
+            ir.structures.iter()
+                .find(|s| s.name == *base_sig)
+                .and_then(|s| s.fields.iter().find(|f| f.name == *field))
+                .map(|f| f.target.clone())
+        }
+        _ => None,
+    }
+}
+
+/// Walk a chain of single-binding nested `all` quantifiers from `expr`,
+/// stopping at the first domain that can't be resolved to a sig (or at a
+/// non-quantifier / non-`all` / multi-binding node). Returns the trailing
+/// maximal run of chain steps sharing one sig as a `DiversifiableChain`
+/// (only when that run has 2+ variables total) plus the innermost body,
+/// or `None` if the chain is empty or the trailing run is too small.
+fn find_diversifiable_chain<'a>(ir: &OxidtrIR, expr: &'a Expr) -> Option<(DiversifiableChain, &'a Expr)> {
+    let mut steps: Vec<(Vec<String>, String)> = Vec::new();
+    let mut var_sig: HashMap<String, String> = HashMap::new();
+    let mut cur = expr;
+    loop {
+        let Expr::Quantifier { kind, bindings, body } = cur else { break };
+        if !matches!(kind, crate::parser::ast::QuantKind::All) || bindings.len() != 1 {
+            break;
+        }
+        let b = &bindings[0];
+        let Some(sig) = resolve_domain_sig(ir, &b.domain, &var_sig) else { break };
+        for v in &b.vars {
+            var_sig.insert(v.clone(), sig.clone());
+        }
+        steps.push((b.vars.clone(), sig));
+        cur = body;
+    }
+
+    let last_sig = &steps.last()?.1;
+    let split = steps.iter().rposition(|(_, s)| s != last_sig).map(|i| i + 1).unwrap_or(0);
+    let group_vars: Vec<String> = steps[split..].iter().flat_map(|(vs, _)| vs.clone()).collect();
+    if group_vars.len() < 2 {
+        return None;
+    }
+    let group_sig = steps[split].1.clone();
+    let context_vars: Vec<(String, String)> = steps[..split].iter()
+        .flat_map(|(vs, s)| vs.iter().map(move |v| (v.clone(), s.clone())))
+        .collect();
+    Some((DiversifiableChain { context_vars, group_sig, group_vars }, cur))
+}
+
 /// Find a diversity source for a single field — two rendered value
 /// expressions for that field, mult-appropriately wrapped (`Some(..)` for
 /// `lone`, `Box::new(..)` for a boxed/cyclic reference) — or `None` if this
 /// field can't offer one. Map fields (`value_type.is_some()`) are skipped;
 /// their construction is more involved and not handled here.
-#[allow(dead_code)]
 fn field_diversity_values(
     ir: &OxidtrIR,
     sig_name: &str,
@@ -3131,7 +3248,6 @@ fn field_diversity_values(
 /// diversify this sig" and should fall back to oxidtr's existing
 /// single-fixture behavior, with an honest disclosure that it's a
 /// single-point check (see #74 / the fixture-diversity design).
-#[allow(dead_code)]
 fn diverse_fixture_literals(
     ir: &OxidtrIR,
     sig_name: &str,

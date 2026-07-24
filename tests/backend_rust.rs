@@ -1219,3 +1219,87 @@ fn validator_handles_some_set_field() {
         "validator should check `!is_empty()` on the set field:\n{newtypes}"
     );
 }
+
+// ── Fixture-diversity pairwise wiring (#74 Stage B, Phase 3d) ───────────────
+
+/// `all a, b, c: Money | ...` previously bound a, b, c to the SAME single
+/// `vec![default_money()]`, collapsing a 3-variable universal property into
+/// a single-point check (a == b == c always). With a diversifiable field
+/// present, the generated test should instead iterate a small pairwise-
+/// covering set of distinct Money combinations.
+#[test]
+fn multi_var_same_sig_fact_uses_pairwise_covering_combos() {
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fact NonNegative { all m: Money | m.amount >= 0 }
+        fact TotalOrder {
+          all a, b, c: Money | a.amount <= b.amount or b.amount <= c.amount or c.amount <= a.amount
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("let combos: Vec<[Money; 3]>"),
+        "expected a pairwise-covering combos array for the 3-variable fact:\n{tests}"
+    );
+    assert!(
+        tests.contains(".iter().all(|[a, b, c]|"),
+        "expected the fact body to iterate the combos array by destructuring a, b, c:\n{tests}"
+    );
+    assert!(
+        !tests.contains("let a: Vec<Money> = vec![default_money()];"),
+        "must not fall back to the old single-shared-fixture pattern:\n{tests}"
+    );
+}
+
+/// When no field on the sig offers fixture diversity (no boundary-derivable
+/// scalar, no cardinality-varying collection), the generated test must keep
+/// today's single-fixture behavior but disclose that it's a single-point
+/// check rather than silently looking like a properly-covered test.
+#[test]
+fn multi_var_same_sig_fact_without_diversity_discloses_single_point_check() {
+    let files = generate_from(r#"
+        sig Money { tag: one Unit }
+        sig Unit {}
+        fact TotalOrder { all a, b, c: Money | a = a or b = b or c = c }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("@coverage single-point check"),
+        "expected an honest single-point-check disclosure comment:\n{tests}"
+    );
+    assert!(
+        tests.contains("let a = default_money();")
+            && tests.contains("let b = default_money();")
+            && tests.contains("let c = default_money();"),
+        "expected each variable bound to its own default() call:\n{tests}"
+    );
+}
+
+/// The real motivating case (oxidtr's own `UniqueStructurePerSig`): a chain
+/// of nested `all` quantifiers, where the trailing two range over the SAME
+/// field domain (`c.items`) rather than a bare sig name. This must be
+/// recognized as a same-sig multi-var group too — the leading `c: Container`
+/// is a context variable (plain default), and `i1`/`i2` get diversified.
+#[test]
+fn nested_quantifier_over_shared_field_domain_uses_pairwise_covering_combos() {
+    let files = generate_from(r#"
+        sig Container { items: set Item }
+        sig Item { tag: one Int }
+        fact UniqueTagPerContainer {
+          all c: Container | all i1: c.items | all i2: c.items | i1.tag = i2.tag implies i1 = i2
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("let c = default_container();"),
+        "expected the leading context variable bound to a plain default:\n{tests}"
+    );
+    assert!(
+        tests.contains("let combos: Vec<[Item; 2]>"),
+        "expected a pairwise-covering combos array for the shared c.items domain:\n{tests}"
+    );
+    assert!(
+        tests.contains(".iter().all(|[i1, i2]|"),
+        "expected the fact body to iterate the combos array by destructuring i1, i2:\n{tests}"
+    );
+}
