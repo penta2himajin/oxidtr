@@ -793,6 +793,48 @@ pub enum BeanValidation {
     MinMax { fact_name: String },
 }
 
+/// A boundary value + one step past it, deterministically derived from a
+/// bound (e.g. `AtLeast(0)` → `[0, 1]`). `AtMost(0)` clamps to `[0]` rather
+/// than underflowing into a negative "one below" value.
+fn boundary_pair(bound: &BoundKind) -> Vec<i64> {
+    match bound {
+        BoundKind::Exact(n) => vec![*n as i64],
+        BoundKind::AtLeast(n) => vec![*n as i64, *n as i64 + 1],
+        BoundKind::AtMost(0) => vec![0],
+        BoundKind::AtMost(n) => vec![*n as i64 - 1, *n as i64],
+    }
+}
+
+/// Derive a small, deterministic set of candidate values for a scalar
+/// (Int-typed) field, from the sig's own `ValueBound` fact on that field
+/// (the boundary value + one step past it). Falls back to a generic `[0, 1]`
+/// variety pair when the field has no derivable bound — better than a single
+/// fixture value, per the fixture-diversity design (a field's own facts
+/// aren't the only reason to want more than one candidate: an
+/// otherwise-unconstrained field still shouldn't collapse a multi-variable
+/// fact's test to a single point).
+pub fn boundary_candidates_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<i64> {
+    constraints_for_sig(ir, sig_name).iter()
+        .find_map(|c| match c {
+            ConstraintInfo::ValueBound { field_name: f, bound, .. } if f == field_name => Some(boundary_pair(bound)),
+            _ => None,
+        })
+        .unwrap_or_else(|| vec![0, 1])
+}
+
+/// Like `boundary_candidates_for_field`, but for a `set`/`seq` field's
+/// *cardinality* (element count), derived from `CardinalityBound` instead of
+/// `ValueBound` — a collection field's own element values aren't varied here,
+/// only how many elements it holds.
+pub fn cardinality_candidates_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<i64> {
+    constraints_for_sig(ir, sig_name).iter()
+        .find_map(|c| match c {
+            ConstraintInfo::CardinalityBound { field_name: f, bound, .. } if f == field_name => Some(boundary_pair(bound)),
+            _ => None,
+        })
+        .unwrap_or_else(|| vec![0, 1])
+}
+
 /// Get Bean Validation annotations for a specific field on a sig.
 pub fn bean_validations_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<BeanValidation> {
     let mut results = Vec::new();

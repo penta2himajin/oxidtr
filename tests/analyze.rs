@@ -75,6 +75,47 @@ fn analyze_presence_does_not_fire_on_set_field() {
         "set-mult field must not be classified as Presence, got: {infos:?}");
 }
 
+fn ir_from(input: &str) -> oxidtr::ir::nodes::OxidtrIR {
+    let model = parser::parse(input).expect("parse");
+    ir::lower(&model).expect("lower")
+}
+
+#[test]
+fn boundary_candidates_at_least_gives_boundary_and_one_past() {
+    let ir = ir_from("sig Account { balance: one Int }\nfact NonNegative { all a: Account | a.balance >= 0 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "balance"), vec![0, 1]);
+}
+
+#[test]
+fn boundary_candidates_at_most_gives_one_below_and_boundary() {
+    let ir = ir_from("sig Account { balance: one Int }\nfact Capped { all a: Account | a.balance <= 100 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "balance"), vec![99, 100]);
+}
+
+#[test]
+fn boundary_candidates_at_most_zero_does_not_underflow() {
+    let ir = ir_from("sig Account { debt: one Int }\nfact NoDebt { all a: Account | a.debt <= 0 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "debt"), vec![0]);
+}
+
+#[test]
+fn boundary_candidates_exact_gives_single_value() {
+    let ir = ir_from("sig Account { fee: one Int }\nfact FixedFee { all a: Account | a.fee = 5 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "fee"), vec![5]);
+}
+
+#[test]
+fn boundary_candidates_falls_back_to_generic_pair_when_unconstrained() {
+    let ir = ir_from("sig Account { score: one Int }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "score"), vec![0, 1]);
+}
+
+#[test]
+fn cardinality_candidates_from_cardinality_bound() {
+    let ir = ir_from("sig User { roles: set Role }\nsig Role {}\nfact MaxRoles { all u: User | #u.roles <= 3 }");
+    assert_eq!(analyze::cardinality_candidates_for_field(&ir, "User", "roles"), vec![2, 3]);
+}
+
 #[test]
 fn analyze_named_constraint() {
     let infos = analyze_from("sig User {}\nfact AllValid { all u: User | u = u }");
