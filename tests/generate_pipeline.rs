@@ -99,6 +99,52 @@ fn generate_detects_warnings() {
 }
 
 #[test]
+fn generate_detects_tautological_fact() {
+    // Regression test for oxidtr's own self-hosting model's IRParentAsymmetric
+    // fact: an implication whose consequent is a self-comparison is
+    // unconditionally true regardless of the antecedent, silently making the
+    // whole fact vacuous. Structural-only warning, doesn't auto-fix.
+    let tmp = tempfile::tempdir().unwrap();
+    let out_dir = tmp.path().join("output");
+    let model_path = write_model(tmp.path(), "model.als", r#"
+        sig Node { parent: lone Node }
+        fact ParentAsymmetric {
+            all n: Node | all p: Node |
+                n.parent = p implies p.parent = p.parent
+        }
+    "#);
+
+    let result = generate::run(&model_path, &test_config(out_dir.to_str().unwrap())).unwrap();
+
+    assert!(
+        result.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::TautologicalFact)
+            && w.location.contains("ParentAsymmetric")),
+        "expected TAUTOLOGICAL_FACT warning for ParentAsymmetric, got: {:?}",
+        result.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn generate_does_not_warn_on_genuinely_conditional_fact() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_dir = tmp.path().join("output");
+    let model_path = write_model(tmp.path(), "model.als", r#"
+        sig Account { balance: one Int, cap: one Int }
+        fact WithinCap {
+            all a: Account | a.balance > a.cap implies a.balance = a.cap
+        }
+    "#);
+
+    let result = generate::run(&model_path, &test_config(out_dir.to_str().unwrap())).unwrap();
+
+    assert!(
+        !result.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::TautologicalFact)),
+        "should not warn on a genuinely conditional fact, got: {:?}",
+        result.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn generate_warnings_error_level_fails() {
     let tmp = tempfile::tempdir().unwrap();
     let out_dir = tmp.path().join("output");

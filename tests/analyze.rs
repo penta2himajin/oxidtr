@@ -29,6 +29,94 @@ fn analyze_no_self_ref_constraint() {
 }
 
 #[test]
+fn analyze_presence_required_constraint() {
+    let infos = analyze_from(
+        "sig User { role: lone Role }\nsig Role {}\nfact RoleRequired { all u: User | some u.role }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Presence { sig_name, field_name, kind: analyze::PresenceKind::Required }
+        if sig_name == "User" && field_name == "role"
+    )), "expected a Presence(Required) constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_presence_absent_constraint() {
+    let infos = analyze_from(
+        "sig User { banned: lone Role }\nsig Role {}\nfact NoBan { all u: User | no u.banned }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Presence { sig_name, field_name, kind: analyze::PresenceKind::Absent }
+        if sig_name == "User" && field_name == "banned"
+    )), "expected a Presence(Absent) constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_membership_constraint() {
+    let infos = analyze_from(
+        "sig User { active: one Role, roles: set Role }\nsig Role {}\nfact ActiveIsAssigned { all u: User | u.active in u.roles }"
+    );
+    assert!(infos.iter().any(|c| matches!(c,
+        ConstraintInfo::Membership { sig_name, field_name }
+        if sig_name == "User" && field_name == "roles"
+    )), "expected a Membership constraint, got: {infos:?}");
+}
+
+#[test]
+fn analyze_presence_does_not_fire_on_set_field() {
+    // `some`/`no` on a `set`/`seq` field means non-empty/empty, not
+    // optionality — Rust maps those to BTreeSet<T>/Vec<T>, which the type
+    // system never guarantees to be non-empty. Must not be classified as
+    // Presence (which can_guarantee_by_type treats as FullyByType and skips
+    // the test for) — that would silently drop a real, necessary test.
+    let infos = analyze_from(
+        "sig Role {}\nsig User { roles: set Role }\nfact HasRoles { all u: User | some u.roles }"
+    );
+    assert!(!infos.iter().any(|c| matches!(c, ConstraintInfo::Presence { .. })),
+        "set-mult field must not be classified as Presence, got: {infos:?}");
+}
+
+fn ir_from(input: &str) -> oxidtr::ir::nodes::OxidtrIR {
+    let model = parser::parse(input).expect("parse");
+    ir::lower(&model).expect("lower")
+}
+
+#[test]
+fn boundary_candidates_at_least_gives_boundary_and_one_past() {
+    let ir = ir_from("sig Account { balance: one Int }\nfact NonNegative { all a: Account | a.balance >= 0 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "balance"), vec![0, 1]);
+}
+
+#[test]
+fn boundary_candidates_at_most_gives_one_below_and_boundary() {
+    let ir = ir_from("sig Account { balance: one Int }\nfact Capped { all a: Account | a.balance <= 100 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "balance"), vec![99, 100]);
+}
+
+#[test]
+fn boundary_candidates_at_most_zero_does_not_underflow() {
+    let ir = ir_from("sig Account { debt: one Int }\nfact NoDebt { all a: Account | a.debt <= 0 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "debt"), vec![0]);
+}
+
+#[test]
+fn boundary_candidates_exact_gives_single_value() {
+    let ir = ir_from("sig Account { fee: one Int }\nfact FixedFee { all a: Account | a.fee = 5 }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "fee"), vec![5]);
+}
+
+#[test]
+fn boundary_candidates_falls_back_to_generic_pair_when_unconstrained() {
+    let ir = ir_from("sig Account { score: one Int }");
+    assert_eq!(analyze::boundary_candidates_for_field(&ir, "Account", "score"), vec![0, 1]);
+}
+
+#[test]
+fn cardinality_candidates_from_cardinality_bound() {
+    let ir = ir_from("sig User { roles: set Role }\nsig Role {}\nfact MaxRoles { all u: User | #u.roles <= 3 }");
+    assert_eq!(analyze::cardinality_candidates_for_field(&ir, "User", "roles"), vec![2, 3]);
+}
+
+#[test]
 fn analyze_named_constraint() {
     let infos = analyze_from("sig User {}\nfact AllValid { all u: User | u = u }");
     assert!(infos.iter().any(|c| matches!(c,

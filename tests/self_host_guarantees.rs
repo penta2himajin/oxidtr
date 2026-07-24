@@ -40,19 +40,28 @@ fn guarantee_1_rust_tests_cover_named_facts() {
     let tests = files.iter().find(|f| f.path == "tests.rs")
         .expect("tests.rs should be generated");
 
-    let facts = named_facts(&ir);
-    assert!(!facts.is_empty(), "model should have named facts");
+    assert!(!ir.constraints.is_empty(), "model should have named facts");
 
-    // Each named fact should appear in the test file (as invariant_, boundary_, or invalid_)
-    for fact in &facts {
+    // Each named fact should appear in the test file (as invariant_, boundary_,
+    // or a fact×operation cross-test), OR be exempt: a structurally
+    // tautological fact (#74 Stage A: always true regardless of input, no
+    // meaningful test possible) legitimately generates no test at all — that
+    // is honest, not a coverage gap. Cross-tests are only generated for
+    // (fact, operation) pairs whose sig types overlap (#73), so an
+    // #[ignore]d `_preserved_after_` stub is no longer guaranteed to exist
+    // for every fact just because *some* operation exists somewhere.
+    for constraint in &ir.constraints {
+        let Some(fact) = &constraint.name else { continue };
         let snake = to_snake_case(fact);
         let has_invariant = tests.content.contains(&format!("fn invariant_{snake}"))
             || tests.content.contains(&format!("Type-guaranteed: {fact}"));
         let has_boundary = tests.content.contains(&format!("fn boundary_{snake}"));
-        let has_cross = tests.content.contains(&format!("{snake}_preserved_after_"));
+        let has_cross = tests.content.contains(&format!("{snake}_preserved_after_"))
+            || tests.content.contains(&format!("_implies_{snake}"));
+        let is_tautological = oxidtr::analyze::find_tautological_clause(&constraint.expr).is_some();
         assert!(
-            has_invariant || has_boundary || has_cross,
-            "fact {fact} should appear in tests.rs (looked for invariant_{snake}, boundary_{snake}, or {snake}_preserved_after_)"
+            has_invariant || has_boundary || has_cross || is_tautological,
+            "fact {fact} should appear in tests.rs (looked for invariant_{snake}, boundary_{snake}, a {snake}_preserved_after_/_implies_{snake} cross-test, or a structural-tautology exemption)"
         );
     }
 }

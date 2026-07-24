@@ -88,6 +88,7 @@ one sig UnconstrainedTransitivity extends WarningKind {}
 one sig UnhandledResponsePattern extends WarningKind {}
 one sig MissingErrorPropagation  extends WarningKind {}
 one sig KonpuSingletonIdentity   extends WarningKind {}
+one sig TautologicalFact         extends WarningKind {}
 
 abstract sig WarningLevel {}
 one sig Error extends WarningLevel {}

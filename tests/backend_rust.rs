@@ -729,8 +729,11 @@ fn rust_binary_temporal_static_test_is_comment_only() {
     let tests = find_file(&files, "tests.rs");
     assert!(tests.contains("fn temporal_wait_until_done"),
         "should generate temporal test:\n{tests}");
-    assert!(tests.contains("binary temporal: requires trace-based verification; see check_until_wait_until_done"),
-        "should document trace-based verification:\n{tests}");
+    // #73: the static test now actually calls the real trace checker with a
+    // deterministic empty trace (until on an empty trace is always false)
+    // instead of just documenting the limitation in a comment.
+    assert!(tests.contains("assert!(!check_until_wait_until_done"),
+        "should call the real trace checker:\n{tests}");
     assert!(tests.contains("fn check_until_wait_until_done"),
         "trace checker should still be generated:\n{tests}");
 }
@@ -872,6 +875,29 @@ fn rust_anomaly_test_generated_for_unconstrained() {
     // name is unconstrained → should generate anomaly test
     assert!(tests.contains("anomaly_"),
         "should generate anomaly tests:\n{tests}");
+    // #73: must contain a real assertion, not just `let _ = &instance.field;`
+    assert!(
+        !tests.contains("let _ = &instance."),
+        "anomaly tests must not use the no-op placeholder body:\n{tests}"
+    );
+    assert!(
+        tests.contains("assert_eq!(instance.name, cloned.name"),
+        "expected a real clone-preservation assertion for the unconstrained field:\n{tests}"
+    );
+}
+
+#[test]
+fn rust_anomaly_test_for_unbounded_collection_asserts_emptiness() {
+    let files = generate_from(r#"
+        sig Team { members: set User }
+        sig User {}
+        fact AnyTeam { all t: Team | t = t }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("assert!(instance.members.is_empty()"),
+        "expected a real emptiness assertion for the unbounded-collection anomaly:\n{tests}"
+    );
 }
 
 #[test]
@@ -1217,5 +1243,129 @@ fn validator_handles_some_set_field() {
     assert!(
         newtypes.contains(".occupants.is_empty()"),
         "validator should check `!is_empty()` on the set field:\n{newtypes}"
+    );
+}
+
+// ── Fixture-diversity pairwise wiring (#74 Stage B, Phase 3d) ───────────────
+
+/// `all a, b, c: Money | ...` previously bound a, b, c to the SAME single
+/// `vec![default_money()]`, collapsing a 3-variable universal property into
+/// a single-point check (a == b == c always). With a diversifiable field
+/// present, the generated test should instead iterate a small pairwise-
+/// covering set of distinct Money combinations.
+#[test]
+fn multi_var_same_sig_fact_uses_pairwise_covering_combos() {
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fact NonNegative { all m: Money | m.amount >= 0 }
+        fact TotalOrder {
+          all a, b, c: Money | a.amount <= b.amount or b.amount <= c.amount or c.amount <= a.amount
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("let combos: Vec<[Money; 3]>"),
+        "expected a pairwise-covering combos array for the 3-variable fact:\n{tests}"
+    );
+    assert!(
+        tests.contains(".iter().all(|[a, b, c]|"),
+        "expected the fact body to iterate the combos array by destructuring a, b, c:\n{tests}"
+    );
+    assert!(
+        !tests.contains("let a: Vec<Money> = vec![default_money()];"),
+        "must not fall back to the old single-shared-fixture pattern:\n{tests}"
+    );
+}
+
+/// When no field on the sig offers fixture diversity (no boundary-derivable
+/// scalar, no cardinality-varying collection), the generated test must keep
+/// today's single-fixture behavior but disclose that it's a single-point
+/// check rather than silently looking like a properly-covered test.
+#[test]
+fn multi_var_same_sig_fact_without_diversity_discloses_single_point_check() {
+    let files = generate_from(r#"
+        sig Money { tag: one Unit }
+        sig Unit {}
+        fact TotalOrder { all a, b, c: Money | a = a or b = b or c = c }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("@coverage single-point check"),
+        "expected an honest single-point-check disclosure comment:\n{tests}"
+    );
+    assert!(
+        tests.contains("let a = default_money();")
+            && tests.contains("let b = default_money();")
+            && tests.contains("let c = default_money();"),
+        "expected each variable bound to its own default() call:\n{tests}"
+    );
+}
+
+/// The real motivating case (oxidtr's own `UniqueStructurePerSig`): a chain
+/// of nested `all` quantifiers, where the trailing two range over the SAME
+/// field domain (`c.items`) rather than a bare sig name. This must be
+/// recognized as a same-sig multi-var group too — the leading `c: Container`
+/// is a context variable (plain default), and `i1`/`i2` get diversified.
+#[test]
+fn nested_quantifier_over_shared_field_domain_uses_pairwise_covering_combos() {
+    let files = generate_from(r#"
+        sig Container { items: set Item }
+        sig Item { tag: one Int }
+        fact UniqueTagPerContainer {
+          all c: Container | all i1: c.items | all i2: c.items | i1.tag = i2.tag implies i1 = i2
+        }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("let c = default_container();"),
+        "expected the leading context variable bound to a plain default:\n{tests}"
+    );
+    assert!(
+        tests.contains("let combos: Vec<[Item; 2]>"),
+        "expected a pairwise-covering combos array for the shared c.items domain:\n{tests}"
+    );
+    assert!(
+        tests.contains(".iter().all(|[i1, i2]|"),
+        "expected the fact body to iterate the combos array by destructuring i1, i2:\n{tests}"
+    );
+}
+
+/// A fact quantifying just ONE variable of a sig, but comparing it against a
+/// call to a NULLARY fun of the same sig (`zero`), still needs fixture
+/// diversity: the fun's actual return value isn't known at generation time,
+/// so the one shared default fixture might coincidentally equal it,
+/// silently masking a real violation. Found via a broken `add` (always
+/// returns its first argument) that only violates `Ident` for a non-default
+/// Money value — `invariant_ident`'s single `default_money()` (amount 0)
+/// happened to make `zero()`'s value indistinguishable from the quantified
+/// variable, hiding the bug that a diversified test caught immediately.
+#[test]
+fn single_var_fact_referencing_nullary_fun_of_same_sig_is_diversified() {
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fact NonNegative { all m: Money | m.amount >= 0 }
+        fun zero: one Money { Money }
+        fun add[x, y: one Money]: one Money { x }
+        fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
+    "#);
+    let tests = find_file(&files, "tests.rs");
+    assert!(
+        tests.contains("let combos: Vec<[Money; 1]>"),
+        "expected a diversified single-variable combos array:\n{tests}"
+    );
+    let after = tests.split("fn invariant_ident()").nth(1).expect("invariant_ident should exist");
+    let ident_test = after.split("\n}").next().expect("invariant_ident body");
+    assert!(
+        !ident_test.contains("vec![default_money()]"),
+        "invariant_ident must not fall back to the old single-shared-fixture pattern:\n{tests}"
+    );
+    // Regression: `combos.iter().all(|[a]| ...)` binds `a: &Money`, but a
+    // fact comparing the bound var directly (`add(a, zero) = a`, not just
+    // passing it BY REFERENCE into another call) needs it owned — without
+    // this clone the generated assertion fails to compile
+    // (E0308: expected `Money`, found `&Money`).
+    assert!(
+        ident_test.contains("let a = a.clone();"),
+        "combos-destructured var must be cloned to owned before a direct comparison:\n{tests}"
     );
 }

@@ -2,6 +2,7 @@
 /// Used by fixtures, schemas, doc comments, Bean Validation, and TryFrom generation.
 
 pub mod guarantee;
+pub mod pairwise;
 
 use crate::parser::ast::*;
 use crate::ir::nodes::*;
@@ -375,7 +376,7 @@ pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
     for c in &ir.constraints {
         let name = c.name.clone().unwrap_or_default();
-        results.extend(analyze_expr(&c.expr, &name));
+        results.extend(analyze_expr(&c.expr, &name, ir));
     }
     results
 }
@@ -503,7 +504,7 @@ pub fn describe_expr(expr: &Expr) -> String {
     }
 }
 
-fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
+fn analyze_expr(expr: &Expr, fact_name: &str, ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
 
     match expr {
@@ -514,7 +515,7 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
                 let var = &bindings[0].vars[0];
                 let domain = &bindings[0].domain;
                 if let Expr::VarRef(sig_name) = domain {
-                    analyze_body_for_sig(body, sig_name, var, &mut results);
+                    analyze_body_for_sig(body, sig_name, var, ir, &mut results);
                 }
             }
         }
@@ -582,12 +583,12 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
         }
         // Alloy 6: temporal operators — unwrap and analyze inner expression
         Expr::TemporalUnary { expr: inner, .. } => {
-            results.extend(analyze_expr(inner, ""));
+            results.extend(analyze_expr(inner, "", ir));
         }
         // Alloy 6: binary temporal operators — analyze both sides
         Expr::TemporalBinary { left, right, .. } => {
-            results.extend(analyze_expr(left, ""));
-            results.extend(analyze_expr(right, ""));
+            results.extend(analyze_expr(left, "", ir));
+            results.extend(analyze_expr(right, "", ir));
         }
         _ => {}
     }
@@ -603,10 +604,20 @@ fn analyze_expr(expr: &Expr, fact_name: &str) -> Vec<ConstraintInfo> {
     results
 }
 
+/// Look up a field's declared multiplicity on a given sig.
+fn field_multiplicity(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Option<Multiplicity> {
+    ir.structures.iter()
+        .find(|s| s.name == sig_name)?
+        .fields.iter()
+        .find(|f| f.name == field_name)
+        .map(|f| f.mult.clone())
+}
+
 fn analyze_body_for_sig(
     body: &Expr,
     sig_name: &str,
     var: &str,
+    ir: &OxidtrIR,
     results: &mut Vec<ConstraintInfo>,
 ) {
     match body {
@@ -627,9 +638,50 @@ fn analyze_body_for_sig(
                 }
             }
         }
+        // some s.field / no s.field → Presence(Required/Absent). Only meaningful
+        // for a `lone` field: that's the only multiplicity Rust maps to
+        // `Option<T>`, where presence is actually type-encoded. `set`/`seq`
+        // fields map to collections (`BTreeSet<T>`/`Vec<T>`) where `some`/`no`
+        // means emptiness, not optionality — a `BTreeSet` can always be empty
+        // regardless of type, so that's not type-guaranteed and must stay a
+        // real test (it isn't classified as Presence at all here).
+        Expr::MultFormula { kind, expr } => {
+            if let Expr::FieldAccess { base, field } = expr.as_ref() {
+                if let Expr::VarRef(b) = base.as_ref() {
+                    if b == var && field_multiplicity(ir, sig_name, field) == Some(Multiplicity::Lone) {
+                        let kind = match kind {
+                            QuantKind::Some => Some(PresenceKind::Required),
+                            QuantKind::No => Some(PresenceKind::Absent),
+                            _ => None,
+                        };
+                        if let Some(kind) = kind {
+                            results.push(ConstraintInfo::Presence {
+                                sig_name: sig_name.to_string(),
+                                field_name: field.clone(),
+                                kind,
+                            });
+                        }
+                    }
+                }
+            }
+        }
         // #s.field = N or #s.field <= N etc. (via Comparison on Cardinality)
         // OR s.fieldA op s.fieldB → FieldOrdering
+        // OR s.x in s.field (non-self-referential) → Membership
         Expr::Comparison { op, left, right } => {
+            // x in s.field, where x isn't s itself (that's NoSelfRef territory) → Membership
+            if matches!(op, CompareOp::In) {
+                if let Expr::FieldAccess { base, field } = right.as_ref() {
+                    if let Expr::VarRef(b) = base.as_ref() {
+                        if b == var && !matches!(left.as_ref(), Expr::VarRef(v) if v == var) {
+                            results.push(ConstraintInfo::Membership {
+                                sig_name: sig_name.to_string(),
+                                field_name: field.clone(),
+                            });
+                        }
+                    }
+                }
+            }
             // Look for cardinality on left
             if let Expr::Cardinality(inner) = left.as_ref() {
                 if let Expr::FieldAccess { field, .. } = inner.as_ref() {
@@ -709,8 +761,8 @@ fn analyze_body_for_sig(
         }
         // Conjunction: analyze both sides
         Expr::BinaryLogic { op: LogicOp::And, left, right } => {
-            analyze_body_for_sig(left, sig_name, var, results);
-            analyze_body_for_sig(right, sig_name, var, results);
+            analyze_body_for_sig(left, sig_name, var, ir, results);
+            analyze_body_for_sig(right, sig_name, var, ir, results);
         }
         // Iff: A iff B → biconditional constraint
         Expr::BinaryLogic { op: LogicOp::Iff, left, right } => {
@@ -727,7 +779,7 @@ fn analyze_body_for_sig(
                 condition: substitute_var(left, var, sig_name),
                 consequent: substitute_var(right, var, sig_name),
             });
-            analyze_body_for_sig(right, sig_name, var, results);
+            analyze_body_for_sig(right, sig_name, var, ir, results);
         }
         _ => {}
     }
@@ -740,6 +792,48 @@ pub enum BeanValidation {
     Size { min: Option<usize>, max: Option<usize>, fact_name: String },
     /// @Min/@Max for comparison constraints (no integer literal in AST)
     MinMax { fact_name: String },
+}
+
+/// A boundary value + one step past it, deterministically derived from a
+/// bound (e.g. `AtLeast(0)` → `[0, 1]`). `AtMost(0)` clamps to `[0]` rather
+/// than underflowing into a negative "one below" value.
+fn boundary_pair(bound: &BoundKind) -> Vec<i64> {
+    match bound {
+        BoundKind::Exact(n) => vec![*n as i64],
+        BoundKind::AtLeast(n) => vec![*n as i64, *n as i64 + 1],
+        BoundKind::AtMost(0) => vec![0],
+        BoundKind::AtMost(n) => vec![*n as i64 - 1, *n as i64],
+    }
+}
+
+/// Derive a small, deterministic set of candidate values for a scalar
+/// (Int-typed) field, from the sig's own `ValueBound` fact on that field
+/// (the boundary value + one step past it). Falls back to a generic `[0, 1]`
+/// variety pair when the field has no derivable bound — better than a single
+/// fixture value, per the fixture-diversity design (a field's own facts
+/// aren't the only reason to want more than one candidate: an
+/// otherwise-unconstrained field still shouldn't collapse a multi-variable
+/// fact's test to a single point).
+pub fn boundary_candidates_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<i64> {
+    constraints_for_sig(ir, sig_name).iter()
+        .find_map(|c| match c {
+            ConstraintInfo::ValueBound { field_name: f, bound, .. } if f == field_name => Some(boundary_pair(bound)),
+            _ => None,
+        })
+        .unwrap_or_else(|| vec![0, 1])
+}
+
+/// Like `boundary_candidates_for_field`, but for a `set`/`seq` field's
+/// *cardinality* (element count), derived from `CardinalityBound` instead of
+/// `ValueBound` — a collection field's own element values aren't varied here,
+/// only how many elements it holds.
+pub fn cardinality_candidates_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Vec<i64> {
+    constraints_for_sig(ir, sig_name).iter()
+        .find_map(|c| match c {
+            ConstraintInfo::CardinalityBound { field_name: f, bound, .. } if f == field_name => Some(boundary_pair(bound)),
+            _ => None,
+        })
+        .unwrap_or_else(|| vec![0, 1])
 }
 
 /// Get Bean Validation annotations for a specific field on a sig.
@@ -1075,6 +1169,35 @@ pub fn is_tautological_body(body: &[Expr]) -> bool {
     !body.is_empty() && body.iter().all(|conjunct| {
         matches!(conjunct, Expr::Comparison { op: CompareOp::Eq, left, right } if left == right)
     })
+}
+
+/// Find a self-equality (`x = x`, structurally identical operands) reachable
+/// inside a fact's body regardless of quantified-variable values — i.e. a
+/// clause that's unconditionally true no matter what the fact is trying to
+/// constrain. Walks through `Quantifier` bodies and both sides of `and`/
+/// `implies` to find it: a tautological *consequent* of an `implies` makes
+/// the whole implication vacuous (`P implies true` is always true regardless
+/// of `P`), which is the shape most worth flagging, but a tautological
+/// conjunct anywhere is dead weight even inside an otherwise-meaningful fact.
+///
+/// This is advisory only — purely structural, says nothing about whether the
+/// fact's author intended it (a reflexivity base case or a definitional
+/// identity can look identical to a forgotten placeholder). Returns a
+/// human-readable description of the tautological clause found, or `None`.
+pub fn find_tautological_clause(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Comparison { op: CompareOp::Eq, left, right } if left == right => {
+            Some(describe_expr(expr))
+        }
+        Expr::Quantifier { body, .. } => find_tautological_clause(body),
+        Expr::BinaryLogic { op: LogicOp::Implies, left, right } => {
+            find_tautological_clause(right).or_else(|| find_tautological_clause(left))
+        }
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
+            find_tautological_clause(left).or_else(|| find_tautological_clause(right))
+        }
+        _ => None,
+    }
 }
 
 /// Check if an expression only references parameter names (no state fields).
@@ -1699,6 +1822,63 @@ mod tautological_body_tests {
     #[test]
     fn empty_body_is_not_tautological() {
         assert!(!is_tautological_body(&[]));
+    }
+
+    fn var(name: &str) -> Expr {
+        Expr::VarRef(name.to_string())
+    }
+
+    fn self_eq(name: &str) -> Expr {
+        Expr::Comparison { op: CompareOp::Eq, left: Box::new(var(name)), right: Box::new(var(name)) }
+    }
+
+    #[test]
+    fn find_tautological_clause_detects_implies_consequent() {
+        // The IRParentAsymmetric shape: `sn.irParent = p implies p.irParent = p.irParent`
+        // — the consequent is tautological, so the whole implication is
+        // vacuously true regardless of the antecedent.
+        let expr = Expr::Quantifier {
+            kind: QuantKind::All,
+            bindings: vec![QuantBinding { vars: vec!["sn".to_string()], domain: var("StructureNode"), disj: false }],
+            body: Box::new(Expr::BinaryLogic {
+                op: LogicOp::Implies,
+                left: Box::new(Expr::Comparison {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::FieldAccess { base: Box::new(var("sn")), field: "irParent".to_string() }),
+                    right: Box::new(var("p")),
+                }),
+                right: Box::new(Expr::Comparison {
+                    op: CompareOp::Eq,
+                    left: Box::new(Expr::FieldAccess { base: Box::new(var("p")), field: "irParent".to_string() }),
+                    right: Box::new(Expr::FieldAccess { base: Box::new(var("p")), field: "irParent".to_string() }),
+                }),
+            }),
+        };
+        assert!(find_tautological_clause(&expr).is_some());
+    }
+
+    #[test]
+    fn find_tautological_clause_finds_conjunct_inside_and() {
+        let expr = Expr::BinaryLogic {
+            op: LogicOp::And,
+            left: Box::new(self_eq("a")),
+            right: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("b")), right: Box::new(var("c")) }),
+        };
+        assert!(find_tautological_clause(&expr).is_some());
+    }
+
+    #[test]
+    fn find_tautological_clause_none_when_genuinely_conditional() {
+        let expr = Expr::Quantifier {
+            kind: QuantKind::All,
+            bindings: vec![QuantBinding { vars: vec!["sn".to_string()], domain: var("StructureNode"), disj: false }],
+            body: Box::new(Expr::BinaryLogic {
+                op: LogicOp::Implies,
+                left: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("sn")), right: Box::new(var("other")) }),
+                right: Box::new(Expr::Comparison { op: CompareOp::Eq, left: Box::new(var("a")), right: Box::new(var("b")) }),
+            }),
+        };
+        assert!(find_tautological_clause(&expr).is_none());
     }
 
     #[test]

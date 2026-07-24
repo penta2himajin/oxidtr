@@ -80,6 +80,45 @@ fn coverage_test_warns_vacuously_true() {
     }
 }
 
+/// #75 half 2: `is_vacuously_true` previously only ran at the fact×fact
+/// coverage-test call site. A plain `invariant_*` test over a sig with no
+/// fixture (e.g. an empty-fields sig) hits the exact same `Vec::new()`
+/// domain-emptiness shape and should get the same honest disclosure.
+#[test]
+fn invariant_test_warns_vacuously_true_for_empty_fixture_domain() {
+    let files = generate_from(r#"
+        sig Empty {}
+        fact TrivialFact { all e: Empty | e = e }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("fn invariant_trivial_fact"),
+        "expected the invariant test to be generated:\n{content}"
+    );
+    assert!(
+        content.contains("WARNING: vacuously true"),
+        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+    );
+}
+
+/// The same shape for a temporal transition test (`prime`-bearing fact).
+#[test]
+fn transition_test_warns_vacuously_true_for_empty_fixture_domain() {
+    let files = generate_from(r#"
+        var sig Empty {}
+        fact TrivialTransition { all e: Empty | e = e' }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("fn transition_trivial_transition"),
+        "expected the transition test to be generated:\n{content}"
+    );
+    assert!(
+        content.contains("WARNING: vacuously true"),
+        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+    );
+}
+
 #[test]
 fn generate_inlined_constraint_with_implies() {
     let files = generate_from(r#"
@@ -128,7 +167,7 @@ fn generate_operation_pre_post_conditions() {
 fn generate_cross_test_fact_times_operation() {
     let files = generate_from(r#"
         sig User { role: one Role }
-        sig Role {}
+        sig Role { level: one Int }
         fact UserHasRole { all u: User | u.role = u.role }
         pred changeRole[u: one User, r: one Role] { u.role = r }
     "#);
@@ -137,6 +176,62 @@ fn generate_cross_test_fact_times_operation() {
     assert!(
         content.contains("user_has_role") && content.contains("change_role"),
         "missing cross-test for fact×operation"
+    );
+    // #73: single-sig fact × a free-function `one`-mult pred should get a
+    // real `if Op(...) { assert!(Fact(...)); }` body, not an #[ignore]d todo!().
+    assert!(
+        content.contains("fn change_role_implies_user_has_role"),
+        "expected a real implication cross-test:\n{content}"
+    );
+    assert!(
+        content.contains("if change_role(&u, &r) {"),
+        "expected the real cross-test to call the operation:\n{content}"
+    );
+    assert!(
+        !content.contains("todo!(\"oxidtr: implement cross-test change_role"),
+        "a real cross-test must not fall back to the todo!() stub:\n{content}"
+    );
+}
+
+/// #73: (fact, operation) pairs whose sig types don't overlap at all should
+/// not generate a cross-test — this is the mechanism that shrinks the full
+/// N×M cross product down to only pairs that could plausibly relate.
+#[test]
+fn cross_test_skipped_for_unrelated_sig_types() {
+    let files = generate_from(r#"
+        sig User { role: one Role }
+        sig Role {}
+        sig Widget { label: one Str }
+        fact UserHasRole { all u: User | u.role = u.role }
+        pred rename[w: one Widget] { some w.label }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        !content.contains("rename") || !content.contains("user_has_role"),
+        "unrelated fact×operation pair (User vs Widget) should not generate a cross-test:\n{content}"
+    );
+}
+
+/// #73 safety: a fact quantifying 2+ sigs (an ownership-style pattern) can
+/// depend on a relationship between independently-constructed defaults that
+/// isn't guaranteed to hold — must keep the safe #[ignore]d stub, not risk
+/// a spurious failure from binding op/fact params independently.
+#[test]
+fn cross_test_falls_back_to_stub_for_multi_sig_fact() {
+    let files = generate_from(r#"
+        sig Box { items: set Item }
+        sig Item {}
+        fact EveryItemBoxed { all i: Item | some b: Box | i in b.items }
+        pred touch[i: one Item] { some i }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("_preserved_after_") && content.contains("#[ignore]"),
+        "multi-sig fact × operation should keep the safe ignored stub:\n{content}"
+    );
+    assert!(
+        !content.contains("_implies_every_item_boxed"),
+        "must not generate a real (unsafe) implication test for a multi-sig fact:\n{content}"
     );
 }
 
@@ -204,16 +299,21 @@ fn binary_temporal_static_test_does_not_assert_body() {
     let content = find_file(&files, "tests.rs");
     // The static test should exist (for check diff purposes)
     assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
-    // But it should NOT assert the body — binary temporal requires trace-based verification
-    // The test body should trivially pass, not contain a meaningless snapshot assertion
+    // But it should NOT assert the untranslated snapshot body — binary
+    // temporal needs a trace, not one instant.
     assert!(
         !content.contains("assert!(s.iter()"),
         "binary temporal static test should NOT assert body inline:\n{content}"
     );
-    // Should contain a comment about trace-based verification
+    // #73: should actually CALL the real trace checker with a deterministic
+    // empty trace (until on an empty trace is always false), not just a comment.
     assert!(
-        content.contains("binary temporal: requires trace-based verification"),
-        "binary temporal static test should document the limitation:\n{content}"
+        content.contains("Vec::new()") && content.contains("check_until_"),
+        "binary temporal static test should call the real trace checker:\n{content}"
+    );
+    assert!(
+        content.contains("assert!(!check_until_"),
+        "until on an empty trace is always false:\n{content}"
     );
 }
 
@@ -226,8 +326,24 @@ fn binary_temporal_since_static_test_does_not_assert_body() {
     let content = find_file(&files, "tests.rs");
     assert!(content.contains("fn temporal_"), "missing temporal test:\n{content}");
     assert!(
-        content.contains("binary temporal: requires trace-based verification"),
-        "since static test should document the limitation:\n{content}"
+        content.contains("assert!(!check_since_"),
+        "since on an empty trace is always false:\n{content}"
+    );
+}
+
+/// `release`/`triggered` are `all`-based on the fallback path (unlike
+/// until/since's `position`-based short circuit), so an empty trace makes
+/// them always TRUE rather than always false — opposite sign from until/since.
+#[test]
+fn binary_temporal_release_static_test_asserts_true_on_empty_trace() {
+    let files = generate_from(r#"
+        sig S { x: one S }
+        fact ReleasedByX { (all s: S | s.x = s.x) release (all s: S | s.x = s.x) }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("assert!(check_release_") && !content.contains("assert!(!check_release_"),
+        "release on an empty trace is always true:\n{content}"
     );
 }
 
@@ -242,15 +358,17 @@ fn liveness_static_test_references_trace_checker_rust() {
     let content = find_file(&files, "tests.rs");
     // Liveness test should exist
     assert!(content.contains("fn liveness_"), "missing liveness test:\n{content}");
-    // But should NOT assert body — liveness cannot be verified with single snapshot
+    // But should NOT assert the untranslated snapshot body — liveness cannot
+    // be verified from a single instant.
     assert!(
         !content.contains("assert!(s.iter()"),
         "liveness static test should NOT assert body inline:\n{content}"
     );
-    // Should reference trace checker
+    // #73: should actually CALL check_liveness_* with a deterministic empty
+    // trace (`.any()` on an empty trace is always false).
     assert!(
-        content.contains("liveness: requires trace-based verification; see check_liveness_"),
-        "liveness static test should reference trace checker:\n{content}"
+        content.contains("assert!(!check_liveness_"),
+        "liveness static test should call the real trace checker:\n{content}"
     );
 }
 
@@ -263,8 +381,8 @@ fn past_liveness_static_test_references_trace_checker_rust() {
     let content = find_file(&files, "tests.rs");
     assert!(content.contains("fn past_liveness_"), "missing past_liveness test:\n{content}");
     assert!(
-        content.contains("past_liveness: requires trace-based verification; see check_past_liveness_"),
-        "past_liveness static test should reference trace checker:\n{content}"
+        content.contains("assert!(!check_past_liveness_"),
+        "past_liveness static test should call the real trace checker:\n{content}"
     );
 }
 

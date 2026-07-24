@@ -1221,6 +1221,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
             && !is_native_type_alias(&s.name))
         .map(|s| s.name.clone()).collect();
+    let cyclic = find_cyclic_fields(ir);
 
     // Check if any expression uses TC functions → need helpers import
     let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
@@ -1237,6 +1238,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "use super::fixtures::*;").unwrap();
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::operations::*;").unwrap();
+    // Pairwise-diversified fixture literals (see diverse_fixture_literals) can
+    // render `BTreeSet::from([..])`/`BTreeSet::new()` for set-mult fields.
+    writeln!(out, "#[allow(unused_imports)]").unwrap();
+    writeln!(out, "use std::collections::BTreeSet;").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -1307,9 +1312,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 continue;
             }
             let desc = analyze::describe_expr(&constraint.expr);
+            let empty_domains: HashSet<String> = params.iter()
+                .filter(|(_, tname)| !has_fixture.contains(tname))
+                .map(|(_, tname)| tname.clone())
+                .collect();
 
             writeln!(out, "/// @temporal Transition constraint: {fact_name}").unwrap();
             writeln!(out, "/// Verifies: pre→post state relationship ({desc})").unwrap();
+            if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+                writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+            }
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
@@ -1414,31 +1426,64 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "/// {annotation}").unwrap();
         }
 
-        // Binary temporal: static test cannot meaningfully assert the body
-        // (e.g. `p until q` requires a trace, not a snapshot)
+        // Trace type shared by binary/liveness static tests below: a trace is
+        // a sequence of states, one state per quantified param (or a tuple of
+        // them). Used only to call the real check_* trace-checker function
+        // with a deterministic, always-safe empty trace (see below).
+        let trace_state_ty = if params.len() == 1 {
+            Some(format!("Vec<{}>", params[0].1))
+        } else if !params.is_empty() {
+            Some(format!("({})", params.iter().map(|(_, t)| format!("Vec<{t}>")).collect::<Vec<_>>().join(", ")))
+        } else {
+            None
+        };
+
+        // Binary temporal: a static snapshot can't meaningfully assert the
+        // body (e.g. `p until q` needs a trace, not one instant), but an
+        // EMPTY trace has operator-fixed, model-independent semantics —
+        // `position`-based ops (until/since) are always false, `all`-based
+        // ops (release/triggered) are always true on an empty slice —
+        // regardless of the fact's own predicate. Call the real checker with
+        // one and assert that fixed outcome: real coverage of the checker's
+        // control flow (slicing, position/rposition) without ever risking a
+        // false failure on someone else's model.
         if temporal_kind == Some(analyze::TemporalKind::Binary) {
-            let op_label = if let Some((op, _, _)) = analyze::find_temporal_binary(&constraint.expr) {
-                match op {
-                    TemporalBinaryOp::Until => "until",
-                    TemporalBinaryOp::Since => "since",
-                    TemporalBinaryOp::Release => "release",
-                    TemporalBinaryOp::Triggered => "triggered",
-                }
-            } else { "binary" };
+            let op = analyze::find_temporal_binary(&constraint.expr).map(|(op, _, _)| op);
+            let op_label = match op {
+                Some(TemporalBinaryOp::Until) => "until",
+                Some(TemporalBinaryOp::Since) => "since",
+                Some(TemporalBinaryOp::Release) => "release",
+                Some(TemporalBinaryOp::Triggered) => "triggered",
+                None => "binary",
+            };
             let snake_name = to_snake_case(&fact_name);
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
-            writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            if let (Some(op), Some(state_ty)) = (op, &trace_state_ty) {
+                let always_true = matches!(op, TemporalBinaryOp::Release | TemporalBinaryOp::Triggered);
+                let call = format!("check_{op_label}_{snake_name}(&trace)");
+                let assertion = if always_true { call } else { format!("!{call}") };
+                writeln!(out, "    let trace: Vec<{state_ty}> = Vec::new();").unwrap();
+                writeln!(out, "    assert!({assertion}, \"empty trace has fixed {op_label} semantics\");").unwrap();
+            } else {
+                writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{snake_name}").unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
-            // Liveness/past_liveness: cannot be verified with single snapshot
+            // Liveness/past_liveness: `trace.iter().any(..)` is always false
+            // on an empty trace, regardless of the fact's own predicate.
             let kind_label = if temporal_kind == Some(analyze::TemporalKind::Liveness) {
                 "liveness" } else { "past_liveness" };
             let snake_name = to_snake_case(&fact_name);
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
-            writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            if let Some(state_ty) = &trace_state_ty {
+                writeln!(out, "    let trace: Vec<{state_ty}> = Vec::new();").unwrap();
+                writeln!(out, "    assert!(!check_{kind_label}_{snake_name}(&trace), \"empty trace must never satisfy {kind_label}\");").unwrap();
+            } else {
+                writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{snake_name}").unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         } else {
@@ -1446,9 +1491,70 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // These need linked fixture setup where B.field contains x.
         let ownership = detect_ownership_pattern(&constraint.expr, ir);
 
+        // Detect the fixture-collapse-prone shape: a chain of nested `all`
+        // quantifiers whose trailing run binds 2+ variables to the SAME sig
+        // — either directly (`all a, b, c: Money | ...`) or via a shared
+        // field domain (`all ir: OxidtrIR | all s1: ir.structures | all s2:
+        // ir.structures | ...`, oxidtr's own UniqueStructurePerSig). Today's
+        // single shared `default_X()` fixture makes every trailing variable
+        // equal, so a fact comparing them silently passes regardless of
+        // correctness. Build a small pairwise-covering set of distinct
+        // fixtures instead; leading (context) variables keep a plain default.
+        let multi_var_diversify = if ownership.is_none() && temporal_kind.is_none() {
+            find_diversifiable_chain(ir, &constraint.expr)
+                .filter(|(chain, _)| has_fixture.contains(&chain.group_sig))
+        } else {
+            None
+        };
+
+        let used_diversify = multi_var_diversify.is_some();
+        let empty_domains: HashSet<String> = params.iter()
+            .filter(|(_, tname)| !has_fixture.contains(tname))
+            .map(|(_, tname)| tname.clone())
+            .collect();
+        if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+            writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+        }
         writeln!(out, "#[test]").unwrap();
         writeln!(out, "fn {test_name}() {{").unwrap();
-        if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
+        if let Some((chain, inner_body)) = multi_var_diversify {
+            for (var, sig) in &chain.context_vars {
+                writeln!(out, "    let {var} = default_{}();", to_snake_case(sig)).unwrap();
+            }
+            let mut visiting = HashSet::new();
+            let literals = diverse_fixture_literals(ir, &chain.group_sig, &cyclic, &mut visiting);
+            let snake = to_snake_case(&chain.group_sig);
+            let inner_str = expr_translator::translate_with_ir(inner_body, ir);
+            if literals.len() < 2 {
+                writeln!(out, "    // @coverage single-point check: no fixture diversity found for `{}`;", chain.group_sig).unwrap();
+                writeln!(out, "    // all {} quantified variables below share one value.", chain.group_vars.len()).unwrap();
+                for v in &chain.group_vars {
+                    writeln!(out, "    let {v} = default_{snake}();").unwrap();
+                }
+                writeln!(out, "    assert!({inner_str});").unwrap();
+            } else {
+                let n = chain.group_vars.len();
+                let pools: Vec<Vec<String>> = vec![literals; n];
+                let tuples = analyze::pairwise::pairwise_covering_tuples(&pools);
+                let sig_name = &chain.group_sig;
+                let combos_str = tuples.iter()
+                    .map(|t| format!("[{}]", t.join(", ")))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let pattern = chain.group_vars.join(", ");
+                // Destructuring `combos.iter()` (`&[Sig; n]`) binds each
+                // variable as `&Sig`, not owned `Sig` — fine for facts that
+                // only ever pass the bound vars BY REFERENCE into another
+                // call (`add(&a, &b)`), but a fact comparing a bound var
+                // directly (`add(a, zero) = a`) needs it owned, same as the
+                // single-fixture path's `let a = a.clone();` wrapper below.
+                let clones: String = chain.group_vars.iter()
+                    .map(|v| format!("let {v} = {v}.clone(); "))
+                    .collect();
+                writeln!(out, "    let combos: Vec<[{sig_name}; {n}]> = vec![{combos_str}];").unwrap();
+                writeln!(out, "    assert!(combos.iter().all(|[{pattern}]| {{ {clones}{inner_str} }}));").unwrap();
+            }
+        } else if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             // Generate linked setup: create owned item, insert into owner's field
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
             let owner_param = params.iter().find(|(p, _)| p == owner_var);
@@ -1504,7 +1610,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 }
             }
         }
-        writeln!(out, "    assert!({body});").unwrap();
+        if !used_diversify {
+            writeln!(out, "    assert!({body});").unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
         } // end non-binary temporal
@@ -1699,7 +1807,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
-    // Cross-tests: for each (fact, operation) pair, verify fact is preserved
+    // Cross-tests: for each (fact, operation) pair whose sig types overlap,
+    // verify `Op(...) implies Fact(...)`. Pairs with no sig overlap at all
+    // are skipped outright — most (fact, operation) combinations in a real
+    // model share no sig and would only ever assert something unrelated to
+    // what the operation touches.
+    //
+    // Real `if Op(...) { assert!(Fact(...)); }` bodies are only generated
+    // for the mechanically simple, safe-by-construction case: a free
+    // function (no receiver) `pred` (returns bool) whose params are all
+    // `one`-mult sigs with a fixture. Op params and fact params are bound
+    // independently (no shared-entity var substitution yet — see #73 for
+    // the deeper pairwise-diversity-linked redesign), so this only checks
+    // "whenever Op holds for its own default args, Fact also holds for its
+    // own default args" — weaker than full cross-referential linkage, but
+    // real, always-safe (default fixtures already satisfy their own sig's
+    // facts by construction — same soundness argument as invariant tests),
+    // and a strict improvement over an #[ignore]d `todo!()` stub. Other
+    // shapes (receiver ops, `fun`s, non-`one` params) keep the old stub.
     if !ir.constraints.is_empty() && !ir.operations.is_empty() {
         writeln!(out, "// --- Cross-tests: fact × operation ---").unwrap();
         writeln!(out).unwrap();
@@ -1709,42 +1834,69 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 Some(name) => name.clone(),
                 None => continue,
             };
+            if expr_refs_any(&constraint.expr, &concrete_singletons) { continue; }
+            let fact_params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            if fact_params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+                continue;
+            }
+            let fact_sig_types: HashSet<&str> = fact_params.iter().map(|(_, t)| t.as_str()).collect();
 
             for op in &ir.operations {
-                let op_name = fn_name_for_op(&op.name);
-                let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
+                let mut op_sig_types: HashSet<&str> = op.params.iter().map(|p| p.type_name.as_str()).collect();
+                if let Some(r) = &op.receiver_sig { op_sig_types.insert(r.as_str()); }
+                if fact_sig_types.is_disjoint(&op_sig_types) { continue; }
 
-                writeln!(out, "#[test]").unwrap();
-                writeln!(out, "#[ignore]").unwrap();
-                writeln!(out, "fn {test_name}() {{").unwrap();
-                writeln!(
-                    out,
-                    "        // Verify that {} holds after {}",
-                    fact_name, op.name
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // pre: assert!(/* {fact_name} constraint */);",
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // {op_name}(...);"
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        // post: assert!(/* {fact_name} constraint */);",
-                )
-                .unwrap();
-                writeln!(
-                    out,
-                    "        todo!(\"oxidtr: implement cross-test {test_name}\");"
-                )
-                .unwrap();
-                writeln!(out, "}}").unwrap();
-                writeln!(out).unwrap();
+                let op_name = fn_name_for_op(&op.name);
+                // Single-sig facts only: `default_X()` is only *guaranteed*
+                // correct against X's own single-sig facts (that's the whole
+                // fixture-generation contract). A fact quantifying 2+ sigs
+                // (e.g. an ownership pattern `some y: B | x in y.field`) can
+                // depend on a relationship between independently-constructed
+                // defaults that isn't guaranteed to hold — binding op/fact
+                // params independently below would risk a spurious failure.
+                let can_call = op.receiver_sig.is_none()
+                    && op.return_type.is_none()
+                    && fact_sig_types.len() == 1
+                    && op.params.iter().all(|p| p.mult == Multiplicity::One && has_fixture.contains(&p.type_name));
+
+                if can_call {
+                    let test_name = format!("{op_name}_implies_{}", to_snake_case(&fact_name));
+                    let fact_body = expr_translator::translate_with_ir(&constraint.expr, ir);
+                    writeln!(out, "/// Cross-test: {} implies {fact_name}", op.name).unwrap();
+                    writeln!(out, "#[test]").unwrap();
+                    writeln!(out, "fn {test_name}() {{").unwrap();
+                    for p in &op.params {
+                        let pname = to_snake_case(&p.name);
+                        let snake = to_snake_case(&p.type_name);
+                        writeln!(out, "    let {pname}: {} = default_{snake}();", p.type_name).unwrap();
+                    }
+                    for (pname, tname) in &fact_params {
+                        if has_fixture.contains(tname) {
+                            let snake = to_snake_case(tname);
+                            writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
+                        } else {
+                            writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
+                        }
+                    }
+                    let args: Vec<String> = op.params.iter().map(|p| format!("&{}", to_snake_case(&p.name))).collect();
+                    writeln!(out, "    if {op_name}({}) {{", args.join(", ")).unwrap();
+                    writeln!(out, "        assert!({fact_body}, \"{fact_name} should hold whenever {} holds\");", op.name).unwrap();
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out, "}}").unwrap();
+                    writeln!(out).unwrap();
+                } else {
+                    let test_name = format!("{}_preserved_after_{}", to_snake_case(&fact_name), op_name);
+                    writeln!(out, "#[test]").unwrap();
+                    writeln!(out, "#[ignore]").unwrap();
+                    writeln!(out, "fn {test_name}() {{").unwrap();
+                    writeln!(out, "        // Verify that {} holds after {}", fact_name, op.name).unwrap();
+                    writeln!(out, "        // pre: assert!(/* {fact_name} constraint */);").unwrap();
+                    writeln!(out, "        // {op_name}(...);").unwrap();
+                    writeln!(out, "        // post: assert!(/* {fact_name} constraint */);").unwrap();
+                    writeln!(out, "        todo!(\"oxidtr: implement cross-test {test_name}\");").unwrap();
+                    writeln!(out, "}}").unwrap();
+                    writeln!(out).unwrap();
+                }
             }
         }
     }
@@ -1779,8 +1931,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = default_{snake}();").unwrap();
-                        writeln!(out, "    // {sig_name}.{field_name} is not constrained — verify it is handled").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    let cloned = instance.clone();").unwrap();
+                        writeln!(out, "    assert_eq!(instance.{field_name}, cloned.{field_name}, \"clone must preserve unconstrained field {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -1790,8 +1942,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = anomaly_empty_{snake}();").unwrap();
-                        writeln!(out, "    // Verify invariants hold even with empty collection").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    assert!(instance.{field_name}.is_empty(), \"anomaly fixture should have empty {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -1801,8 +1952,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
                         writeln!(out, "    let instance = default_{snake}();").unwrap();
-                        writeln!(out, "    // Self-referential field without guard — check for safety").unwrap();
-                        writeln!(out, "    let _ = &instance.{field_name};").unwrap();
+                        writeln!(out, "    let cloned = instance.clone();").unwrap();
+                        writeln!(out, "    assert_eq!(instance.{field_name}, cloned.{field_name}, \"clone must preserve self-referential field {field_name}\");").unwrap();
                         writeln!(out, "}}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -3018,6 +3169,373 @@ fn rust_native_default(alloy_name: &str) -> Option<&'static str> {
         "Float" => Some("0.0f64"),
         "Bool" => Some("false"),
         _ => None,
+    }
+}
+
+/// Render a candidate integer as a Rust literal of the given native type.
+fn native_scalar_literal(target: &str, n: i64) -> String {
+    match target {
+        "Int" => format!("{n}i64"),
+        "Float" => format!("{n}.0f64"),
+        "Bool" => (n != 0).to_string(),
+        _ => n.to_string(),
+    }
+}
+
+/// Render `n` elements of a set/seq field's target type — the same default
+/// element repeated, since this varies cardinality (how many), not element
+/// identity (which ones). `n <= 0` renders an empty collection.
+fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
+    if n <= 0 {
+        return match mult {
+            Multiplicity::Set => "BTreeSet::new()".to_string(),
+            _ => "Vec::new()".to_string(),
+        };
+    }
+    let elem = rust_native_default(target)
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| format!("default_{}()", to_snake_case(target)));
+    let elems = vec![elem; n as usize].join(", ");
+    match mult {
+        Multiplicity::Set => format!("BTreeSet::from([{elems}])"),
+        _ => format!("vec![{elems}]"),
+    }
+}
+
+/// A chain of nested `all` quantifiers ending in a trailing run of 2+
+/// variables bound to the same sig — the shape that collapses to a
+/// single-point check under today's one-shared-fixture generation. Leading
+/// `context_vars` (e.g. `ir: OxidtrIR` in `all ir: OxidtrIR | all s1:
+/// ir.structures | all s2: ir.structures | ...`) sit outside the group and
+/// keep a plain single default fixture; `group_vars` all range over
+/// `group_sig` and get pairwise-diversified fixtures.
+struct DiversifiableChain {
+    context_vars: Vec<(String, String)>,
+    group_sig: String,
+    group_vars: Vec<String>,
+}
+
+/// Resolve a quantifier binding's domain to the sig it ranges over: a bare
+/// sig reference (`s: Money`), or a field access on an earlier-bound
+/// variable in the same chain (`s1: ir.structures`, resolved via `ir`'s
+/// already-known sig and that sig's `structures` field's target type).
+fn resolve_domain_sig(ir: &OxidtrIR, domain: &Expr, var_sig: &HashMap<String, String>) -> Option<String> {
+    match domain {
+        Expr::VarRef(name) if ir.structures.iter().any(|s| s.name == *name) => Some(name.clone()),
+        Expr::FieldAccess { base, field } => {
+            let Expr::VarRef(base_name) = base.as_ref() else { return None };
+            let base_sig = var_sig.get(base_name)?;
+            ir.structures.iter()
+                .find(|s| s.name == *base_sig)
+                .and_then(|s| s.fields.iter().find(|f| f.name == *field))
+                .map(|f| f.target.clone())
+        }
+        _ => None,
+    }
+}
+
+/// True when `expr` contains a call to a NULLARY operation (no params, no
+/// receiver — `Expr::VarRef` in Alloy's own bare-reference-is-a-call
+/// convention, see `is_nullary_fun` in `expr_translator.rs`) whose declared
+/// return type is `sig_name` (e.g. `zero` in `add[a, zero] = a`). A single
+/// quantified variable compared against such a call still needs
+/// diversifying: the call's actual return value isn't known at generation
+/// time, so the one shared default fixture might coincidentally equal it,
+/// masking a real violation — found via a broken `add` (always returns its
+/// first argument) that only violates `Ident` for a non-default Money
+/// value, invisible when the sole tested value was the same amount-0
+/// default `zero()` itself resolves to.
+fn references_nullary_fun_of_sig(expr: &Expr, ir: &OxidtrIR, sig_name: &str) -> bool {
+    let is_target_nullary_fun = |name: &str| {
+        ir.operations.iter().any(|op| {
+            op.name == name
+                && op.params.is_empty()
+                && op.receiver_sig.is_none()
+                && op.return_type.as_ref().is_some_and(|rt| rt.type_name == sig_name)
+        })
+    };
+    match expr {
+        Expr::VarRef(name) => is_target_nullary_fun(name),
+        Expr::FunApp { name, receiver: None, args } if args.is_empty() => is_target_nullary_fun(name),
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(|r| references_nullary_fun_of_sig(r, ir, sig_name))
+                || args.iter().any(|a| references_nullary_fun_of_sig(a, ir, sig_name))
+        }
+        Expr::FieldAccess { base, .. } => references_nullary_fun_of_sig(base, ir, sig_name),
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
+        | Expr::Prime(inner) | Expr::TemporalUnary { expr: inner, .. } => {
+            references_nullary_fun_of_sig(inner, ir, sig_name)
+        }
+        Expr::MultFormula { expr: inner, .. } => references_nullary_fun_of_sig(inner, ir, sig_name),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            references_nullary_fun_of_sig(left, ir, sig_name) || references_nullary_fun_of_sig(right, ir, sig_name)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| references_nullary_fun_of_sig(&b.domain, ir, sig_name))
+                || references_nullary_fun_of_sig(body, ir, sig_name)
+        }
+        Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Walk a chain of single-binding nested `all` quantifiers from `expr`,
+/// stopping at the first domain that can't be resolved to a sig (or at a
+/// non-quantifier / non-`all` / multi-binding node). Returns the trailing
+/// maximal run of chain steps sharing one sig as a `DiversifiableChain` —
+/// when that run has 2+ variables total, or has exactly 1 variable but the
+/// body references a nullary same-sig fun call (see
+/// `references_nullary_fun_of_sig`) — plus the innermost body, or `None` if
+/// the chain is empty or the trailing run doesn't qualify either way.
+fn find_diversifiable_chain<'a>(ir: &OxidtrIR, expr: &'a Expr) -> Option<(DiversifiableChain, &'a Expr)> {
+    let mut steps: Vec<(Vec<String>, String)> = Vec::new();
+    let mut var_sig: HashMap<String, String> = HashMap::new();
+    let mut cur = expr;
+    loop {
+        let Expr::Quantifier { kind, bindings, body } = cur else { break };
+        if !matches!(kind, crate::parser::ast::QuantKind::All) || bindings.len() != 1 {
+            break;
+        }
+        let b = &bindings[0];
+        let Some(sig) = resolve_domain_sig(ir, &b.domain, &var_sig) else { break };
+        for v in &b.vars {
+            var_sig.insert(v.clone(), sig.clone());
+        }
+        steps.push((b.vars.clone(), sig));
+        cur = body;
+    }
+
+    let last_sig = &steps.last()?.1;
+    let split = steps.iter().rposition(|(_, s)| s != last_sig).map(|i| i + 1).unwrap_or(0);
+    let group_vars: Vec<String> = steps[split..].iter().flat_map(|(vs, _)| vs.clone()).collect();
+    let group_sig = steps[split].1.clone();
+    if group_vars.len() < 2 && !references_nullary_fun_of_sig(cur, ir, &group_sig) {
+        return None;
+    }
+    let context_vars: Vec<(String, String)> = steps[..split].iter()
+        .flat_map(|(vs, s)| vs.iter().map(move |v| (v.clone(), s.clone())))
+        .collect();
+    Some((DiversifiableChain { context_vars, group_sig, group_vars }, cur))
+}
+
+/// Find a diversity source for a single field — two rendered value
+/// expressions for that field, mult-appropriately wrapped (`Some(..)` for
+/// `lone`, `Box::new(..)` for a boxed/cyclic reference) — or `None` if this
+/// field can't offer one. Map fields (`value_type.is_some()`) are skipped;
+/// their construction is more involved and not handled here.
+fn field_diversity_values(
+    ir: &OxidtrIR,
+    sig_name: &str,
+    f: &IRField,
+    cyclic: &HashSet<(String, String)>,
+    visiting: &mut HashSet<String>,
+) -> Option<(String, String)> {
+    if f.value_type.is_some() {
+        return None;
+    }
+    match f.mult {
+        Multiplicity::One if is_native_type_alias(&f.target) => {
+            let candidates = analyze::boundary_candidates_for_field(ir, sig_name, &f.name);
+            if candidates.len() < 2 {
+                return None;
+            }
+            Some((
+                native_scalar_literal(&f.target, candidates[0]),
+                native_scalar_literal(&f.target, candidates[1]),
+            ))
+        }
+        Multiplicity::Lone if is_native_type_alias(&f.target) => {
+            let candidates = analyze::boundary_candidates_for_field(ir, sig_name, &f.name);
+            let v = native_scalar_literal(&f.target, *candidates.first()?);
+            Some(("None".to_string(), format!("Some({v})")))
+        }
+        Multiplicity::Set | Multiplicity::Seq => {
+            let candidates = analyze::cardinality_candidates_for_field(ir, sig_name, &f.name);
+            if candidates.len() < 2 || candidates[0] == candidates[1] {
+                return None;
+            }
+            Some((
+                cardinality_literal(&f.mult, &f.target, candidates[0]),
+                cardinality_literal(&f.mult, &f.target, candidates[1]),
+            ))
+        }
+        Multiplicity::One | Multiplicity::Lone if !is_native_type_alias(&f.target) => {
+            let sub = diverse_fixture_literals(ir, &f.target, cyclic, visiting);
+            if sub.len() < 2 {
+                return None;
+            }
+            let is_boxed = cyclic.contains(&(sig_name.to_string(), f.name.clone()));
+            let wrap = |v: &str| -> String {
+                let boxed = if is_boxed { format!("Box::new({v})") } else { v.to_string() };
+                if f.mult == Multiplicity::Lone { format!("Some({boxed})") } else { boxed }
+            };
+            Some((wrap(&sub[0]), wrap(&sub[1])))
+        }
+        _ => None,
+    }
+}
+
+/// Render up to 2 structurally-distinct instance-construction expressions
+/// for `sig_name`: find the first field (in declaration order) that offers
+/// a diversity source (its own boundary/cardinality candidates, an enum
+/// field's variant choice, or — recursively — a One/Lone-mult sig-reference
+/// field whose target itself has one) and build both variants via struct
+/// update syntax against the existing `default_{sig}()` factory, overriding
+/// only that one field. Every other field is left exactly as `default_X()`
+/// already builds it — this only reuses that existing, already-correct
+/// construction, never reimplements it.
+///
+/// `visiting` guards cyclic sig references: a field targeting a sig already
+/// being diversified up the call stack falls back to that sig's plain
+/// default rather than recursing infinitely.
+///
+/// Returns a single-element vec (just `default_{sig}()`) when no field
+/// anywhere offers diversity — callers use this to detect "can't safely
+/// diversify this sig" and should fall back to oxidtr's existing
+/// single-fixture behavior, with an honest disclosure that it's a
+/// single-point check (see #74 / the fixture-diversity design).
+fn diverse_fixture_literals(
+    ir: &OxidtrIR,
+    sig_name: &str,
+    cyclic: &HashSet<(String, String)>,
+    visiting: &mut HashSet<String>,
+) -> Vec<String> {
+    let default_call = format!("default_{}()", to_snake_case(sig_name));
+    if visiting.contains(sig_name) || is_native_type_alias(sig_name) {
+        return vec![default_call];
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == sig_name) else {
+        return vec![default_call];
+    };
+
+    if s.is_enum {
+        let unit_variants: Vec<&str> = ir.structures.iter()
+            .filter(|c| c.parent.as_deref() == Some(sig_name) && c.fields.is_empty() && s.fields.is_empty())
+            .map(|c| c.name.as_str())
+            .collect();
+        return if unit_variants.len() >= 2 {
+            vec![format!("{sig_name}::{}", unit_variants[0]), format!("{sig_name}::{}", unit_variants[1])]
+        } else {
+            vec![default_call]
+        };
+    }
+
+    if s.fields.is_empty() {
+        return vec![default_call];
+    }
+
+    visiting.insert(sig_name.to_string());
+    let found = s.fields.iter().find_map(|f| {
+        field_diversity_values(ir, sig_name, f, cyclic, visiting).map(|(v0, v1)| (f.name.clone(), v0, v1))
+    });
+    visiting.remove(sig_name);
+
+    match found {
+        Some((field_name, v0, v1)) => vec![
+            format!("{sig_name} {{ {field_name}: {v0}, ..{default_call} }}"),
+            format!("{sig_name} {{ {field_name}: {v1}, ..{default_call} }}"),
+        ],
+        None => vec![default_call],
+    }
+}
+
+#[cfg(test)]
+mod diverse_fixture_literals_tests {
+    use super::*;
+
+    fn ir_from(input: &str) -> OxidtrIR {
+        let model = crate::parser::parse(input).expect("parse");
+        crate::ir::lower(&model).expect("lower")
+    }
+
+    #[test]
+    fn scalar_boundary_field_produces_two_variants() {
+        let ir = ir_from("sig Account { balance: one Int }\nfact NonNegative { all a: Account | a.balance >= 0 }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Account", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Account { balance: 0i64, ..default_account() }".to_string(),
+            "Account { balance: 1i64, ..default_account() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn sig_with_no_diversity_source_falls_back_to_single_default() {
+        // No scalar, no set/seq, no sig-reference fields at all: nothing to vary.
+        let ir = ir_from("sig Leaf {}");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Leaf", &cyclic, &mut visiting);
+        assert_eq!(literals, vec!["default_leaf()".to_string()]);
+    }
+
+    #[test]
+    fn recursive_sig_reference_inherits_target_diversity() {
+        // Wrapper has no scalar of its own, but its `inner` field's target
+        // (Inner) does — diversity should flow through the reference.
+        let ir = ir_from(r#"
+            sig Wrapper { inner: one Inner }
+            sig Inner { value: one Int }
+            fact NonNegative { all i: Inner | i.value >= 0 }
+        "#);
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Wrapper", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Wrapper { inner: Inner { value: 0i64, ..default_inner() }, ..default_wrapper() }".to_string(),
+            "Wrapper { inner: Inner { value: 1i64, ..default_inner() }, ..default_wrapper() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn cyclic_self_reference_does_not_recurse_infinitely() {
+        let ir = ir_from("sig Node { next: lone Node }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        // Must terminate (no stack overflow) and, since Node has no other
+        // diversity source, fall back to the single default.
+        let literals = diverse_fixture_literals(&ir, "Node", &cyclic, &mut visiting);
+        assert_eq!(literals, vec!["default_node()".to_string()]);
+    }
+
+    #[test]
+    fn set_field_cardinality_produces_two_variants() {
+        // No scalar field at all — only a set field with no explicit
+        // CardinalityBound fact, so cardinality_candidates_for_field's
+        // generic [0, 1] fallback should still yield real diversity.
+        let ir = ir_from("sig Item {}\nsig Bin { items: set Item }");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "Bin", &cyclic, &mut visiting);
+        assert_eq!(literals, vec![
+            "Bin { items: BTreeSet::new(), ..default_bin() }".to_string(),
+            "Bin { items: BTreeSet::from([default_item()]), ..default_bin() }".to_string(),
+        ]);
+    }
+
+    #[test]
+    fn real_self_hosting_structure_node_diversifies_via_irfields_cardinality() {
+        // Regression test for the actual motivating case (#74): StructureNode
+        // has no scalar field anywhere in its own fields or in SigMultiplicity
+        // (a single-variant enum reached via origin), so scalar boundary
+        // derivation alone can't diversify it. Set/seq cardinality diversity —
+        // found here one hop into the recursion, via origin -> SigDecl.fields —
+        // is what actually resolves it.
+        let model = crate::parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+            .expect("parse_from_path resolves all opens");
+        let ir = crate::ir::lower(&model).expect("lower");
+        let mut visiting = HashSet::new();
+        let cyclic = find_cyclic_fields(&ir);
+        let literals = diverse_fixture_literals(&ir, "StructureNode", &cyclic, &mut visiting);
+        assert_eq!(literals.len(), 2, "StructureNode should diversify, got: {literals:?}");
+        // Diversity is actually found through origin -> SigDecl.fields (a set
+        // field), one hop of recursion earlier than StructureNode's own
+        // irFields — StructureNode's fields are declared origin first, and
+        // `origin` is a boxed (cyclic) reference, which this must render
+        // correctly as `Box::new(...)`.
+        assert!(literals[0].contains("Box::new(SigDecl"), "expected boxed recursive SigDecl, got: {literals:?}");
     }
 }
 
