@@ -198,6 +198,28 @@ fn generate_derived_field_with_tautological_shape_is_not_forced_true() {
 }
 
 #[test]
+fn generate_fun_body_referencing_bare_sig_name_is_a_stub_not_wrong_code() {
+    // A `fun` body that's just a bare reference to a SIG's own name (not an
+    // enum variant) has no sensible Rust value — `Money` is a type, not an
+    // instance. Before this fix, VarRef translation fell through to
+    // `name.clone()` for any non-enum sig name, producing e.g. `Money.clone()`
+    // — a compile error (E0423: expected value, found struct `Money`), not a
+    // stub asking for help. Unlike the empty-body-pred case (vacuously `true`,
+    // a decidable answer), there's no deterministically correct value here —
+    // the honest answer is `todo!()`, not a silent guess. Found generating a
+    // hand-written model (`fun zero: Money { Money }`) outside oxidtr's own
+    // self-hosting corpus.
+    let files = generate_from(r#"
+        sig Money { amount: one Int }
+        fun zero: Money { Money }
+    "#);
+    let content = find_file(&files, "operations.rs");
+    assert!(content.contains("fn zero"));
+    assert!(content.contains("todo!"), "a bare sig-name self-reference has no translatable value, must stub:\n{content}");
+    assert!(!content.contains("Money.clone()"), "must never emit a type name as if it were a value:\n{content}");
+}
+
+#[test]
 fn generate_property_test() {
     let files = generate_from(r#"
         sig A {}

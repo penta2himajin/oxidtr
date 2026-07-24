@@ -1032,6 +1032,15 @@ fn param_type_str(p: &IRParam) -> String {
 /// instead of one identical to itself. Checked first, before the
 /// `fun`-vs-tautology ordering below even applies.
 ///
+/// A `fun` body that's a bare reference to a sig's own name (not an enum
+/// variant) is a different kind of gap: unlike the empty-body case, there's
+/// no deterministically correct value to fall back to (`Money` in
+/// `fun zero: Money { Money }` is a type, not an instance) — translating it
+/// anyway previously emitted `Money.clone()`, which doesn't compile. `todo!()`
+/// here is the honest answer, not a regression to the pre-empty-body-fix
+/// state: that case had a decidable answer being needlessly withheld, this
+/// case has no decidable answer and was previously getting a wrong guess.
+///
 /// Otherwise the body is generated, not stubbed, whenever possible: a
 /// tautological `pred` body becomes a plain `true`; a `fun` body translates
 /// via `translate_derived_field_body`; a genuine multi-clause `pred` body has
@@ -1040,6 +1049,9 @@ fn param_type_str(p: &IRParam) -> String {
 fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, indent: &str) {
     if op.body.is_empty() {
         writeln!(out, "{indent}true").unwrap();
+    } else if op.return_type.is_some() && op.body.len() == 1
+        && expr_translator::is_bare_sig_self_reference(&op.body[0], ir) {
+        writeln!(out, "{indent}todo!(\"oxidtr: implement {}\");", op.name).unwrap();
     } else if op.return_type.is_some() {
         writeln!(out, "{indent}{}", expr_translator::translate_derived_field_body(&op.body[0], ir)).unwrap();
     } else if analyze::is_tautological_body(&op.body) {

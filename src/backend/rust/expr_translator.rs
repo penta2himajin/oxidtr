@@ -608,6 +608,27 @@ pub(super) fn is_set_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
     }
 }
 
+/// True when `expr` is a bare `VarRef` to a sig's own name (not an enum
+/// variant — those already resolve to `Parent::Variant` in `translate_inner_ir`
+/// and have a real value). A plain sig name used as an expression (e.g.
+/// `fun zero: Money { Money }`) has no sensible Rust value — `Money` is a
+/// type, not an instance — so unlike a legitimate local variable/parameter
+/// reference, there's no deterministically correct translation to fall back
+/// to. Checked by `emit_operation_body` before calling the translator at all,
+/// so a caller asking "is this body safe to translate" doesn't need to
+/// inspect the (wrong) translated string after the fact.
+pub(super) fn is_bare_sig_self_reference(expr: &Expr, ir: &OxidtrIR) -> bool {
+    if let Expr::VarRef(name) = expr {
+        if let Some(s) = ir.structures.iter().find(|s| s.name == *name) {
+            let is_enum_variant = s.parent.as_ref().is_some_and(|parent| {
+                ir.structures.iter().any(|p| p.name == *parent && p.is_enum)
+            });
+            return !is_enum_variant;
+        }
+    }
+    false
+}
+
 /// Look up the multiplicity and boxing info of a named field.
 /// Returns (multiplicity, needs_box) where needs_box is true for self-ref or cyclic-ref fields.
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
