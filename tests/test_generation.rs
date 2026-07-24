@@ -80,6 +80,45 @@ fn coverage_test_warns_vacuously_true() {
     }
 }
 
+/// #75 half 2: `is_vacuously_true` previously only ran at the fact×fact
+/// coverage-test call site. A plain `invariant_*` test over a sig with no
+/// fixture (e.g. an empty-fields sig) hits the exact same `Vec::new()`
+/// domain-emptiness shape and should get the same honest disclosure.
+#[test]
+fn invariant_test_warns_vacuously_true_for_empty_fixture_domain() {
+    let files = generate_from(r#"
+        sig Empty {}
+        fact TrivialFact { all e: Empty | e = e }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("fn invariant_trivial_fact"),
+        "expected the invariant test to be generated:\n{content}"
+    );
+    assert!(
+        content.contains("WARNING: vacuously true"),
+        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+    );
+}
+
+/// The same shape for a temporal transition test (`prime`-bearing fact).
+#[test]
+fn transition_test_warns_vacuously_true_for_empty_fixture_domain() {
+    let files = generate_from(r#"
+        var sig Empty {}
+        fact TrivialTransition { all e: Empty | e = e' }
+    "#);
+    let content = find_file(&files, "tests.rs");
+    assert!(
+        content.contains("fn transition_trivial_transition"),
+        "expected the transition test to be generated:\n{content}"
+    );
+    assert!(
+        content.contains("WARNING: vacuously true"),
+        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+    );
+}
+
 #[test]
 fn generate_inlined_constraint_with_implies() {
     let files = generate_from(r#"

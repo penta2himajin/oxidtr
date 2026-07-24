@@ -1312,9 +1312,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 continue;
             }
             let desc = analyze::describe_expr(&constraint.expr);
+            let empty_domains: HashSet<String> = params.iter()
+                .filter(|(_, tname)| !has_fixture.contains(tname))
+                .map(|(_, tname)| tname.clone())
+                .collect();
 
             writeln!(out, "/// @temporal Transition constraint: {fact_name}").unwrap();
             writeln!(out, "/// Verifies: pre→post state relationship ({desc})").unwrap();
+            if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+                writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+            }
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
@@ -1468,6 +1475,13 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         };
 
         let used_diversify = multi_var_diversify.is_some();
+        let empty_domains: HashSet<String> = params.iter()
+            .filter(|(_, tname)| !has_fixture.contains(tname))
+            .map(|(_, tname)| tname.clone())
+            .collect();
+        if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+            writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+        }
         writeln!(out, "#[test]").unwrap();
         writeln!(out, "fn {test_name}() {{").unwrap();
         if let Some((chain, inner_body)) = multi_var_diversify {
