@@ -135,6 +135,9 @@ fn expr_sig(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeE
         Expr::FieldAccess { base, field } => {
             resolve_field(base, field, sig_names, ir, env).map(|f| f.target.clone())
         }
+        // `^f` ranges over the same sig as `f` itself, and lowers to a
+        // slice-returning Tc* helper, so it needs no singleton lifting.
+        Expr::TransitiveClosure(inner) => expr_sig(inner, sig_names, ir, env),
         _ => None,
     }
 }

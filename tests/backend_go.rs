@@ -472,3 +472,42 @@ fn go_disjoint_quantifier_emits_boolean_expression_not_if_statement() {
         "Person contains a slice, so `!=` is illegal:\n{tests}"
     );
 }
+
+/// Native scalar targets (Int/Str/Bool/Float) are not sigs, so they have no
+/// `DefaultX()` factory and no Go type named `Int`. Fields of those types must
+/// use Go zero values. Never surfaced before because oxidtr's own model has no
+/// `one Int` field.
+#[test]
+fn go_native_scalar_fields_use_zero_values_not_factories() {
+    let files = generate_go(r#"
+        sig Node { tag: one Int, name: one Str, ok: one Bool, ratio: one Float, marks: set Int }
+    "#);
+    let fixtures = find_file(&files, "fixtures.go");
+    for bad in ["DefaultInt()", "DefaultStr()", "DefaultBool()", "DefaultFloat()", "[]Int{"] {
+        assert!(
+            !fixtures.contains(bad),
+            "native scalars have no factory and no Go type by that name, found {bad}:\n{fixtures}"
+        );
+    }
+    assert!(fixtures.contains("Tag: 0,"), "expected int zero value:\n{fixtures}");
+    assert!(fixtures.contains("Name: \"\","), "expected string zero value:\n{fixtures}");
+    assert!(fixtures.contains("Ok: false,"), "expected bool zero value:\n{fixtures}");
+    assert!(fixtures.contains("[]int64{}"), "expected a slice of the resolved Go type:\n{fixtures}");
+}
+
+/// A transitive-closure domain (`all p: n.^parent | ...`) yields the same sig
+/// as the underlying field, and lowers to a slice-returning Tc* helper — so it
+/// must type the closure parameter, not degrade to `any`.
+#[test]
+fn go_transitive_closure_domain_resolves_element_type() {
+    let files = generate_go(r#"
+        sig Node { parent: lone Node, tag: one Int }
+        assert TC { all n: Node | all p: n.^parent | p.tag = p.tag }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("func(p Node) bool"),
+        "TC domain must resolve to the field's target sig:\n{tests}"
+    );
+    assert!(!tests.contains("func(p any) bool"), "must not degrade to any:\n{tests}");
+}

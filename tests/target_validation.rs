@@ -457,6 +457,13 @@ fn go_adversarial_models_compile() {
          "sig Leaf {}\nabstract sig Shape {}\nsig Circle extends Shape { leaf: one Leaf }\n\
           sig Square extends Shape { leaf: one Leaf }\nsig Drawing { shape: one Shape }",
          "func DefaultLeaf() Leaf"),
+        ("native_scalar_fields",
+         "sig Node { tag: one Int, name: one Str, ok: one Bool, marks: set Int }",
+         "Tag: 0,"),
+        ("transitive_closure_domain",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "func(p Node) bool"),
         ("disjoint_quantifier",
          "sig Tag {}\nsig Person { tags: set Tag }\n\
           assert R { all disj a, b: Person | a != b }",

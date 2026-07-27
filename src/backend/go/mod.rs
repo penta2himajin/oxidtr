@@ -1449,16 +1449,31 @@ fn go_default_value(target: &str, mult: &Multiplicity) -> String {
 
 
 fn go_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    // A native alias (Int/Str/Bool/Float) is not a sig: it has no `DefaultX()`
+    // factory, and no Go type by that name either — `[]Int{}` does not compile.
+    let go_ty = resolve_type(TargetLang::Go, target);
+    let native = is_native_type_alias(target);
     match mult {
         Multiplicity::Lone => "nil".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {
-            if safe_targets.contains(target) {
-                format!("[]{target}{{Default{target}()}}")
+            if safe_targets.contains(target) && !native {
+                format!("[]{go_ty}{{Default{target}()}}")
             } else {
-                format!("[]{target}{{}}")
+                format!("[]{go_ty}{{}}")
             }
         }
+        Multiplicity::One if native => go_zero_value(&go_ty),
         Multiplicity::One => format!("Default{target}()"),
+    }
+}
+
+/// Go's zero value for a resolved native type.
+fn go_zero_value(go_ty: &str) -> String {
+    match go_ty {
+        "string" => "\"\"".to_string(),
+        "bool" => "false".to_string(),
+        "float64" => "0.0".to_string(),
+        _ => "0".to_string(),
     }
 }
 
