@@ -1978,6 +1978,11 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+        // A wholly temporal fact has no faithful single-state validator, so it
+        // must not name a `Validated*` wrapper — the body is suppressed later,
+        // leaving a type that claims "validated by X" and accepts everything.
+        // A *mixed* fact still enforces its snapshot-sound conjuncts.
+        if !analyze::has_snapshot_sound_conjunct(&constraint.expr, ir) { continue; }
         // Check if this constraint contains a Comparison
         if expr_has_comparison(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);

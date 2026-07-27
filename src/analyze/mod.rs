@@ -605,19 +605,92 @@ pub fn contains_prime_through_calls(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// the generator), or a prime that is only reachable through a callee body it
 /// cannot rewrite — must be declined rather than emitted.
 pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
-    // A prime the rewriter cannot see is a prime it cannot rewrite.
+    // A prime the rewriter cannot see is a prime it cannot rewrite — and one
+    // it can see is not enough if another hides in a callee.
     if !expr_contains_prime(expr) { return false; }
+    if contains_prime_through_calls(expr, ir) && calls_any_op(expr, ir) { return false; }
+
     let sig_names: std::collections::HashSet<&str> =
         ir.structures.iter().map(|s| s.name.as_str()).collect();
-    match strip_outer_quantifier(expr) {
-        Some((QuantKind::All, bindings, _)) => {
-            let vars: usize = bindings.iter().map(|b| b.vars.len()).sum();
-            vars == 1
-                && bindings.len() == 1
-                && !expr_contains_prime(&bindings[0].domain)
-                && matches!(&bindings[0].domain, Expr::VarRef(d) if sig_names.contains(d.as_str()))
+    // `some x: S | ..` over a `one sig` binds exactly one atom, so the emitted
+    // `for` loop is `all` and `some` at once — the only existential the
+    // rewriter gets right.
+    let singleton_domain = |b: &QuantBinding| matches!(&b.domain, Expr::VarRef(d)
+        if ir.structures.iter().any(|s| &s.name == d && s.sig_multiplicity == SigMultiplicity::One));
+    let (var, body) = match strip_outer_quantifier(expr) {
+        Some((QuantKind::Some, bindings, body)) if bindings.len() == 1
+            && bindings[0].vars.len() == 1 && singleton_domain(&bindings[0]) => {
+            if expr_contains_prime(&bindings[0].domain) { return false; }
+            (bindings[0].vars[0].clone(), body)
         }
-        _ => false,
+        Some((QuantKind::All, bindings, body)) => {
+            let vars: usize = bindings.iter().map(|b| b.vars.len()).sum();
+            if vars != 1 || bindings.len() != 1 { return false; }
+            if expr_contains_prime(&bindings[0].domain) { return false; }
+            match &bindings[0].domain {
+                Expr::VarRef(d) if sig_names.contains(d.as_str()) => {}
+                _ => return false,
+            }
+            (bindings[0].vars[0].clone(), body)
+        }
+        _ => return false,
+    };
+
+    // Every prime in the body must be exactly `v` or `v.field` for the bound
+    // variable: those are what `rewrite_prime_as_post_state` turns into
+    // `next_v`. A chained `c.d.v'` is silently dropped by the rewriter, and a
+    // prime under a nested quantifier refers to a variable that has no
+    // post-state binding at all.
+    fn primes_ok(e: &Expr, var: &str, in_nested_quant: bool) -> bool {
+        match e {
+            Expr::Prime(inner) => {
+                if in_nested_quant { return false; }
+                match inner.as_ref() {
+                    Expr::VarRef(v) => v == var,
+                    Expr::FieldAccess { base, .. } => matches!(base.as_ref(), Expr::VarRef(v) if v == var),
+                    _ => false,
+                }
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                primes_ok(left, var, in_nested_quant) && primes_ok(right, var, in_nested_quant)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } => primes_ok(i, var, in_nested_quant),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| primes_ok(&b.domain, var, true))
+                    && primes_ok(body, var, true)
+            }
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().is_none_or(|r| primes_ok(r, var, in_nested_quant))
+                    && args.iter().all(|a| primes_ok(a, var, in_nested_quant))
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+        }
+    }
+    primes_ok(body, &var, false)
+}
+
+/// Does the expression call any user-declared operation at all?
+fn calls_any_op(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::FunApp { name, receiver, args } => {
+            !resolved_callees(name, receiver.as_deref(), args, ir).is_empty()
+                || receiver.as_deref().is_some_and(|r| calls_any_op(r, ir))
+                || args.iter().any(|a| calls_any_op(a, ir))
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => calls_any_op(left, ir) || calls_any_op(right, ir),
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+        | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => calls_any_op(i, ir),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| calls_any_op(&b.domain, ir)) || calls_any_op(body, ir)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
 
@@ -630,8 +703,12 @@ pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// so there is nothing a generated test could hand it.
 pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
     fn body_scans_an_unpassed_sig(op: &OperationNode, ir: &OxidtrIR) -> bool {
-        let param_types: std::collections::HashSet<&str> =
-            op.params.iter().map(|p| p.type_name.as_str()).collect();
+        // A `p: one P` parameter is a single atom, not the collection of every
+        // P, so it cannot satisfy an `all q: P | ..` inside the body. Only a
+        // set/seq parameter of that type could.
+        let param_types: std::collections::HashSet<&str> = op.params.iter()
+            .filter(|p| matches!(p.mult, Multiplicity::Set | Multiplicity::Seq))
+            .map(|p| p.type_name.as_str()).collect();
         let sig_names: std::collections::HashSet<&str> =
             ir.structures.iter().map(|s| s.name.as_str()).collect();
         fn scan(
@@ -639,10 +716,11 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
             params: &std::collections::HashSet<&str>,
         ) -> bool {
             match e {
+                // A bare sig name means "every instance of it" wherever it
+                // appears — a quantifier domain, or a set as in `some P`.
+                Expr::VarRef(d) => sigs.contains(d.as_str()) && !params.contains(d.as_str()),
                 Expr::Quantifier { bindings, body, .. } => {
-                    bindings.iter().any(|b| matches!(&b.domain, Expr::VarRef(d)
-                        if sigs.contains(d.as_str()) && !params.contains(d.as_str())))
-                        || scan(body, sigs, params)
+                    bindings.iter().any(|b| scan(&b.domain, sigs, params)) || scan(body, sigs, params)
                 }
                 Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
                 | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
@@ -656,7 +734,7 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
                     receiver.as_deref().is_some_and(|r| scan(r, sigs, params))
                         || args.iter().any(|a| scan(a, sigs, params))
                 }
-                Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+                Expr::IntLiteral(_) => false,
             }
         }
         op.body.iter().any(|b| scan(b, &sig_names, &param_types))
@@ -688,6 +766,12 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
         }
     }
     walk(expr, ir, &mut Vec::new())
+}
+
+/// Is at least one top-level conjunct of this fact snapshot-checkable? A fact
+/// where none is has no faithful single-state validator at all.
+pub fn has_snapshot_sound_conjunct(expr: &Expr, ir: &OxidtrIR) -> bool {
+    conjuncts(expr).into_iter().any(|c| snapshot_is_sound(c, ir))
 }
 
 /// Split a top-level conjunction into its conjuncts.

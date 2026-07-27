@@ -1754,3 +1754,54 @@ fn rust_temporal_call_needing_an_unpassed_universe_is_skipped() {
     let t = find_file(&files, "tests.rs");
     assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
 }
+
+#[test]
+fn rust_transition_gate_checks_every_prime_not_just_the_quantifier() {
+    // The rewriter turns `v'` into a `next_v` bound by zipping pre/post
+    // collections. It only reaches a prime on the bound variable itself, so:
+    // a chained `c.d.v'` was silently dropped (green `assert!(x == x)`), and a
+    // prime under a nested quantifier emitted an unbound `next_d`.
+    let cases: &[(&str, &str)] = &[
+        ("Chained",
+         "sig D { var v: one Int }\nsig C { d: one D, var v: one Int }\n\
+          fact Chained { always all c: C | c.d.v' = c.d.v }"),
+        ("Nested",
+         "sig D { var v: one Int }\nsig C { ds: set D, var v: one Int }\n\
+          fact Nested { always all c: C | all d: c.ds | d.v' = d.v }"),
+    ];
+    for (name, model) in cases {
+        let files = generate_from(model);
+        let t = find_file(&files, "tests.rs");
+        assert!(t.contains(&format!("skipped {name}")), "{name} was emitted:\n{t}");
+    }
+}
+
+#[test]
+fn rust_atom_parameter_does_not_stand_in_for_the_whole_collection() {
+    // `p: one P` is one atom; `all q: P` inside the body still needs every P,
+    // which the generated `pos(p: &P)` has no way to see.
+    let files = generate_from(
+        "some sig P { x: one Int }\npred Pos[p: one P] { all q: P | q.x >= 0 }\n\
+         assert LaterPos { eventually all p: P | Pos[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_singleton_existential_transition_is_still_emitted() {
+    // `some c: C` over a `one sig` binds exactly one atom, so the emitted loop
+    // is `all` and `some` at once — the one existential the rewriter gets right.
+    let files = generate_from("one sig C { var v: one Int }\nfact SingleStut { always some c: C | c.v' = c.v }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_single_stut"), "conservatively lost:\n{t}");
+}
+
+#[test]
+fn rust_wholly_temporal_fact_creates_no_validator_wrapper() {
+    // The body was suppressed but the wrapper remained, claiming
+    // "validated by X" while accepting everything.
+    let files = generate_from("sig C { var v: one Int }\nfact NestedStep { always all c: C | c.v' = c.v }");
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("NestedStep"), "vacuous validator wrapper:\n{nt}");
+}
