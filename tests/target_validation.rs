@@ -752,3 +752,102 @@ fn swift_adversarial_models_compile() {
         );
     }
 }
+
+/// Compile and *run* the generated temporal trace checkers against every trace
+/// of length 1–3, comparing them to the operator definitions computed
+/// independently. String assertions cannot catch a checker that is semantically
+/// right but does not compile, nor one that compiles and is subtly wrong —
+/// both happened during review of #78.
+#[test]
+#[ignore]
+fn rust_temporal_checkers_match_their_definitions() {
+    const MODEL: &str = "sig P { f: one Int, g: one Int }\n\
+        assert UntilOk { (all p: P | p.f = 1) until (all p: P | p.g = 1) }\n\
+        assert SinceOk { (all p: P | p.f = 1) since (all p: P | p.g = 1) }\n\
+        assert ReleaseOk { (all p: P | p.f = 1) release (all p: P | p.g = 1) }\n\
+        assert TriggeredOk { (all p: P | p.f = 1) triggered (all p: P | p.g = 1) }";
+
+    let model = parser::parse(MODEL).expect("parse");
+    let ir = ir::lower(&model).expect("lower");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("temporal_crate");
+    write_rust_crate(&ir, crate_dir.to_str().unwrap());
+
+    // Appended to tests.rs so the private `check_*` fns are in scope.
+    let harness = r#"
+
+#[cfg(test)]
+mod semantics {
+    use super::*;
+
+    /// One state per (F, G) truth combination.
+    fn state(f: bool, g: bool) -> Vec<P> {
+        vec![P { f: if f { 1 } else { 0 }, g: if g { 1 } else { 0 } }]
+    }
+
+    fn f_of(s: &Vec<P>) -> bool { s.iter().all(|p| p.f == 1) }
+    fn g_of(s: &Vec<P>) -> bool { s.iter().all(|p| p.g == 1) }
+
+    // `F until G`     : ∃j. G(j) ∧ ∀k<j. F(k)
+    fn until_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).any(|j| g_of(&t[j]) && t[..j].iter().all(f_of))
+    }
+    // `F since G`     : ∃j. G(j) ∧ ∀k>j. F(k)
+    fn since_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).any(|j| g_of(&t[j]) && t[j + 1..].iter().all(f_of))
+    }
+    // `F release G`   : ¬(¬F until ¬G) = ∀j. G(j) ∨ ∃k<j. F(k)
+    fn release_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).all(|j| g_of(&t[j]) || t[..j].iter().any(f_of))
+    }
+    // `F triggered G` : ¬(¬F since ¬G) = ∀j. G(j) ∨ ∃k>j. F(k)
+    fn triggered_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).all(|j| g_of(&t[j]) || t[j + 1..].iter().any(f_of))
+    }
+
+    fn traces() -> Vec<Vec<Vec<P>>> {
+        let combos = [(false, false), (false, true), (true, false), (true, true)];
+        let mut out = Vec::new();
+        for len in 1..=3usize {
+            for mut n in 0..4usize.pow(len as u32) {
+                let mut trace = Vec::new();
+                for _ in 0..len {
+                    let (f, g) = combos[n % 4];
+                    trace.push(state(f, g));
+                    n /= 4;
+                }
+                out.push(trace);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn checkers_match_definitions() {
+        for t in traces() {
+            assert_eq!(check_until_until_ok(&t), until_def(&t), "until mismatch on {t:?}");
+            assert_eq!(check_since_since_ok(&t), since_def(&t), "since mismatch on {t:?}");
+            assert_eq!(check_release_release_ok(&t), release_def(&t), "release mismatch on {t:?}");
+            assert_eq!(check_triggered_triggered_ok(&t), triggered_def(&t), "triggered mismatch on {t:?}");
+        }
+    }
+}
+"#;
+    let tests_path = crate_dir.join("src/tests.rs");
+    let mut content = std::fs::read_to_string(&tests_path).unwrap();
+    content.push_str(harness);
+    std::fs::write(&tests_path, content).unwrap();
+
+    let out = std::process::Command::new("cargo")
+        .args(["test", "semantics"])
+        .current_dir(&crate_dir)
+        .output()
+        .expect("failed to run cargo test");
+    assert!(
+        out.status.success(),
+        "generated temporal checkers disagree with their definitions!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

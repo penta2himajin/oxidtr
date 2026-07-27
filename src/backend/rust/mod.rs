@@ -1236,8 +1236,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     }
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::fixtures::*;").unwrap();
-    writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use super::operations::*;").unwrap();
+    // operations.rs is only emitted when the model has preds or funs,
+    // so importing it unconditionally broke every pred-free model.
+    if !ir.operations.is_empty() {
+        writeln!(out, "#[allow(unused_imports)]").unwrap();
+        writeln!(out, "use super::operations::*;").unwrap();
+    }
     // Pairwise-diversified fixture literals (see diverse_fixture_literals) can
     // render `BTreeSet::from([..])`/`BTreeSet::new()` for set-mult fields.
     writeln!(out, "#[allow(unused_imports)]").unwrap();
@@ -1274,7 +1278,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if let Some(kind) = temporal_kind {
             writeln!(out, "/// {}", temporal_annotation(kind)).unwrap();
         }
-        if emit_temporal_static_test(&mut out, &test_name, &prop.name, &prop.expr, &params, temporal_kind) {
+        if emit_temporal_static_test(&mut out, &test_name, &prop.name, &prop.expr, &params, ir, temporal_kind) {
             emit_trace_checker(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
             continue;
         }
@@ -1448,7 +1452,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // one and assert that fixed outcome: real coverage of the checker's
         // control flow (slicing, position/rposition) without ever risking a
         // false failure on someone else's model.
-        if !emit_temporal_static_test(&mut out, &test_name, &fact_name, &constraint.expr, &params, temporal_kind) {
+        if !emit_temporal_static_test(&mut out, &test_name, &fact_name, &constraint.expr, &params, ir, temporal_kind) {
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.
         let ownership = detect_ownership_pattern(&constraint.expr, ir);
@@ -1589,6 +1593,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
+        // Every consumer of a translated body needs the same eligibility gate,
+        // or a fact the primary emitter declined still gets flattened here.
+        if !analyze::snapshot_is_sound(&constraint.expr, ir) { continue; }
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
@@ -1708,6 +1715,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
                 if can_call {
                     let test_name = format!("{op_name}_implies_{}", to_snake_case(&fact_name));
+                    if !analyze::snapshot_is_sound(&constraint.expr, ir) { continue; }
                     let fact_body = expr_translator::translate_with_ir(&constraint.expr, ir);
                     writeln!(out, "/// Cross-test: {} implies {fact_name}", op.name).unwrap();
                     writeln!(out, "#[test]").unwrap();
@@ -1834,6 +1842,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
             let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
 
+            if !analyze::snapshot_is_sound(&ca.expr, ir) || !analyze::snapshot_is_sound(&cb.expr, ir) {
+                continue;
+            }
             let body_a = expr_translator::translate_with_ir(&ca.expr, ir);
             let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
 
@@ -1951,7 +1962,9 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     // Import it whenever that module exists (same gate as its emission).
     if !ir.operations.is_empty() {
         writeln!(out, "#[allow(unused_imports)]").unwrap();
-        writeln!(out, "use super::operations::*;").unwrap();
+        if !ir.operations.is_empty() {
+            writeln!(out, "use super::operations::*;").unwrap();
+        }
     }
 
     // Check if TC functions are needed → import helpers
@@ -1987,7 +2000,8 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         // Find the constraint to get the inlined expression and params
         let constraint = ir.constraints.iter()
             .find(|c| c.name.as_deref() == Some(fact_name.as_str()));
-        let inlined_info = constraint.map(|c| {
+        // A temporal fact must not be inlined into a single-state validator.
+        let inlined_info = constraint.filter(|c| analyze::snapshot_is_sound(&c.expr, ir)).map(|c| {
             let body = expr_translator::translate_with_ir(&c.expr, ir);
             let params = expr_translator::extract_params(&c.expr, &sig_names);
             (body, params)
@@ -3417,13 +3431,20 @@ fn emit_temporal_static_test(
     name: &str,
     constraint_expr: &Expr,
     params: &[(String, String)],
+    ir: &OxidtrIR,
     temporal_kind: Option<analyze::TemporalKind>,
 ) -> bool {
     // The checker templates wrap the whole body in one quantifier over states,
     // which only means what the model means when the operator is outermost.
     // `A and eventually B` would become `any(|s| A(s) && B(s))`; a nested
     // binary would drop `A` entirely. Decline rather than emit a wrong check.
-    if temporal_kind.is_some() && !analyze::temporal_is_outermost(constraint_expr) {
+    // A snapshot-sound expression (only `always`/`historically`) keeps the
+    // ordinary static test even when the operator is nested — it is a weaker
+    // but never-wrong check, and dropping it would lose coverage `main` had.
+    if temporal_kind.is_some() && analyze::snapshot_is_sound(constraint_expr, ir) {
+        return false;
+    }
+    if temporal_kind.is_some() && !analyze::temporal_is_outermost(constraint_expr, ir) {
         writeln!(out, "// oxidtr: skipped {name} — temporal operator is not outermost; a trace").unwrap();
         writeln!(out, "// checker for it would assert a different formula. See #104.").unwrap();
         writeln!(out).unwrap();
@@ -3495,7 +3516,11 @@ fn emit_trace_checker(
     ir: &OxidtrIR,
     temporal_kind: Option<analyze::TemporalKind>,
 ) {
-    if temporal_kind.is_some() && !analyze::temporal_is_outermost(constraint_expr) { return; }
+    if temporal_kind.is_some()
+        && (analyze::snapshot_is_sound(constraint_expr, ir) || !analyze::temporal_is_outermost(constraint_expr, ir))
+    {
+        return;
+    }
     let fact_name = name.to_string();
     if let Some(kind) = temporal_kind {
         let snake_name = to_snake_case(&fact_name);
@@ -3573,7 +3598,7 @@ fn emit_trace_checker(
                                 // !( !F since !G ) — i.e. at every state either G
                                 // holds there or F holds strictly after it.
                                 writeln!(out, "    trace.iter().enumerate().all(|(i, {pname})| {{").unwrap();
-                                writeln!(out, "        {{ {right_body} }} || trace[i + 1..].iter().any(|{pname}| {{ {left_body} }})").unwrap();
+                                writeln!(out, "        ({right_body}) || trace[i + 1..].iter().any(|{pname}| {{ {left_body} }})").unwrap();
                                 writeln!(out, "    }})").unwrap();
                             }
                         }
@@ -3603,7 +3628,7 @@ fn emit_trace_checker(
                             }
                             TemporalBinaryOp::Triggered => {
                                 writeln!(out, "    trace.iter().enumerate().all(|(i, ({pnames}))| {{").unwrap();
-                                writeln!(out, "        {{ {right_body} }} || trace[i + 1..].iter().any(|({pnames})| {{ {left_body} }})").unwrap();
+                                writeln!(out, "        ({right_body}) || trace[i + 1..].iter().any(|({pnames})| {{ {left_body} }})").unwrap();
                                 writeln!(out, "    }})").unwrap();
                             }
                         }

@@ -301,6 +301,54 @@ pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
     scan_temporal_kind(expr)
 }
 
+/// May a single-state (snapshot) assertion stand in for this expression?
+///
+/// `always P` and `historically P` both include the *current* state, so
+/// asserting `P` now is a sound necessary condition — weaker than the model,
+/// but never wrong. `eventually`, `once`, `after`, `before`, the binary
+/// operators and prime all refer to states a snapshot cannot see, so feeding
+/// their body to the generic translator silently checks a different formula.
+///
+/// Call-aware: a `pred` body can hide an operator from a purely syntactic
+/// scan, which is how `eventually` survived inside `LaterPositive[p]`.
+pub fn snapshot_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
+    snapshot_sound_inner(expr, ir, &mut Vec::new())
+}
+
+fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+    let rec = |e: &Expr, seen: &mut Vec<String>| snapshot_sound_inner(e, ir, seen);
+    match expr {
+        Expr::TemporalUnary { op, expr: inner } => match op {
+            TemporalUnaryOp::Always | TemporalUnaryOp::Historically => rec(inner, seen),
+            _ => false,
+        },
+        Expr::TemporalBinary { .. } | Expr::Prime(_) => false,
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            rec(left, seen) && rec(right, seen)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
+            rec(inner, seen)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().all(|b| rec(&b.domain, seen)) && rec(body, seen)
+        }
+        Expr::FunApp { name, receiver, args } => {
+            if receiver.as_deref().is_some_and(|r| !rec(r, seen)) { return false; }
+            if args.iter().any(|a| !rec(a, seen)) { return false; }
+            if seen.iter().any(|n| n == name) { return true; }
+            seen.push(name.clone());
+            let ok = ir.operations.iter()
+                .filter(|op| &op.name == name)
+                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, seen)));
+            seen.pop();
+            ok
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+    }
+}
+
 /// Is the temporal operator the *root* of this expression, with no further
 /// temporal operator underneath it?
 ///
@@ -310,13 +358,56 @@ pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
 /// `any(|s| A(s) && B(s))` instead of `A(now) && exists s. B(s)`, and
 /// `all p | eventually P` would swap the quantifiers. Those are different
 /// formulas, so the caller must decline to emit rather than emit a wrong check.
-pub fn temporal_is_outermost(expr: &Expr) -> bool {
+pub fn temporal_is_outermost(expr: &Expr, ir: &OxidtrIR) -> bool {
     match expr {
-        Expr::TemporalUnary { expr: inner, .. } => scan_temporal_kind(inner).is_none(),
+        // `after`/`before` name an adjacent state; there is no trace-checker
+        // template for them yet and a snapshot is not a sound stand-in.
+        Expr::TemporalUnary { op: TemporalUnaryOp::After | TemporalUnaryOp::Before, .. } => false,
+        Expr::TemporalUnary { expr: inner, .. } => !contains_temporal(inner, ir),
         Expr::TemporalBinary { left, right, .. } => {
-            scan_temporal_kind(left).is_none() && scan_temporal_kind(right).is_none()
+            !contains_temporal(left, ir) && !contains_temporal(right, ir)
         }
         _ => false,
+    }
+}
+
+/// Any temporal operator or prime anywhere beneath `expr`, following `pred`
+/// calls — a purely syntactic scan misses `pred P[x] { eventually … }`, whose
+/// body the generic translator erases just the same.
+pub fn contains_temporal(expr: &Expr, ir: &OxidtrIR) -> bool {
+    !snapshot_sound_inner(expr, ir, &mut Vec::new())
+        || matches!(scan_temporal_kind(expr), Some(TemporalKind::Invariant) | Some(TemporalKind::PastInvariant))
+        || calls_temporal_pred(expr, ir, &mut Vec::new())
+}
+
+fn calls_temporal_pred(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+    match expr {
+        Expr::FunApp { name, receiver, args } => {
+            if receiver.as_deref().is_some_and(|r| calls_temporal_pred(r, ir, seen)) { return true; }
+            if args.iter().any(|a| calls_temporal_pred(a, ir, seen)) { return true; }
+            if seen.iter().any(|n| n == name) { return false; }
+            seen.push(name.clone());
+            let hit = ir.operations.iter().filter(|op| &op.name == name).any(|op| {
+                op.body.iter().any(|b| scan_temporal_kind(b).is_some() || calls_temporal_pred(b, ir, seen))
+            });
+            seen.pop();
+            hit
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            calls_temporal_pred(left, ir, seen) || calls_temporal_pred(right, ir, seen)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. }
+        | Expr::TemporalUnary { expr: inner, .. } | Expr::Prime(inner) => {
+            calls_temporal_pred(inner, ir, seen)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| calls_temporal_pred(&b.domain, ir, seen))
+                || calls_temporal_pred(body, ir, seen)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
     }
 }
 

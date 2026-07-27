@@ -1501,3 +1501,54 @@ fn rust_triggered_is_the_past_dual_of_release() {
     assert!(checker.contains("trace[i + 1..]"), "triggered looks strictly forward:\n{checker}");
     assert!(!checker.contains("trace[..=i]"), "old at-or-before reading:\n{checker}");
 }
+
+#[test]
+fn rust_pred_free_model_does_not_import_a_missing_module() {
+    // operations.rs is only emitted when the model has preds or funs, so an
+    // unconditional `use super::operations::*` broke every pred-free model.
+    let files = generate_from("sig P { x: one Int }\nassert Ok { all p: P | p.x = p.x }");
+    assert!(!files.iter().any(|f| f.path == "operations.rs"), "no preds, no module");
+    let t = find_file(&files, "tests.rs");
+    assert!(!t.contains("use super::operations"), "imports a module that was not emitted:\n{t}");
+}
+
+#[test]
+fn rust_after_is_not_approximated_by_a_snapshot() {
+    // `after P` names the next state; asserting P now is simply a different claim.
+    let files = generate_from("sig P { x: one Int }\nassert AfterOk { after all p: P | p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped AfterOk"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_always_keeps_its_snapshot_even_when_nested() {
+    // `always` includes the current state, so a snapshot is a weaker but
+    // never-wrong check — skipping it would lose coverage main had.
+    let files = generate_from("sig P { x: one Int }\nfact AlwaysNested { all p: P | always p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn invariant_always_nested() {");
+    assert!(test.contains("assert!(ps.iter().all("), "sound snapshot was dropped:\n{test}");
+}
+
+#[test]
+fn rust_temporal_hidden_in_a_pred_body_is_still_caught() {
+    // A purely syntactic scan sees no operator in `LaterPositive[p]`.
+    let files = generate_from(
+        "sig P { x: one Int }\npred LaterPositive[p: one P] { eventually p.x > 0 }\n\
+         assert Outer { eventually all p: P | LaterPositive[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Outer"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_liveness_outer"), "checker wraps an erasing pred call:\n{t}");
+}
+
+#[test]
+fn rust_temporal_fact_is_not_inlined_into_a_validator() {
+    // A skipped fact must not reappear as a single-state newtype validator.
+    let files = generate_from(
+        "sig P { x: one Int }\n\
+         fact ConjoinedEventually { (all p: P | p.x >= 0) and eventually (all p: P | p.x > 0) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("p.x > 0"), "temporal fact inlined into a validator:\n{nt}");
+}
