@@ -398,3 +398,13 @@ fn swift_enum_payload_resolves_native_types() {
     assert!(m.contains("case word(text: String)"), "Str must resolve to String:\n{m}");
     assert!(m.contains("case num(n: Int)"), "got:\n{m}");
 }
+
+#[test]
+fn swift_singleton_sig_is_hashable() {
+    // `one sig` lowers to a struct with a `shared` instance; a `set Marker`
+    // field elsewhere makes it a Set element, which requires Hashable.
+    let files = generate_swift("one sig Marker {}\nsig Box { ms: set Marker }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("struct Marker: Equatable, Hashable {"), "got:\n{m}");
+    assert!(m.contains("static let shared = Marker()"), "got:\n{m}");
+}

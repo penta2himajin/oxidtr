@@ -230,7 +230,7 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
         if s.is_var {
             writeln!(out, "/// @alloy: var sig").unwrap();
         }
-        writeln!(out, "struct {} {{", s.name).unwrap();
+        writeln!(out, "struct {}: Equatable, Hashable {{", s.name).unwrap();
         writeln!(out, "    static let shared = {}()", s.name).unwrap();
         writeln!(out, "}}").unwrap();
         return;
