@@ -68,7 +68,12 @@ pub fn extract(source: &str) -> MinedModel {
 }
 
 fn parse_struct(line: &str) -> Option<String> {
-    let rest = line.strip_prefix("struct ")?;
+    // A recursive sig is emitted as `final class` (a struct containing itself
+    // has infinite size in Swift), so both spellings are sigs. XCTest suites
+    // are the one class shape that is not.
+    let rest = line.strip_prefix("struct ")
+        .or_else(|| line.strip_prefix("final class "))
+        .filter(|_| !line.contains("XCTestCase"))?;
     let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
     if name.is_empty() { return None; }
     // Must have { somewhere (not a forward declaration)
@@ -77,8 +82,10 @@ fn parse_struct(line: &str) -> Option<String> {
 }
 
 fn parse_enum(line: &str) -> Option<String> {
-    // "enum Foo" or "enum Foo: ..." or "enum Foo {"
-    let rest = line.strip_prefix("enum ")?;
+    // "enum Foo" or "enum Foo: ..." or "enum Foo {"; a recursive enum is
+    // emitted as `indirect enum Foo` (see #88).
+    let rest = line.strip_prefix("enum ")
+        .or_else(|| line.strip_prefix("indirect enum "))?;
     let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
     if name.is_empty() { return None; }
     Some(name)
@@ -117,7 +124,7 @@ fn parse_swift_property(line: &str) -> Option<MinedField> {
     let rest = line.strip_prefix("let ")
         .or_else(|| line.strip_prefix("var "))?;
     let colon = rest.find(':')?;
-    let name = rest[..colon].trim().to_string();
+    let name = rest[..colon].trim().trim_matches('`').to_string();
     if name.is_empty() || name.contains(' ') { return None; }
 
     let type_part = rest[colon + 1..].trim();
@@ -193,6 +200,8 @@ fn collect_enum_cases(
 
         // "case variantName" or "case variantName(params)"
         if let Some(rest) = trimmed.strip_prefix("case ") {
+            // Swift keywords are backtick-escaped at the declaration site.
+            let rest = rest.trim_start_matches('`');
             let name: String = rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             if name.is_empty() { continue; }
             // PascalCase the variant name for Alloy sig
@@ -231,7 +240,7 @@ fn extract_case_params(line: &str) -> Vec<MinedField> {
             let p = p.trim();
             // "name: Type" — may have label
             let colon = p.find(':')?;
-            let name = p[..colon].trim().to_string();
+            let name = p[..colon].trim().trim_matches('`').to_string();
             // Remove external label if present (e.g., "_ name: Type")
             let name = name.rsplit_once(' ').map_or(name.as_str(), |(_, n)| n).to_string();
             if name.is_empty() { return None; }
