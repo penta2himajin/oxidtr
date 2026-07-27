@@ -408,3 +408,83 @@ fn swift_singleton_sig_is_hashable() {
     assert!(m.contains("struct Marker: Equatable, Hashable {"), "got:\n{m}");
     assert!(m.contains("static let shared = Marker()"), "got:\n{m}");
 }
+
+// ── #92 peer review (Codex) ──────────────────────────────────────────────────
+
+#[test]
+fn swift_recursive_class_uses_identity_equality() {
+    // A field-by-field `==` recurses forever on a cyclic instance, and hashing
+    // a `var` field breaks Set invariants once it is mutated. An Alloy atom is
+    // its identity, so compare identities.
+    let files = generate_swift("sig Node { var parent: lone Node }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("        lhs === rhs"), "got:\n{m}");
+    assert!(m.contains("hasher.combine(ObjectIdentifier(self))"), "got:\n{m}");
+    assert!(!m.contains("lhs.parent == rhs.parent"), "structural == is the bug:\n{m}");
+}
+
+#[test]
+fn swift_enum_map_payload_resolves_native_types() {
+    let files = generate_swift("abstract sig Choice {}\nsig Entry extends Choice { values: one Int -> Str }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("case entry(values: [Int: String])"), "Str must resolve to String:\n{m}");
+}
+
+#[test]
+fn swift_type_and_protocol_are_escaped_as_members() {
+    // Swift rejects a type member literally named `Type` or `Protocol`.
+    let files = generate_swift("sig Val {}\nsig Cfg { Type: one Val, Protocol: lone Val }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("let `Type`: Val"), "got:\n{m}");
+    assert!(m.contains("let `Protocol`: Val?"), "got:\n{m}");
+}
+
+#[test]
+fn swift_negated_lone_membership_is_parenthesized() {
+    // `not (n in n.parent)` must be `!(n.parent == n)`, not `!n.parent == n`.
+    let files = generate_swift(
+        "sig Node { parent: lone Node }\nfact NoSelf { all n: Node | not (n in n.parent) }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("!(n.parent == n)"), "got:\n{t}");
+}
+
+#[test]
+fn swift_enum_fixture_avoids_transitively_recursive_case() {
+    // `.wrap` reaches Expr again through Node, so defaultExpr() would not
+    // terminate; the unit case must win.
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Wrap extends Expr { node: one Node }\nsig Leaf extends Expr {}\nsig Node { expr: one Expr }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultExpr() -> Expr { .leaf }"), "got:\n{f}");
+}
+
+#[test]
+fn swift_membership_in_payload_variant_uses_case_test() {
+    // `Expr.lit` is a constructor, not a value — `Expr.lit.contains(e)` does
+    // not compile. Membership in a payload-bearing subsig is a case test.
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Other extends Expr {}\nassert IsLiteral { all e: Expr | e in Lit }",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("var isLit: Bool {"), "got:\n{m}");
+    assert!(m.contains("if case .lit = self { return true }"), "got:\n{m}");
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("e.isLit"), "got:\n{t}");
+    assert!(!t.contains("Expr.lit.contains"), "constructor cannot be searched:\n{t}");
+}
+
+#[test]
+fn swift_unit_variant_membership_stays_a_value_comparison() {
+    // A case with no payload *is* a value, so it needs no case test.
+    let files = generate_swift(
+        "abstract sig Level {}\none sig Low extends Level {}\none sig High extends Level {}\n\
+         sig Node { level: one Level }\nassert HighOnly { all n: Node | n.level = High }",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(!m.contains("var isHigh"), "unit cases need no case test:\n{m}");
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("Level.high"), "got:\n{t}");
+}

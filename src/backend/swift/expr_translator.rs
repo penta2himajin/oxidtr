@@ -128,6 +128,19 @@ fn enum_of_variant<'a>(name: &str, ir: &'a OxidtrIR) -> Option<&'a str> {
     if parent_struct.is_enum { Some(parent.as_str()) } else { None }
 }
 
+/// A case that carries a payload is not a value: `Expr.lit` is a constructor
+/// function, so it can be neither compared nor searched. Membership in such a
+/// subsig becomes the generated `is<Case>` test instead.
+pub(crate) fn variant_case_test(name: &str, ir: &OxidtrIR) -> Option<String> {
+    let parent = enum_of_variant(name, ir)?;
+    let variant = ir.structures.iter().find(|s| s.name == name)?;
+    let parent_struct = ir.structures.iter().find(|s| s.name == parent)?;
+    if variant.fields.is_empty() && parent_struct.fields.is_empty() {
+        return None;
+    }
+    Some(format!("is{name}"))
+}
+
 use super::{to_swift_case_name as enum_case_name, to_swift_field_name};
 
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
@@ -184,14 +197,27 @@ fn translate_inner(
                 CompareOp::Gte => format!("{} >= {}", ti(left, false), ti(right, false)),
                 CompareOp::In => {
                     let l = ti(left, false);
-                    if let Expr::FieldAccess { base, field } = right.as_ref() {
-                        let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
-                            return format!("{r_base}.{field} == {l}");
+                    // A `lone` relation is an Optional, so membership is equality.
+                    // Fall through rather than returning early, or the result
+                    // escapes the `parens_if_complex` wrapping below and
+                    // `not (n in n.parent)` emits `!n.parent == n`.
+                    let case_test = match right.as_ref() {
+                        Expr::VarRef(v) => variant_case_test(v, ir).map(|t| format!("{l}.{t}")),
+                        _ => None,
+                    };
+                    if let Some(t) = case_test { return t; }
+                    let lone_eq = match right.as_ref() {
+                        Expr::FieldAccess { base, field }
+                            if matches!(field_mult(field, ir), Some((Multiplicity::Lone, _))) =>
+                        {
+                            Some(format!("{}.{} == {l}", ti(base, false), to_swift_field_name(field)))
                         }
+                        _ => None,
+                    };
+                    match lone_eq {
+                        Some(eq) => eq,
+                        None => format!("{}.contains({l})", ti(right, false)),
                     }
-                    let r = ti(right, false);
-                    format!("{r}.contains({l})")
                 }
             }
         }
