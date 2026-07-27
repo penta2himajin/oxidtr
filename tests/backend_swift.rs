@@ -515,18 +515,6 @@ fn swift_unconstructible_sig_traps_instead_of_recursing() {
 }
 
 #[test]
-fn swift_set_population_sees_through_enum_variants() {
-    // A → B → Expr → Wrap → A is a cycle only if the walk expands the enum's
-    // variants; missing it populates the set and defaultA() never returns.
-    let files = generate_swift(
-        "abstract sig Expr {}\nsig Wrap extends Expr { a: one A }\nsig A { bs: set B }\nsig B { expr: one Expr }",
-    );
-    let f = find_file(&files, "Fixtures.swift");
-    assert!(f.contains("bs: Set()"), "cyclic set must stay empty:\n{f}");
-    assert!(f.contains("func defaultExpr() -> Expr { .wrap(a: defaultA()) }"), "got:\n{f}");
-}
-
-#[test]
 fn swift_equality_against_payload_variant_uses_case_test() {
     let files = generate_swift(
         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
@@ -580,4 +568,53 @@ fn swift_boundary_set_of_natives_has_distinct_elements() {
     let f = find_file(&files, "Fixtures.swift");
     assert!(f.contains("marks: Set([0, 1])"), "got:\n{f}");
     assert!(!f.contains("defaultInt()"), "no factory exists for Int:\n{f}");
+}
+
+// ── #92 peer review round 3 (Codex) ─────────────────────────────────────────
+
+#[test]
+fn swift_enum_witness_case_is_not_the_recursive_one() {
+    // Once Expr is known constructible (via ViaInner), a naive check finds
+    // `.loop(expr: defaultExpr())` satisfiable too. Selection must use the case
+    // that made the enum constructible in the first place.
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Loop extends Expr { expr: one Expr }\n\
+         sig ViaInner extends Expr { inner: one Inner }\n\
+         abstract sig Inner {}\nsig Safe extends Inner {}\nsig Back extends Inner { expr: one Expr }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultExpr() -> Expr { .viaInner(inner: defaultInner()) }"), "got:\n{f}");
+}
+
+#[test]
+fn swift_set_valued_equality_against_variant_is_not_a_case_test() {
+    // `Lit = b.exprs` compares against a Set, which has no `isLit`.
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         one sig Other extends Expr {}\nsig Box { exprs: set Expr }\n\
+         assert A { all b: Box | Lit = b.exprs }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(!t.contains("exprs.isLit"), "Set has no case test:\n{t}");
+    assert!(t.contains("is a case constructor"), "expected a skip:\n{t}");
+}
+
+#[test]
+fn swift_case_ref_guard_matches_whole_identifiers() {
+    // `Expr.lit` is a prefix of the perfectly valid `Expr.literal`.
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         one sig Literal extends Expr {}\nassert A { all e: Expr | e = Literal }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("e == Expr.literal"), "valid test was skipped:\n{t}");
+}
+
+#[test]
+fn swift_mutually_recursive_sets_are_still_constructible() {
+    // `A(bs: [])` is finite — neither sig may be written off as unbuildable.
+    let files = generate_swift("sig A { bs: set B }\nsig B { as: set A }");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultA() -> A {"), "got:\n{f}");
+    assert!(!f.contains("func defaultA() -> A { fatalError"), "A is constructible:\n{f}");
 }

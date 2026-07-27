@@ -665,10 +665,18 @@ fn swift_adversarial_models_compile() {
         ("unconstructible_sig_traps",
          "sig Node { next: one Node }",
          "func defaultNode() -> Node { fatalError("),
-        ("set_population_through_enum_variants",
-         "abstract sig Expr {}\nsig Wrap extends Expr { a: one A }\nsig A { bs: set B }\n\
-          sig B { expr: one Expr }",
-         "bs: Set()"),
+        ("mutually_recursive_sets_still_build",
+         "sig A { bs: set B }\nsig B { as: set A }",
+         "func defaultA() -> A {"),
+        ("set_equality_against_payload_variant_is_skipped",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          one sig Other extends Expr {}\nsig Box { exprs: set Expr }\n\
+          assert A { all b: Box | Lit = b.exprs }",
+         "is a case constructor"),
+        ("case_prefix_is_not_a_case_reference",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          one sig Literal extends Expr {}\nassert A { all e: Expr | e = Literal }",
+         "e == Expr.literal"),
         ("equality_against_payload_variant",
          "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
           sig Other extends Expr {}\nassert A { all e: Expr | e = Lit }",

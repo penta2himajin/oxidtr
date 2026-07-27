@@ -54,6 +54,10 @@ struct SwiftContext {
     children: HashMap<String, Vec<String>>,
     variant_names: HashSet<String>,
     struct_map: HashMap<String, StructureNode>,
+    /// Types whose generated fixture terminates; see `find_terminating_types`.
+    terminating: HashSet<String>,
+    /// Per enum, the case whose payload was constructible first.
+    enum_witness: HashMap<String, String>,
     /// Types that store themselves inline (directly or transitively). Swift
     /// rejects those as value types: structs become `final class`, enums
     /// become `indirect enum`.
@@ -77,7 +81,8 @@ impl SwiftContext {
             .map(|s| (s.name.clone(), s.clone()))
             .collect();
         let recursive_types = find_recursive_types(ir, &children, &variant_names);
-        SwiftContext { children, variant_names, struct_map, recursive_types }
+        let (terminating, enum_witness) = find_terminating_types(ir, &children, &variant_names);
+        SwiftContext { children, variant_names, struct_map, recursive_types, terminating, enum_witness }
     }
 
     fn is_variant(&self, name: &str) -> bool {
@@ -87,6 +92,7 @@ impl SwiftContext {
     fn is_recursive(&self, name: &str) -> bool {
         self.recursive_types.contains(name)
     }
+
 }
 
 /// Fields stored *inline* in their owner: `one T` is a `T`, `lone T` is a `T?`,
@@ -648,7 +654,14 @@ fn variant_domain<'a>(params: &'a [(String, String)], ctx: &SwiftContext) -> Opt
 /// constructor in value position — invalid Swift. Skip the test rather than
 /// emit it; rendering it properly needs payload destructuring.
 fn unrenderable_case_ref(body: &str, refs: &[String]) -> Option<String> {
-    refs.iter().find(|r| body.contains(r.as_str())).cloned()
+    // Match on an identifier boundary: `Expr.lit` is a prefix of the perfectly
+    // valid `Expr.literal`.
+    let ends_identifier = |hay: &str, at: usize| {
+        hay[at..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
+    };
+    refs.iter().find(|r| {
+        body.match_indices(r.as_str()).any(|(i, m)| ends_identifier(body, i + m.len()))
+    }).cloned()
 }
 
 fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
@@ -1159,10 +1172,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             // built. Picking a case whose factory re-enters this enum produces
             // code that compiles and then overflows the stack.
             let variant = variants.iter().find(|v| payload_of(v).is_empty())
-                .or_else(|| variants.iter().find(|v| {
-                    let mut visiting = vec![s.name.clone()];
-                    payload_of(v).iter().all(|f| enum_payload_edge_terminates(f, ir, ctx, &fixture_types, &mut visiting))
-                }));
+                .or_else(|| ctx.enum_witness.get(&s.name).and_then(|w| variants.iter().find(|v| *v == w)));
 
             writeln!(out, "/// Factory: default value for {}", s.name).unwrap();
             match variant {
@@ -1203,8 +1213,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
         }
 
         writeln!(out, "/// Factory: create a default valid {}", s.name).unwrap();
-        let mut visiting = Vec::new();
-        if !fixture_terminates(&s.name, ir, ctx, &fixture_types, &mut visiting) {
+        if !ctx.terminating.contains(&s.name) {
             writeln!(out, "func default{0}() -> {0} {{ {1} }}", s.name, no_finite_default(&s.name)).unwrap();
             writeln!(out).unwrap();
             continue;
@@ -1373,63 +1382,59 @@ fn no_finite_default(name: &str) -> String {
     format!("fatalError(\"oxidtr: {name} has no finite default \\u{{2014}} every value of it contains another\")")
 }
 
-/// Would the *emitted* `default{ty}()` terminate? This mirrors the fixture
-/// emitter exactly rather than approximating the type graph: a `lone` field
-/// bottoms out at `nil`, a set/seq only recurses when `is_safe_set_population`
-/// lets the emitter put an element in it, and an enum terminates as soon as
-/// *one* case can be built.
+/// Types whose `default{T}()` provably terminates, as a least fixed point:
+/// start with nothing constructible and keep adding types all of whose `one`
+/// fields are already constructible. A `lone` field bottoms out at `nil` and a
+/// set/seq at whatever `is_safe_set_population` decides, so neither is an edge
+/// here. An enum is constructible as soon as one of its cases is.
 ///
-/// ponytail: no memoization — worst case is exponential, but a model has tens
-/// of sigs and a memo table would have to be keyed on the visiting stack to
-/// stay correct.
-fn fixture_terminates(
-    ty: &str, ir: &OxidtrIR, ctx: &SwiftContext,
-    fixture_types: &HashSet<String>, visiting: &mut Vec<String>,
-) -> bool {
-    if swift_native_default(ty).is_some() { return true; }
-    let s = match ir.structures.iter().find(|s| s.name == ty) {
-        Some(s) => s,
-        None => return true,
+/// Computed once rather than walked per query: a recursive walk with a
+/// visiting stack is both exponential on a wide DAG and inconsistent, since
+/// the answer would depend on where the walk started.
+/// Also records, per enum, the case that *made* it constructible — the one
+/// whose payload was already satisfiable when the enum was admitted. Selection
+/// cannot re-derive this from the finished set: once `Expr` is known
+/// constructible, a self-recursive case like `.loop(expr: defaultExpr())`
+/// looks satisfiable too.
+fn find_terminating_types(
+    ir: &OxidtrIR,
+    children: &HashMap<String, Vec<String>>,
+    variant_names: &HashSet<String>,
+) -> (HashSet<String>, HashMap<String, String>) {
+    let mut done: HashSet<String> = HashSet::new();
+    let mut witness: HashMap<String, String> = HashMap::new();
+    let edge_ok = |f: &IRField, done: &HashSet<String>| {
+        f.value_type.is_some()
+            || f.mult != Multiplicity::One
+            || swift_native_default(&f.target).is_some()
+            || done.contains(&f.target)
+            // A target with no structure of its own has nothing to recurse into.
+            || !ir.structures.iter().any(|s| s.name == f.target)
     };
-    if visiting.iter().any(|v| v == ty) { return false; }
-    visiting.push(ty.to_string());
 
-    let result = if s.is_enum {
-        match ctx.children.get(ty) {
-            Some(vs) if !vs.is_empty() => vs.iter().any(|v| {
-                let own = ctx.struct_map.get(v).map(|st| st.fields.clone()).unwrap_or_default();
-                s.fields.iter().chain(own.iter())
-                    .all(|f| enum_payload_edge_terminates(f, ir, ctx, fixture_types, visiting))
-            }),
-            // No cases at all: uninhabited, so no factory can return.
-            _ => false,
-        }
-    } else {
-        s.fields.iter().all(|f| {
-            if f.value_type.is_some() { return true; }
-            match f.mult {
-                Multiplicity::Lone => true,
-                Multiplicity::Set | Multiplicity::Seq => {
-                    !super::is_safe_set_population(ty, &f.target, ir, fixture_types)
-                        || fixture_terminates(&f.target, ir, ctx, fixture_types, visiting)
-                }
-                Multiplicity::One => fixture_terminates(&f.target, ir, ctx, fixture_types, visiting),
+    loop {
+        let mut changed = false;
+        for s in &ir.structures {
+            if done.contains(&s.name) || variant_names.contains(&s.name) { continue; }
+            let ok = if s.is_enum {
+                let found = children.get(&s.name).and_then(|vs| vs.iter().find(|v| {
+                    let own = ir.structures.iter().find(|c| &c.name == *v);
+                    s.fields.iter()
+                        .chain(own.into_iter().flat_map(|c| c.fields.iter()))
+                        .all(|f| edge_ok(f, &done))
+                }));
+                if let Some(v) = found { witness.insert(s.name.clone(), v.clone()); }
+                found.is_some()
+            } else {
+                s.fields.iter().all(|f| edge_ok(f, &done))
+            };
+            if ok {
+                done.insert(s.name.clone());
+                changed = true;
             }
-        })
-    };
-
-    visiting.pop();
-    result
-}
-
-/// Enum payloads are built with plain `swift_default_value`, so only `one`
-/// fields recurse — sets and seqs are always emitted empty there.
-fn enum_payload_edge_terminates(
-    f: &IRField, ir: &OxidtrIR, ctx: &SwiftContext,
-    fixture_types: &HashSet<String>, visiting: &mut Vec<String>,
-) -> bool {
-    if f.value_type.is_some() || f.mult != Multiplicity::One { return true; }
-    fixture_terminates(&f.target, ir, ctx, fixture_types, visiting)
+        }
+        if !changed { return (done, witness); }
+    }
 }
 
 /// Native aliases have no generated factory — they need a literal.

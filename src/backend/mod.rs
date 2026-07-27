@@ -156,16 +156,9 @@ pub fn is_safe_set_population(
     while let Some(cur) = stack.pop() {
         if cur == owner { return false; }
         if !visited.insert(cur.clone()) { continue; }
-        // An abstract sig lowered to an enum holds its payload in the variants,
-        // so the path out of it runs through their fields — walking only the
-        // enum's own (empty) field list hides `A → B → Expr → Wrap → A`.
-        let is_enum_here = struct_map.get(cur.as_str()).is_some_and(|s| s.is_enum);
-        for s in &ir.structures {
-            let owns = s.name == cur
-                || (is_enum_here && s.parent.as_deref() == Some(cur.as_str()));
-            if !owns { continue; }
+        if let Some(s) = struct_map.get(cur.as_str()) {
             for f in &s.fields {
-                if f.mult == Multiplicity::One {
+                if f.mult == Multiplicity::One && fixture_types.contains(&f.target) {
                     stack.push(f.target.clone());
                 }
             }

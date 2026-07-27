@@ -134,7 +134,12 @@ fn case_test_operand(left: &Expr, right: &Expr, ir: &OxidtrIR) -> Option<String>
     let one_way = |v: &Expr, other: &Expr| -> Option<String> {
         let Expr::VarRef(name) = v else { return None };
         let test = variant_case_test(name, ir)?;
-        Some(format!("{}.{test}", translate_inner(other, true, &sig_names, ir)))
+        // Only an atom has a case: `Lit = b.exprs` compares against a set, and
+        // `Set<Expr>` has no `isLit`. A bound variable is the one operand
+        // guaranteed to be a single value without a type environment.
+        let Expr::VarRef(other_name) = other else { return None };
+        if sig_names.contains(other_name.as_str()) { return None; }
+        Some(format!("{other_name}.{test}"))
     };
     one_way(right, left).or_else(|| one_way(left, right))
 }
