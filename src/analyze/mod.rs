@@ -301,47 +301,88 @@ pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
     scan_temporal_kind(expr)
 }
 
+/// Alloy's built-in integer methods, which the translators turn into
+/// operators. A user `pred` sharing one of these names is never what a
+/// `receiver.plus[n]` call refers to.
+const BUILTIN_RECEIVER_FUNS: &[&str] = &["plus", "add", "minus", "sub", "mul", "div", "rem"];
+
+/// Does this `FunApp` resolve to a user-declared operation, rather than a
+/// built-in? Matching on the bare name skipped `ArithmeticOnly` merely because
+/// some unrelated pred happened to be called `plus`.
+fn resolved_callees<'a>(
+    name: &str, receiver: Option<&Expr>, args: &[Expr], ir: &'a OxidtrIR,
+) -> Vec<&'a OperationNode> {
+    if receiver.is_some() && BUILTIN_RECEIVER_FUNS.contains(&name) {
+        return Vec::new();
+    }
+    ir.operations.iter()
+        .filter(|op| op.name == name)
+        .filter(|op| op.receiver_sig.is_some() == receiver.is_some())
+        .filter(|op| op.params.len() == args.len())
+        .collect()
+}
+
 /// May a single-state (snapshot) assertion stand in for this expression?
 ///
 /// `always P` and `historically P` both include the *current* state, so
-/// asserting `P` now is a sound necessary condition — weaker than the model,
-/// but never wrong. `eventually`, `once`, `after`, `before`, the binary
-/// operators and prime all refer to states a snapshot cannot see, so feeding
-/// their body to the generic translator silently checks a different formula.
+/// asserting `P` now is a sound necessary condition — but **only in a positive
+/// position**. Under a negation, in an implication antecedent, or either side
+/// of an `iff`, the implication `always P => P now` runs the wrong way and the
+/// snapshot becomes a different claim. `eventually`, `once`, `after`, `before`,
+/// the binary operators and prime refer to states a snapshot cannot see at all.
 ///
-/// Call-aware: a `pred` body can hide an operator from a purely syntactic
-/// scan, which is how `eventually` survived inside `LaterPositive[p]`.
+/// Call-aware: a `pred` body can hide an operator from a syntactic scan.
 pub fn snapshot_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
-    snapshot_sound_inner(expr, ir, &mut Vec::new())
+    snapshot_sound_inner(expr, ir, true, &mut Vec::new())
 }
 
-fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
-    let rec = |e: &Expr, seen: &mut Vec<String>| snapshot_sound_inner(e, ir, seen);
+fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, positive: bool, seen: &mut Vec<String>) -> bool {
     match expr {
         Expr::TemporalUnary { op, expr: inner } => match op {
-            TemporalUnaryOp::Always | TemporalUnaryOp::Historically => rec(inner, seen),
+            TemporalUnaryOp::Always | TemporalUnaryOp::Historically => {
+                positive && snapshot_sound_inner(inner, ir, positive, seen)
+            }
             _ => false,
         },
         Expr::TemporalBinary { .. } | Expr::Prime(_) => false,
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
-            rec(left, seen) && rec(right, seen)
+        Expr::Not(inner) => snapshot_sound_inner(inner, ir, !positive, seen),
+        Expr::BinaryLogic { op, left, right } => match op {
+            LogicOp::Implies => {
+                snapshot_sound_inner(left, ir, !positive, seen)
+                    && snapshot_sound_inner(right, ir, positive, seen)
+            }
+            // Neither side of `iff` is monotone.
+            LogicOp::Iff => {
+                snapshot_sound_inner(left, ir, true, seen) && snapshot_sound_inner(left, ir, false, seen)
+                    && snapshot_sound_inner(right, ir, true, seen) && snapshot_sound_inner(right, ir, false, seen)
+            }
+            _ => {
+                snapshot_sound_inner(left, ir, positive, seen)
+                    && snapshot_sound_inner(right, ir, positive, seen)
+            }
+        },
+        Expr::Comparison { left, right, .. } | Expr::SetOp { left, right, .. }
+        | Expr::Product { left, right } => {
+            snapshot_sound_inner(left, ir, positive, seen)
+                && snapshot_sound_inner(right, ir, positive, seen)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
-            rec(inner, seen)
+            snapshot_sound_inner(inner, ir, positive, seen)
         }
         Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().all(|b| rec(&b.domain, seen)) && rec(body, seen)
+            bindings.iter().all(|b| snapshot_sound_inner(&b.domain, ir, positive, seen))
+                && snapshot_sound_inner(body, ir, positive, seen)
         }
         Expr::FunApp { name, receiver, args } => {
-            if receiver.as_deref().is_some_and(|r| !rec(r, seen)) { return false; }
-            if args.iter().any(|a| !rec(a, seen)) { return false; }
+            if receiver.as_deref().is_some_and(|r| !snapshot_sound_inner(r, ir, positive, seen)) {
+                return false;
+            }
+            if args.iter().any(|a| !snapshot_sound_inner(a, ir, positive, seen)) { return false; }
             if seen.iter().any(|n| n == name) { return true; }
             seen.push(name.clone());
-            let ok = ir.operations.iter()
-                .filter(|op| &op.name == name)
-                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, seen)));
+            let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, positive, seen)));
             seen.pop();
             ok
         }
@@ -375,9 +416,7 @@ pub fn temporal_is_outermost(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// calls — a purely syntactic scan misses `pred P[x] { eventually … }`, whose
 /// body the generic translator erases just the same.
 pub fn contains_temporal(expr: &Expr, ir: &OxidtrIR) -> bool {
-    !snapshot_sound_inner(expr, ir, &mut Vec::new())
-        || matches!(scan_temporal_kind(expr), Some(TemporalKind::Invariant) | Some(TemporalKind::PastInvariant))
-        || calls_temporal_pred(expr, ir, &mut Vec::new())
+    scan_temporal_kind(expr).is_some() || calls_temporal_pred(expr, ir, &mut Vec::new())
 }
 
 fn calls_temporal_pred(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
@@ -387,7 +426,7 @@ fn calls_temporal_pred(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bo
             if args.iter().any(|a| calls_temporal_pred(a, ir, seen)) { return true; }
             if seen.iter().any(|n| n == name) { return false; }
             seen.push(name.clone());
-            let hit = ir.operations.iter().filter(|op| &op.name == name).any(|op| {
+            let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter().any(|op| {
                 op.body.iter().any(|b| scan_temporal_kind(b).is_some() || calls_temporal_pred(b, ir, seen))
             });
             seen.pop();
@@ -485,8 +524,19 @@ pub fn strip_outer_quantifier(expr: &Expr) -> Option<(&QuantKind, &[QuantBinding
 pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
     for c in &ir.constraints {
+        // `analyze_expr` unwraps temporal operators, so a constraint derived
+        // from `eventually all p | #p.items <= 1` becomes a plain cardinality
+        // bound and every validator built from it enforces the wrong thing in
+        // the current state. Every analyzer-derived consumer routes through
+        // here, so this is the one place the gate has to hold.
         let name = c.name.clone().unwrap_or_default();
-        results.extend(analyze_expr(&c.expr, &name, ir));
+        let infos = analyze_expr(&c.expr, &name, ir);
+        if snapshot_is_sound(&c.expr, ir) {
+            results.extend(infos);
+        } else {
+            // `Named` is documentation; the rest are enforced.
+            results.extend(infos.into_iter().filter(|i| matches!(i, ConstraintInfo::Named { .. })));
+        }
     }
     results
 }

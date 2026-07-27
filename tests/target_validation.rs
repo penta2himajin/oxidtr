@@ -761,11 +761,16 @@ fn swift_adversarial_models_compile() {
 #[test]
 #[ignore]
 fn rust_temporal_checkers_match_their_definitions() {
+    // Covers the one-param checker shape *and* the zero-param `()` shape, and
+    // the traces below use empty and multi-atom states so a quantifier
+    // translation error cannot hide behind exactly-one-atom states.
     const MODEL: &str = "sig P { f: one Int, g: one Int }\n\
         assert UntilOk { (all p: P | p.f = 1) until (all p: P | p.g = 1) }\n\
         assert SinceOk { (all p: P | p.f = 1) since (all p: P | p.g = 1) }\n\
         assert ReleaseOk { (all p: P | p.f = 1) release (all p: P | p.g = 1) }\n\
-        assert TriggeredOk { (all p: P | p.f = 1) triggered (all p: P | p.g = 1) }";
+        assert TriggeredOk { (all p: P | p.f = 1) triggered (all p: P | p.g = 1) }\n\
+        assert NoParamUntil { 1 = 1 until 1 = 2 }\n\
+        assert NoParamEventually { eventually 1 = 2 }";
 
     let model = parser::parse(MODEL).expect("parse");
     let ir = ir::lower(&model).expect("lower");
@@ -781,9 +786,16 @@ fn rust_temporal_checkers_match_their_definitions() {
 mod semantics {
     use super::*;
 
-    /// One state per (F, G) truth combination.
-    fn state(f: bool, g: bool) -> Vec<P> {
-        vec![P { f: if f { 1 } else { 0 }, g: if g { 1 } else { 0 } }]
+    /// One state per (F, G) truth combination. `shape` varies how the state
+    /// realises that combination: 0 = one atom, 1 = two atoms, 2 = an empty
+    /// collection (where both `all` quantifiers are vacuously true).
+    fn state(f: bool, g: bool, shape: usize) -> Vec<P> {
+        let atom = |f: bool, g: bool| P { f: if f { 1 } else { 0 }, g: if g { 1 } else { 0 } };
+        match shape {
+            1 => vec![atom(true, true), atom(f, g)],
+            2 if f && g => Vec::new(),
+            _ => vec![atom(f, g)],
+        }
     }
 
     fn f_of(s: &Vec<P>) -> bool { s.iter().all(|p| p.f == 1) }
@@ -809,18 +821,34 @@ mod semantics {
     fn traces() -> Vec<Vec<Vec<P>>> {
         let combos = [(false, false), (false, true), (true, false), (true, true)];
         let mut out = Vec::new();
-        for len in 1..=3usize {
-            for mut n in 0..4usize.pow(len as u32) {
-                let mut trace = Vec::new();
-                for _ in 0..len {
-                    let (f, g) = combos[n % 4];
-                    trace.push(state(f, g));
-                    n /= 4;
+        for shape in 0..3usize {
+            for len in 1..=3usize {
+                for mut n in 0..4usize.pow(len as u32) {
+                    let mut trace = Vec::new();
+                    for _ in 0..len {
+                        let (f, g) = combos[n % 4];
+                        trace.push(state(f, g, shape));
+                        n /= 4;
+                    }
+                    out.push(trace);
                 }
-                out.push(trace);
             }
         }
         out
+    }
+
+    /// The zero-parameter shape: a trace of unit states. `1 = 1 until 1 = 2`
+    /// can never be satisfied, and `eventually 1 = 2` likewise.
+    fn unit_traces() -> Vec<Vec<()>> {
+        (0..=3usize).map(|n| vec![(); n]).collect()
+    }
+
+    #[test]
+    fn parameterless_checkers_are_callable_and_correct() {
+        for t in unit_traces() {
+            assert!(!check_until_no_param_until(&t), "1=1 until 1=2 can never hold: {t:?}");
+            assert!(!check_liveness_no_param_eventually(&t), "eventually 1=2 can never hold: {t:?}");
+        }
     }
 
     #[test]

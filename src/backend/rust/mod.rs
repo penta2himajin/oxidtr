@@ -1047,6 +1047,13 @@ fn param_type_str(p: &IRParam) -> String {
 /// each conjunct compiled via `translate_operation_clause` and joined with
 /// `&&`.
 fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, indent: &str) {
+    // A temporal pred body cannot be evaluated against one state; emitting the
+    // erased translation exports a wrong implementation that every caller then
+    // inherits. Stub it until #104 supplies a compositional translation.
+    if op.body.iter().any(|b| !analyze::snapshot_is_sound(b, ir)) {
+        writeln!(out, "{indent}todo!(\"oxidtr: {} is temporal; needs a trace, see #104\");", op.name).unwrap();
+        return;
+    }
     if op.body.is_empty() {
         writeln!(out, "{indent}true").unwrap();
     } else if op.return_type.is_some() && op.body.len() == 1
@@ -1266,6 +1273,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // treatment as a `fact`. Without this the operator is erased —
         // `eventually P` becomes a snapshot assertion of `P`, which is a
         // strictly different property that compiles and passes green.
+        // A formula whose only temporal operator is inside a called pred has
+        // no surface kind, so classification alone never reaches the gate.
+        if !analyze::snapshot_is_sound(&prop.expr, ir)
+            && !analyze::temporal_is_outermost(&prop.expr, ir)
+        {
+            writeln!(out, "// oxidtr: skipped {} — temporal content the snapshot path", prop.name).unwrap();
+            writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         if analyze::expr_contains_prime(&prop.expr) {
             // The transition machinery lives on the fact path only; without it
             // a prime translates to a `next_*` field that does not exist.
@@ -1452,6 +1469,14 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // one and assert that fixed outcome: real coverage of the checker's
         // control flow (slicing, position/rposition) without ever risking a
         // false failure on someone else's model.
+        if !analyze::snapshot_is_sound(&constraint.expr, ir)
+            && !analyze::temporal_is_outermost(&constraint.expr, ir)
+        {
+            writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
+            writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         if !emit_temporal_static_test(&mut out, &test_name, &fact_name, &constraint.expr, &params, ir, temporal_kind) {
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.

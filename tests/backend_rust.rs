@@ -1552,3 +1552,60 @@ fn rust_temporal_fact_is_not_inlined_into_a_validator() {
     let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
     assert!(!nt.contains("p.x > 0"), "temporal fact inlined into a validator:\n{nt}");
 }
+
+#[test]
+fn rust_always_under_negation_is_not_snapshot_approximated() {
+    // `always P => P now` runs the wrong way under a negation: a trace where P
+    // holds now and fails later satisfies `not always P`, but the snapshot
+    // assertion `!P(now)` is false.
+    let files = generate_from("sig P { x: one Int }\nassert NegAlways { not always all p: P | p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NegAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_always_in_an_implication_antecedent_is_not_approximated() {
+    let files = generate_from(
+        "sig P { x: one Int }\n\
+         assert AntAlways { (always all p: P | p.x > 0) implies (all p: P | p.x >= 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped AntAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_call_only_temporal_reaches_the_gate() {
+    // The surface expression has no operator, so classification alone never
+    // consults the call-aware check.
+    let files = generate_from(
+        "sig P { x: one Int }\npred Later[p: one P] { eventually p.x > 0 }\n\
+         assert HiddenOnly { all p: P | Later[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped HiddenOnly"), "expected a diagnostic:\n{t}");
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("todo!(\"oxidtr: Later is temporal"), "erased pred body exported:\n{ops}");
+}
+
+#[test]
+fn rust_temporal_fact_does_not_leak_through_analyzer_derived_checks() {
+    // `analyze_expr` unwraps temporal operators, so the cardinality bound of
+    // `eventually #p.items <= 1` became a current-state validator.
+    let files = generate_from(
+        "sig Item {}\nsig P { items: set Item }\n\
+         fact LaterSmall { eventually all p: P | #p.items <= 1 }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("items.len() > 1"), "temporal bound enforced in one state:\n{nt}");
+}
+
+#[test]
+fn rust_builtin_arithmetic_is_not_confused_with_a_same_named_pred() {
+    // `p.x.plus[1]` is Alloy integer arithmetic, not a call to `pred plus`.
+    let files = generate_from(
+        "sig P { x: one Int }\npred plus[p: one P] { eventually p.x > 0 }\n\
+         assert ArithmeticOnly { eventually all p: P | p.x.plus[1] > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("fn check_liveness_arithmetic_only"), "falsely skipped:\n{t}");
+}
