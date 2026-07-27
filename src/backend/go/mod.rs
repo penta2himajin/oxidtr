@@ -19,7 +19,10 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    if has_tc {
+    // helpers.go also carries forAll/exists/contains, which any translated
+    // quantifier or `in` expression calls — so it is needed whenever there is
+    // a constraint or property at all, not just when a TC field exists.
+    if has_tc || !ir.constraints.is_empty() || !ir.properties.is_empty() {
         files.push(GeneratedFile {
             path: "helpers.go".to_string(),
             content: generate_helpers(ir),
@@ -445,10 +448,127 @@ fn mult_to_go_type(target: &str, mult: &Multiplicity, is_indirect: bool) -> Stri
 
 // ── helpers.go ───────────────────────────────────────────────────────────────
 
+/// Emit the generic collection helpers the expression translator compiles
+/// quantifiers and `in` down to. Without these the generated package references
+/// undefined functions and nothing builds.
+///
+/// Named `forAll`/`exists` rather than `all`/`any` on purpose: `any` is a
+/// predeclared type alias for `interface{}`, so a package-level `func any[...]`
+/// would shadow it and break every use of `any` as a type — including this
+/// file's own `[T any]` constraints and the translator's unresolved-domain
+/// fallback.
+///
+/// Emitted unconditionally: unused package-level functions are legal Go (unlike
+/// unused imports or locals), so this costs nothing and avoids threading
+/// "is this helper reachable" detection through every expression site.
+fn generate_collection_helpers(out: &mut String) {
+    writeln!(out, "// forAll reports whether f holds for every element of xs.").unwrap();
+    writeln!(out, "func forAll[T any](xs []T, f func(T) bool) bool {{").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tif !f(x) {{").unwrap();
+    writeln!(out, "\t\t\treturn false").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn true").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// exists reports whether f holds for at least one element of xs.").unwrap();
+    writeln!(out, "func exists[T any](xs []T, f func(T) bool) bool {{").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tif f(x) {{").unwrap();
+    writeln!(out, "\t\t\treturn true").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn false").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // `comparable` is too strict: a sig lowered to a struct containing a slice
+    // field is not comparable in Go, so `contains[T comparable]` fails to
+    // instantiate for most generated types. reflect.DeepEqual accepts any type.
+    // Deliberately NOT generic: a `lone` field lowers to *T while the value it
+    // is compared against is T, and generic inference rejects that mismatch.
+    // Taking `any` also lets deref normalize the optional away, so comparing a
+    // value to a `lone` field means "compares equal to its pointee".
+    writeln!(out, "// equal reports whether a and b are deeply equal, treating a").unwrap();
+    writeln!(out, "// pointer (a `lone` field) as its pointee.").unwrap();
+    writeln!(out, "func equal(a any, b any) bool {{").unwrap();
+    writeln!(out, "\treturn reflect.DeepEqual(deref(a), deref(b))").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// deref unwraps one level of pointer indirection, if present.").unwrap();
+    writeln!(out, "func deref(v any) any {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(v)").unwrap();
+    writeln!(out, "\tif rv.Kind() == reflect.Ptr {{").unwrap();
+    writeln!(out, "\t\tif rv.IsNil() {{").unwrap();
+    writeln!(out, "\t\t\treturn nil").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t\treturn rv.Elem().Interface()").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn v").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // Non-generic on purpose: a concrete variant is assignable to its abstract
+    // interface, but `contains[T]` would force the slice and the value to the
+    // same static type and reject `Circle` against `[]Shape`.
+    writeln!(out, "// contains reports whether v is an element of xs.").unwrap();
+    writeln!(out, "func contains(xs any, v any) bool {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(xs)").unwrap();
+    writeln!(out, "\tif rv.Kind() != reflect.Slice {{").unwrap();
+    writeln!(out, "\t\treturn false").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\tfor i := 0; i < rv.Len(); i++ {{").unwrap();
+    writeln!(out, "\t\tif equal(rv.Index(i).Interface(), v) {{").unwrap();
+    writeln!(out, "\t\t\treturn true").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn false").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// isSubset reports whether every element of xs is in ys.").unwrap();
+    writeln!(out, "func isSubset(xs any, ys any) bool {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(xs)").unwrap();
+    writeln!(out, "\tif rv.Kind() != reflect.Slice {{").unwrap();
+    writeln!(out, "\t\treturn contains(ys, xs)").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\tfor i := 0; i < rv.Len(); i++ {{").unwrap();
+    writeln!(out, "\t\tif !contains(ys, rv.Index(i).Interface()) {{").unwrap();
+    writeln!(out, "\t\t\treturn false").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn true").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// oneOf lifts a `one` relation into the slice forAll/exists take.").unwrap();
+    writeln!(out, "func oneOf[T any](v T) []T {{").unwrap();
+    writeln!(out, "\treturn []T{{v}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// loneOf lifts a `lone` relation; a nil optional is the empty relation.").unwrap();
+    writeln!(out, "func loneOf[T any](p *T) []T {{").unwrap();
+    writeln!(out, "\tif p == nil {{").unwrap();
+    writeln!(out, "\t\treturn nil").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn []T{{*p}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
 fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     writeln!(out, "package models").unwrap();
     writeln!(out).unwrap();
+    // Always used: `contains` below compares with reflect.DeepEqual.
+    writeln!(out, "import \"reflect\"").unwrap();
+    writeln!(out).unwrap();
+
+    generate_collection_helpers(&mut out);
 
     let mut tc_fields = Vec::new();
     for c in &ir.constraints {
@@ -472,13 +592,18 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
     let sig = &tc.sig_name;
     let field = expr_translator::capitalize(&tc.field_name);
 
+    // Every variant must terminate on a cyclic graph. Previously: `lone` looped
+    // forever on a self-reference, `set` keyed its visited map on len(result)
+    // (which never repeats), and `one` just ran a hardcoded 1000 iterations.
     writeln!(out, "// {fn_name} computes the transitive closure for {sig}.{field}.").unwrap();
     match tc.mult {
         Multiplicity::Lone => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
+            writeln!(out, "\tseen := make(map[*{sig}]bool)").unwrap();
             writeln!(out, "\tcurrent := start.{field}").unwrap();
-            writeln!(out, "\tfor current != nil {{").unwrap();
+            writeln!(out, "\tfor current != nil && !seen[current] {{").unwrap();
+            writeln!(out, "\t\tseen[current] = true").unwrap();
             writeln!(out, "\t\tresult = append(result, *current)").unwrap();
             writeln!(out, "\t\tcurrent = current.{field}").unwrap();
             writeln!(out, "\t}}").unwrap();
@@ -488,28 +613,29 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
         Multiplicity::Set | Multiplicity::Seq => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
-            writeln!(out, "\tqueue := make([]{sig}, len(start.{field}))").unwrap();
-            writeln!(out, "\tcopy(queue, start.{field})").unwrap();
-            writeln!(out, "\tseen := make(map[int]bool)").unwrap();
+            writeln!(out, "\tqueue := append([]{sig}{{}}, start.{field}...)").unwrap();
             writeln!(out, "\tfor len(queue) > 0 {{").unwrap();
             writeln!(out, "\t\tnext := queue[0]").unwrap();
             writeln!(out, "\t\tqueue = queue[1:]").unwrap();
-            writeln!(out, "\t\tidx := len(result)").unwrap();
-            writeln!(out, "\t\tif !seen[idx] {{").unwrap();
-            writeln!(out, "\t\t\tseen[idx] = true").unwrap();
-            writeln!(out, "\t\t\tresult = append(result, next)").unwrap();
-            writeln!(out, "\t\t\tqueue = append(queue, next.{field}...)").unwrap();
+            writeln!(out, "\t\tif contains(result, next) {{").unwrap();
+            writeln!(out, "\t\t\tcontinue").unwrap();
             writeln!(out, "\t\t}}").unwrap();
+            writeln!(out, "\t\tresult = append(result, next)").unwrap();
+            writeln!(out, "\t\tqueue = append(queue, next.{field}...)").unwrap();
             writeln!(out, "\t}}").unwrap();
             writeln!(out, "\treturn result").unwrap();
             writeln!(out, "}}").unwrap();
         }
+        // A TC field is self-referential by definition, so a `one` one is boxed
+        // to *T exactly like `lone` — deref before appending.
         Multiplicity::One => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
+            writeln!(out, "\tseen := make(map[*{sig}]bool)").unwrap();
             writeln!(out, "\tcurrent := start.{field}").unwrap();
-            writeln!(out, "\tfor i := 0; i < 1000; i++ {{").unwrap();
-            writeln!(out, "\t\tresult = append(result, current)").unwrap();
+            writeln!(out, "\tfor current != nil && !seen[current] {{").unwrap();
+            writeln!(out, "\t\tseen[current] = true").unwrap();
+            writeln!(out, "\t\tresult = append(result, *current)").unwrap();
             writeln!(out, "\t\tcurrent = current.{field}").unwrap();
             writeln!(out, "\t}}").unwrap();
             writeln!(out, "\treturn result").unwrap();
@@ -1149,21 +1275,62 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                 Some(v) if !v.is_empty() => v,
                 _ => continue,
             };
-            let all_unit = variants.iter().all(|v| {
-                ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
-            if all_unit {
-                let first = &variants[0];
-                writeln!(out, "// Default{} returns a default value for {}.", s.name, s.name).unwrap();
-                writeln!(out, "func Default{}() {} {{ return {} }}", s.name, s.name, first).unwrap();
-                writeln!(out).unwrap();
-            }
+            // A variant with no fields of its OWN still inherits its abstract
+            // parent's, so it lowers to a struct, not an iota constant.
+            let effective_fields = |v: &str| -> usize {
+                ctx.struct_map.get(v).map_or(0, |st| st.fields.len()) + s.fields.len()
+            };
+            let all_unit = variants.iter().all(|v| effective_fields(v) == 0);
+            // All-unit hierarchies lower to `type X int` + iota constants, so the
+            // default is the bare constant. A hierarchy with any data-carrying
+            // variant lowers to an interface whose variants are structs, so the
+            // default must actually construct one — prefer a fieldless variant
+            // (`V{}`), else defer to that variant's own factory. Emitting nothing
+            // here used to leave `undefined: DefaultX` wherever a field targets
+            // the interface.
+            let default_expr = if all_unit {
+                variants[0].clone()
+            } else {
+                match variants.iter().find(|v| effective_fields(v) == 0) {
+                    Some(unit) => format!("{unit}{{}}"),
+                    // No fieldless variant: construct the first one inline with
+                    // defaulted fields, matching what the Rust backend emits.
+                    // Variants get no `Default*` factory of their own (the loop
+                    // below skips them), so this must not call one.
+                    None => {
+                        let v = &variants[0];
+                        let own = ctx.struct_map.get(v.as_str())
+                            .map(|st| st.fields.as_slice())
+                            .unwrap_or(&[]);
+                        let fields = own.iter().chain(s.fields.iter())
+                            .map(|f| format!(
+                                "{}: {}",
+                                expr_translator::capitalize(&f.name),
+                                if f.value_type.is_some() { "nil".to_string() }
+                                else { go_field_default(&s.name, f, ctx) },
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        format!("{v}{{{fields}}}")
+                    }
+                }
+            };
+            writeln!(out, "// Default{} returns a default value for {}.", s.name, s.name).unwrap();
+            writeln!(out, "func Default{}() {} {{ return {} }}", s.name, s.name, default_expr).unwrap();
+            writeln!(out).unwrap();
         }
     }
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        // A fieldless sig still needs a factory: any field targeting it emits
+        // `DefaultX()`, which would otherwise be an undefined reference.
+        if s.fields.is_empty() {
+            writeln!(out, "// Default{} creates a default valid {}.", s.name, s.name).unwrap();
+            writeln!(out, "func Default{}() {} {{ return {}{{}} }}", s.name, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "// Default{} creates a default valid {}.", s.name, s.name).unwrap();
         writeln!(out, "func Default{}() {} {{", s.name, s.name).unwrap();
@@ -1176,7 +1343,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                 let safe = HashSet::from([f.target.clone()]);
                 go_default_value_inner(&f.target, &f.mult, &safe)
             } else {
-                go_default_value(&f.target, &f.mult)
+                go_field_default(&s.name, f, ctx)
             };
             writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
         }
@@ -1205,10 +1372,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                         };
                         go_boundary_value(&f.target, &f.mult, count)
                     } else {
-                        go_default_value(&f.target, &f.mult)
+                        go_field_default(&s.name, f, ctx)
                     }
                 } else {
-                    go_default_value(&f.target, &f.mult)
+                    go_field_default(&s.name, f, ctx)
                 };
                 writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
             }
@@ -1231,10 +1398,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                         };
                         go_boundary_value(&f.target, &f.mult, violation)
                     } else {
-                        go_default_value(&f.target, &f.mult)
+                        go_field_default(&s.name, f, ctx)
                     }
                 } else {
-                    go_default_value(&f.target, &f.mult)
+                    go_field_default(&s.name, f, ctx)
                 };
                 writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
             }
@@ -1263,7 +1430,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
             for f in &s.fields {
                 let val = match &f.mult {
                     Multiplicity::Set | Multiplicity::Seq => "nil".to_string(),
-                    _ => go_default_value(&f.target, &f.mult),
+                    _ => go_field_default(&s.name, f, ctx),
                 };
                 let upper = expr_translator::capitalize(&f.name);
                 writeln!(out, "\t\t{upper}: {},", val).unwrap();
@@ -1299,21 +1466,47 @@ fn go_return_type(type_name: &str, mult: &Multiplicity) -> String {
     }
 }
 
+/// A self-referential `one` field is boxed to *T and cannot be built eagerly —
+/// constructing it would recurse forever — so the fixture leaves it nil.
+fn go_field_default(sig: &str, f: &IRField, ctx: &GoContext) -> String {
+    if f.mult == Multiplicity::One
+        && ctx.cyclic_fields.contains(&(sig.to_string(), f.name.clone())) {
+        return "nil".to_string();
+    }
+    go_default_value(&f.target, &f.mult)
+}
+
 fn go_default_value(target: &str, mult: &Multiplicity) -> String {
     go_default_value_inner(target, mult, &HashSet::new())
 }
 
+
 fn go_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    // A native alias (Int/Str/Bool/Float) is not a sig: it has no `DefaultX()`
+    // factory, and no Go type by that name either — `[]Int{}` does not compile.
+    let go_ty = resolve_type(TargetLang::Go, target);
+    let native = is_native_type_alias(target);
     match mult {
         Multiplicity::Lone => "nil".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {
-            if safe_targets.contains(target) {
-                format!("[]{target}{{Default{target}()}}")
+            if safe_targets.contains(target) && !native {
+                format!("[]{go_ty}{{Default{target}()}}")
             } else {
-                format!("[]{target}{{}}")
+                format!("[]{go_ty}{{}}")
             }
         }
+        Multiplicity::One if native => go_zero_value(&go_ty),
         Multiplicity::One => format!("Default{target}()"),
+    }
+}
+
+/// Go's zero value for a resolved native type.
+fn go_zero_value(go_ty: &str) -> String {
+    match go_ty {
+        "string" => "\"\"".to_string(),
+        "bool" => "false".to_string(),
+        "float64" => "0.0".to_string(),
+        _ => "0".to_string(),
     }
 }
 

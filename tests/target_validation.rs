@@ -1,7 +1,7 @@
 /// Target validation tests — verify generated code compiles and tests pass
 /// in each target language's own toolchain.
 ///
-/// These tests require external tools (cargo, bun, gradle) and are separated
+/// These tests require external tools (cargo, bun, gradle, go) and are separated
 /// from unit/self-hosting tests so they can be run independently.
 ///
 /// All tests are `#[ignore]` by default — run with:
@@ -12,6 +12,7 @@ use oxidtr::ir;
 use oxidtr::backend::rust;
 use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
+use oxidtr::backend::go;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -369,4 +370,163 @@ test { useJUnitPlatform() }
         output.status.success(),
         "gradle test (Java) failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Go — go vet + go test
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Generate Go from oxidtr.als and type-check + run it with the Go toolchain.
+///
+/// Go was previously absent from this file, and every Go defect below shipped
+/// undetected as a result — `go vet` catches all of them in one pass, while the
+/// string-level assertions in `tests/backend_go.rs` caught none:
+///   * quantifier closures emitted as `func(p) bool` (no parameter type)
+///   * `forAll`/`exists`/`contains` called but never defined
+///   * `DefaultX()` missing for an interface-style abstract sig
+///   * `==` applied to structs containing slices, which Go rejects
+/// See #80 / #84.
+#[test]
+#[ignore]
+fn go_self_hosted_compiles_and_tests_pass() {
+    let ir = parse_and_lower();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    for file in &go::generate(&ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+    std::fs::write(dir.join("go.mod"), "module models\n\ngo 1.24\n").unwrap();
+
+    let vet = std::process::Command::new("go")
+        .args(["vet", "./..."])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run go vet (is go installed?)");
+    assert!(
+        vet.status.success(),
+        "go vet on generated code failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vet.stdout),
+        String::from_utf8_lossy(&vet.stderr)
+    );
+
+    let test = std::process::Command::new("go")
+        .args(["test", "./..."])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run go test");
+    assert!(
+        test.status.success(),
+        "go test on generated code failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
+    );
+}
+
+/// Table-driven compile check over the shapes that broke the Go backend in
+/// peer review of #89. Each previously produced either non-compiling Go or —
+/// worse — vet-clean code with wrong semantics. Compiling only
+/// `models/oxidtr.als` did not exercise any of them.
+#[test]
+#[ignore]
+fn go_adversarial_models_compile() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        ("same_named_fields",
+         "sig Item {}\nsig Other {}\nsig A { items: set Item }\nsig B { items: set Other }\n\
+          assert R { all a: A | all i: a.items | i = i }",
+         "func(i Item) bool"),
+        ("map_field",
+         "sig Value {}\nsig Config { settings: one Int -> Value }\n\
+          assert R { all c: Config | c.settings = c.settings }",
+         "equal(c.Settings, c.Settings)"),
+        ("set_membership_shadowed_by_lone",
+         "sig Item {}\nsig OptionalBox { item: lone Item }\nsig SetBox { item: set Item }\n\
+          assert R { all b: SetBox | all i: Item | i in b.item }",
+         "contains(b.Item, i)"),
+        ("variant_in_interface_slice",
+         "sig Marker {}\nabstract sig Shape {}\nsig Circle extends Shape { marker: lone Marker }\n\
+          sig Square extends Shape {}\nsig Drawing { shapes: set Shape }\n\
+          assert R { all d: Drawing | all c: Circle | c in d.shapes }",
+         "contains(d.Shapes, c)"),
+        ("singleton_domain",
+         "sig Item { marker: lone Int }\nsig A { item: one Item }\n\
+          assert R { all a: A | all i: a.item | i = i }",
+         "oneOf(a.Item)"),
+        ("all_variants_carry_data",
+         "sig Leaf {}\nabstract sig Shape {}\nsig Circle extends Shape { leaf: one Leaf }\n\
+          sig Square extends Shape { leaf: one Leaf }\nsig Drawing { shape: one Shape }",
+         "func DefaultLeaf() Leaf"),
+        ("native_scalar_fields",
+         "sig Node { tag: one Int, name: one Str, ok: one Bool, marks: set Int }",
+         "Tag: 0,"),
+        ("transitive_closure_domain",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "func(p Node) bool"),
+        ("variant_with_inherited_fields",
+         "sig Leaf {}\nabstract sig Shape { leaf: one Leaf }\nsig Circle extends Shape {}\n\
+          sig Square extends Shape {}\nsig Drawing { shape: one Shape }",
+         "Circle{"),
+        ("dependent_bindings",
+         "sig Item {}\nsig Box { items: set Item }\n\
+          assert R { all b: Box, x: b.items | x = x }",
+         "func(x Item) bool"),
+        ("inherited_field_through_child",
+         "sig Item {}\nabstract sig Parent { items: set Item }\n\
+          sig Child extends Parent { marker: lone Item }\n\
+          assert R { all c: Child | all i: c.items | i = i }",
+         "func(i Item) bool"),
+        ("membership_in_one_relation",
+         "sig Item {}\nsig Box { item: one Item }\n\
+          assert R { all b: Box | b.item in b.item }",
+         "equal(b.Item, b.Item)"),
+        ("one_multiplicity_closure",
+         "sig Node { next: one Node }\n\
+          assert R { all n: Node | all x: n.^next | x = x }",
+         "result = append(result, *current)"),
+        ("set_in_set_is_subset",
+         "sig Item {}\nsig Box { xs: set Item, ys: set Item }\n\
+          assert R { all b: Box | b.xs in b.ys }",
+         "isSubset(b.Xs, b.Ys)"),
+        ("two_disjoint_groups",
+         "sig S { id: one Int }\n\
+          assert R { all disj a, b: S, disj c, d: S | a = c }",
+         "!equal(c, d)"),
+        ("disjoint_quantifier",
+         "sig Tag {}\nsig Person { tags: set Tag }\n\
+          assert R { all disj a, b: Person | a != b }",
+         "!equal(a, b)"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let ir = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+
+        let mut all = String::new();
+        for file in &go::generate(&ir) {
+            std::fs::write(dir.join(&file.path), &file.content).unwrap();
+            all.push_str(&file.content);
+        }
+        std::fs::write(dir.join("go.mod"), "module models\n\ngo 1.24\n").unwrap();
+
+        let vet = std::process::Command::new("go")
+            .args(["vet", "./..."])
+            .current_dir(dir)
+            .output()
+            .expect("failed to run go vet (is go installed?)");
+        assert!(
+            vet.status.success(),
+            "{name}: go vet failed!\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&vet.stdout),
+            String::from_utf8_lossy(&vet.stderr)
+        );
+        assert!(
+            all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the output — \
+             a vet-clean but semantically wrong translation:\n{all}"
+        );
+    }
 }
