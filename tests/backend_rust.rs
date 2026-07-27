@@ -1369,3 +1369,45 @@ fn single_var_fact_referencing_nullary_fun_of_same_sig_is_diversified() {
         "combos-destructured var must be cloned to owned before a direct comparison:\n{tests}"
     );
 }
+
+// ── #78: temporal operators must not be erased on the assert path ───────────
+
+#[test]
+fn rust_assert_liveness_emits_a_trace_checker() {
+    // `eventually P` demands P in *some* future state. A snapshot assertion
+    // demands it now — a strictly different, strictly stronger property that
+    // compiles and passes green.
+    let files = generate_from(
+        "sig Person { age: one Int }\nassert EventuallyOk { eventually all p: Person | p.age > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("fn check_liveness_eventually_ok"), "no trace checker:\n{t}");
+    assert!(t.contains("trace.iter().any("), "liveness is an existential over states:\n{t}");
+    assert!(t.contains("@temporal"), "the test must be labelled temporal:\n{t}");
+    assert!(!t.contains("assert!(persons.iter().all(|p| { let p = p.clone(); p.age > 0 }));"),
+        "`eventually` was erased into a snapshot assertion:\n{t}");
+}
+
+#[test]
+fn rust_assert_until_emits_a_trace_checker() {
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert UntilOk { (all p: Person | p.age >= 0) until (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("fn check_until_until_ok"), "no trace checker:\n{t}");
+    assert!(t.contains("trace.iter().position("), "until is position-based:\n{t}");
+    assert!(!t.contains("}) && persons.iter().all("), "`until` was flattened to `&&`:\n{t}");
+}
+
+#[test]
+fn rust_assert_invariant_still_uses_a_snapshot() {
+    // `always P` is soundly approximated by asserting P on one state; only
+    // liveness and the binary operators need a trace.
+    let files = generate_from(
+        "sig Person { age: one Int }\nassert AlwaysOk { always all p: Person | p.age > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("assert!(persons.iter().all("), "invariant should stay a snapshot:\n{t}");
+    assert!(!t.contains("fn check_liveness_always_ok"), "no trace checker needed:\n{t}");
+}
