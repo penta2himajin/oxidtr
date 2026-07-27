@@ -128,14 +128,7 @@ fn enum_of_variant<'a>(name: &str, ir: &'a OxidtrIR) -> Option<&'a str> {
     if parent_struct.is_enum { Some(parent.as_str()) } else { None }
 }
 
-/// Swift enum case names are lowerCamelCase (mirrors the Swift backend's `to_swift_case_name`).
-fn enum_case_name(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(c) => format!("{}{}", c.to_lowercase(), chars.as_str()),
-    }
-}
+use super::{to_swift_case_name as enum_case_name, to_swift_field_name};
 
 fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
     for s in &ir.structures {
@@ -168,7 +161,7 @@ fn translate_inner(
         },
 
         Expr::FieldAccess { base, field } => {
-            format!("{}.{field}", ti(base, false))
+            format!("{}.{}", ti(base, false), to_swift_field_name(field))
         }
 
         Expr::Cardinality(inner) => format!("{}.count", ti(inner, false)),

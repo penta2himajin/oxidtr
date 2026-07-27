@@ -36,7 +36,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "Tests.swift".to_string(),
-            content: generate_tests(ir),
+            content: generate_tests(ir, &ctx),
         });
     }
 
@@ -54,7 +54,10 @@ struct SwiftContext {
     children: HashMap<String, Vec<String>>,
     variant_names: HashSet<String>,
     struct_map: HashMap<String, StructureNode>,
-    cyclic_fields: HashSet<(String, String)>,
+    /// Types that store themselves inline (directly or transitively). Swift
+    /// rejects those as value types: structs become `final class`, enums
+    /// become `indirect enum`.
+    recursive_types: HashSet<String>,
 }
 
 impl SwiftContext {
@@ -73,46 +76,67 @@ impl SwiftContext {
         let struct_map: HashMap<String, StructureNode> = ir.structures.iter()
             .map(|s| (s.name.clone(), s.clone()))
             .collect();
-        let cyclic_fields = find_cyclic_fields(ir);
-        SwiftContext { children, variant_names, struct_map, cyclic_fields }
+        let recursive_types = find_recursive_types(ir, &children, &variant_names);
+        SwiftContext { children, variant_names, struct_map, recursive_types }
     }
 
     fn is_variant(&self, name: &str) -> bool {
         self.variant_names.contains(name)
     }
+
+    fn is_recursive(&self, name: &str) -> bool {
+        self.recursive_types.contains(name)
+    }
 }
 
-fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
-    let mut result = HashSet::new();
+/// Fields stored *inline* in their owner: `one T` is a `T`, `lone T` is a `T?`,
+/// and both are laid out in place. `set`/`seq`/map fields become
+/// Set/Array/Dictionary, which are heap-backed and therefore break a cycle.
+fn is_inline_field(f: &IRField) -> bool {
+    f.value_type.is_none() && matches!(f.mult, Multiplicity::One | Multiplicity::Lone)
+}
+
+/// Names of every type that transitively contains itself by value. Enum types
+/// are edges from the union of the abstract parent's fields and each variant's
+/// fields, since that is exactly what the payload carries.
+fn find_recursive_types(
+    ir: &OxidtrIR,
+    children: &HashMap<String, Vec<String>>,
+    variant_names: &HashSet<String>,
+) -> HashSet<String> {
     let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
         .map(|s| (s.name.as_str(), s)).collect();
+
+    let mut edges: HashMap<&str, Vec<&str>> = HashMap::new();
     for s in &ir.structures {
-        for f in &s.fields {
-            if f.mult == Multiplicity::One && f.target == s.name {
-                result.insert((s.name.clone(), f.name.clone()));
+        if variant_names.contains(&s.name) { continue; }
+        let mut targets: Vec<&str> = s.fields.iter()
+            .filter(|f| is_inline_field(f)).map(|f| f.target.as_str()).collect();
+        if s.is_enum {
+            for v in children.get(&s.name).map(|v| v.as_slice()).unwrap_or(&[]) {
+                if let Some(child) = struct_map.get(v.as_str()) {
+                    targets.extend(child.fields.iter()
+                        .filter(|f| is_inline_field(f)).map(|f| f.target.as_str()));
+                }
             }
         }
+        edges.insert(s.name.as_str(), targets);
     }
-    // Also check indirect cycles via BFS
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.mult == Multiplicity::One && f.target != s.name {
-                let mut visited = HashSet::new();
-                let mut stack = vec![f.target.as_str()];
-                while let Some(cur) = stack.pop() {
-                    if cur == s.name {
-                        result.insert((s.name.clone(), f.name.clone()));
-                        break;
-                    }
-                    if !visited.insert(cur) { continue; }
-                    if let Some(target_s) = struct_map.get(cur) {
-                        for tf in &target_s.fields {
-                            if tf.mult == Multiplicity::One {
-                                stack.push(&tf.target);
-                            }
-                        }
-                    }
-                }
+
+    // ponytail: break every type on a cycle, not a minimum feedback vertex set.
+    // Over-boxing costs an allocation; under-boxing does not compile.
+    let mut result = HashSet::new();
+    for start in edges.keys() {
+        let mut visited: HashSet<&str> = HashSet::new();
+        let mut stack: Vec<&str> = edges[start].clone();
+        while let Some(cur) = stack.pop() {
+            if cur == *start {
+                result.insert(start.to_string());
+                break;
+            }
+            if !visited.insert(cur) { continue; }
+            if let Some(next) = edges.get(cur) {
+                stack.extend(next.iter().copied());
             }
         }
     }
@@ -219,15 +243,21 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
         writeln!(out, "struct {}: Equatable, Hashable {{", s.name).unwrap();
         writeln!(out, "}}").unwrap();
     } else {
-        writeln!(out, "struct {}: Equatable {{", s.name).unwrap();
+        // A value type that transitively stores itself has infinite size in
+        // Swift; emitting it as a reference type is what breaks the cycle.
+        let is_class = ctx.is_recursive(&s.name);
+        let keyword = if is_class { "final class" } else { "struct" };
+        writeln!(out, "{keyword} {}: Equatable, Hashable {{", s.name).unwrap();
+        let mut props: Vec<(String, String)> = Vec::new();
         for f in &s.fields {
             let resolved_target = resolve_type(TargetLang::Swift, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
                 let resolved_vt = resolve_type(TargetLang::Swift, vt);
                 format!("[{}: {}]", resolved_target, resolved_vt)
             } else {
-                mult_to_swift_type(&resolved_target, &f.mult, ctx.cyclic_fields.contains(&(s.name.clone(), f.name.clone())))
+                mult_to_swift_type(&resolved_target, &f.mult)
             };
+            props.push((to_swift_field_name(&f.name), type_str.clone()));
 
             // Comments for special patterns
             let target_mult = analyze::sig_multiplicity_for(ir, &f.target);
@@ -361,6 +391,34 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
             writeln!(out, "    }}").unwrap();
         }
 
+        // Classes get no memberwise init and no synthesized conformances.
+        if is_class {
+            let params = props.iter()
+                .map(|(n, t)| format!("{n}: {t}"))
+                .collect::<Vec<_>>().join(", ");
+            writeln!(out).unwrap();
+            writeln!(out, "    init({params}) {{").unwrap();
+            for (n, _) in &props {
+                writeln!(out, "        self.{n} = {n}").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+
+            let eq = props.iter()
+                .map(|(n, _)| format!("lhs.{n} == rhs.{n}"))
+                .collect::<Vec<_>>().join(" && ");
+            writeln!(out).unwrap();
+            writeln!(out, "    static func == (lhs: {0}, rhs: {0}) -> Bool {{", s.name).unwrap();
+            writeln!(out, "        {eq}").unwrap();
+            writeln!(out, "    }}").unwrap();
+
+            writeln!(out).unwrap();
+            writeln!(out, "    func hash(into hasher: inout Hasher) {{").unwrap();
+            for (n, _) in &props {
+                writeln!(out, "        hasher.combine({n})").unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+        }
+
         writeln!(out, "}}").unwrap();
     }
 }
@@ -387,8 +445,10 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &SwiftContext) {
         }
         writeln!(out, "}}").unwrap();
     } else {
-        // Enum with associated values
-        writeln!(out, "enum {}: Equatable {{", s.name).unwrap();
+        // Enum with associated values. A payload that reaches the enum itself
+        // needs `indirect` or the case has infinite size.
+        let prefix = if ctx.is_recursive(&s.name) { "indirect " } else { "" };
+        writeln!(out, "{prefix}enum {}: Equatable, Hashable {{", s.name).unwrap();
         if let Some(variants) = variants {
             for v in variants {
                 let child = ctx.struct_map.get(v.as_str());
@@ -400,7 +460,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &SwiftContext) {
                         let type_str = if let Some(vt) = &f.value_type {
                             format!("[{}: {}]", f.target, vt)
                         } else {
-                            mult_to_swift_type(&f.target, &f.mult, false)
+                            mult_to_swift_type(&resolve_type(TargetLang::Swift, &f.target), &f.mult)
                         };
                         format!("{}: {type_str}", to_swift_field_name(&f.name))
                     }).collect();
@@ -414,21 +474,13 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &SwiftContext) {
     }
 }
 
-fn mult_to_swift_type(target: &str, mult: &Multiplicity, is_indirect: bool) -> String {
-    let base = match mult {
-        Multiplicity::One => {
-            if is_indirect {
-                // Would need indirect/Box equivalent — use class or indirect enum
-                target.to_string()
-            } else {
-                target.to_string()
-            }
-        }
+fn mult_to_swift_type(target: &str, mult: &Multiplicity) -> String {
+    match mult {
+        Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target}?"),
         Multiplicity::Set => format!("Set<{target}>"),
         Multiplicity::Seq => format!("[{target}]"),
-    };
-    base
+    }
 }
 
 // ── Helpers.swift ────────────────────────────────────────────────────────────
@@ -554,7 +606,14 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 // ── Tests.swift ──────────────────────────────────────────────────────────────
 
-fn generate_tests(ir: &OxidtrIR) -> String {
+/// A sig lowered into an enum case is not a Swift type, so a test cannot
+/// declare `[Case]` as its domain. ponytail: skip the test rather than
+/// destructure every payload binding — tracked separately.
+fn variant_domain<'a>(params: &'a [(String, String)], ctx: &SwiftContext) -> Option<&'a str> {
+    params.iter().map(|(_, t)| t.as_str()).find(|t| ctx.is_variant(t))
+}
+
+fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
     let mut out = String::new();
     let sig_names = expr_translator::collect_sig_names(ir);
 
@@ -564,6 +623,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
     for prop in &ir.properties {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        if let Some(t) = variant_domain(&params, ctx) {
+            writeln!(out, "    // oxidtr: skipped test_{} — `{t}` is an enum case, not a Swift type", prop.name).unwrap();
+            continue;
+        }
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
         writeln!(out, "    func test_{}() {{", prop.name).unwrap();
@@ -586,6 +649,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            if let Some(t) = variant_domain(&params, ctx) {
+                writeln!(out, "    // oxidtr: skipped test_transition_{fact_name} — `{t}` is an enum case, not a Swift type").unwrap();
+                continue;
+            }
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
@@ -621,6 +688,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
 
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        if let Some(t) = variant_domain(&params, ctx) {
+            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — `{t}` is an enum case, not a Swift type").unwrap();
+            continue;
+        }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check if all related constraints are type-guaranteed in Swift
@@ -813,6 +884,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             None => continue,
         };
         let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        if variant_domain(&params, ctx).is_some() { continue; }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -964,6 +1036,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             // Extract all params from both facts to declare all needed variables
             let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
             let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            if variant_domain(&params_a, ctx).is_some() || variant_domain(&params_b, ctx).is_some() {
+                continue;
+            }
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names_seen: HashSet<String> = HashSet::new();
             for (pname, tname) in params_a.iter().chain(params_b.iter()) {
@@ -1017,33 +1092,50 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
                 Some(v) if !v.is_empty() => v,
                 _ => continue,
             };
-            let first_unit = variants.iter().find(|v| {
-                ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
-            if let Some(variant) = first_unit {
-                let all_unit = variants.iter().all(|v| {
-                    ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-                });
-                if all_unit {
-                    writeln!(out, "/// Factory: default value for {}", s.name).unwrap();
-                    writeln!(out, "func default{}() -> {} {{ .{} }}", s.name, s.name, to_swift_case_name(variant)).unwrap();
-                    writeln!(out).unwrap();
-                } else {
-                    let has_fields = ctx.struct_map.get(variant.as_str())
-                        .map_or(false, |st| !st.fields.is_empty());
-                    if !has_fields {
-                        writeln!(out, "/// Factory: default value for {}", s.name).unwrap();
-                        writeln!(out, "func default{}() -> {} {{ .{} }}", s.name, s.name, to_swift_case_name(variant)).unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
-            }
+            // A case carries the abstract parent's fields *plus* its own, so a
+            // variant with no fields of its own is still not a unit case.
+            let payload_of = |v: &str| -> Vec<IRField> {
+                let own = ctx.struct_map.get(v).map(|st| st.fields.clone()).unwrap_or_default();
+                s.fields.iter().cloned().chain(own).collect()
+            };
+            // Prefer a unit case, then one that does not recurse into this enum
+            // (its factory would not terminate), and only then the first case.
+            let variant = variants.iter().find(|v| payload_of(v).is_empty())
+                .or_else(|| variants.iter().find(|v| {
+                    payload_of(v).iter().all(|f| f.target != s.name)
+                }))
+                .unwrap_or(&variants[0]);
+
+            let payload = payload_of(variant);
+            let args = if payload.is_empty() {
+                String::new()
+            } else {
+                let list = payload.iter().map(|f| {
+                    let val = if f.value_type.is_some() {
+                        "[:]".to_string()
+                    } else {
+                        swift_default_value(&f.target, &f.mult)
+                    };
+                    format!("{}: {val}", to_swift_field_name(&f.name))
+                }).collect::<Vec<_>>().join(", ");
+                format!("({list})")
+            };
+            writeln!(out, "/// Factory: default value for {}", s.name).unwrap();
+            writeln!(out, "func default{0}() -> {0} {{ .{1}{2} }}", s.name, to_swift_case_name(variant), args).unwrap();
+            writeln!(out).unwrap();
         }
     }
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        if is_native_type_alias(&s.name) { continue; }
+        if s.fields.is_empty() {
+            // A `one Val` field still calls defaultVal(), so unit sigs need one.
+            writeln!(out, "/// Factory: default value for unit sig {}", s.name).unwrap();
+            writeln!(out, "func default{0}() -> {0} {{ {0}() }}", s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "/// Factory: create a default valid {}", s.name).unwrap();
         writeln!(out, "func default{}() -> {} {{", s.name, s.name).unwrap();
@@ -1197,40 +1289,79 @@ fn swift_default_value(target: &str, mult: &Multiplicity) -> String {
     swift_default_value_inner(target, mult, &HashSet::new())
 }
 
+/// Native aliases have no generated factory — they need a literal.
+fn swift_native_default(alloy_name: &str) -> Option<&'static str> {
+    match alloy_name {
+        "Str" => Some("\"\""),
+        "Int" => Some("0"),
+        "Float" => Some("0.0"),
+        "Bool" => Some("false"),
+        _ => None,
+    }
+}
+
 fn swift_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    let element = || match swift_native_default(target) {
+        Some(lit) => lit.to_string(),
+        None => format!("default{target}()"),
+    };
     match mult {
         Multiplicity::Lone => "nil".to_string(),
         Multiplicity::Set => {
             if safe_targets.contains(target) {
-                format!("Set([default{target}()])")
+                format!("Set([{}])", element())
             } else {
                 "Set()".to_string()
             }
         }
         Multiplicity::Seq => {
             if safe_targets.contains(target) {
-                format!("[default{target}()]")
+                format!("[{}]", element())
             } else {
                 "[]".to_string()
             }
         }
-        Multiplicity::One => format!("default{target}()"),
+        Multiplicity::One => element(),
     }
 }
 
 // ── Naming helpers ───────────────────────────────────────────────────────────
 
-fn to_swift_field_name(name: &str) -> &str {
+pub(crate) fn to_swift_field_name(name: &str) -> String {
     // Swift uses camelCase for properties — Alloy field names are already camelCase
-    name
+    escape_swift_keyword(name)
 }
 
-fn to_swift_case_name(name: &str) -> String {
+pub(crate) fn to_swift_case_name(name: &str) -> String {
     // Enum case names in Swift are lowerCamelCase
     let mut chars = name.chars();
-    match chars.next() {
+    let lowered = match chars.next() {
         None => String::new(),
         Some(c) => format!("{}{}", c.to_lowercase(), chars.as_str()),
+    };
+    escape_swift_keyword(&lowered)
+}
+
+/// Swift reserved words that are legal Alloy identifiers. Backticks make any
+/// of them usable as a declaration or reference.
+/// Strictly the *reserved* words — contextual keywords (`get`, `left`, `final`,
+/// `any`, …) are legal identifiers and must not be escaped, or the generated
+/// names stop round-tripping through `extract`.
+const SWIFT_KEYWORDS: &[&str] = &[
+    "Any", "Self", "as", "associatedtype", "borrowing", "break", "case", "catch", "class",
+    "consuming", "continue", "default", "defer", "deinit", "do", "else", "enum", "extension",
+    "fallthrough", "false", "fileprivate", "for", "func", "guard", "if", "import", "in", "init",
+    "inout", "internal", "is", "let", "macro", "nil", "operator", "package", "precedencegroup",
+    "private", "protocol", "public", "repeat", "rethrows", "return", "self", "static", "struct",
+    "subscript", "super", "switch", "throw", "throws", "true", "try", "typealias", "var", "where",
+    "while",
+];
+
+fn escape_swift_keyword(name: &str) -> String {
+    if SWIFT_KEYWORDS.contains(&name) {
+        format!("`{name}`")
+    } else {
+        name.to_string()
     }
 }
 

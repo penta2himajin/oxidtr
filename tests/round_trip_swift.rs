@@ -111,9 +111,12 @@ fn round_trip_swift_self_model() {
 
     let models = find_file(&files, "Models.swift");
 
-    // Verify key types from the self-hosting model exist
-    assert!(models.contains("struct SigDecl"), "should contain SigDecl");
-    assert!(models.contains("struct AlloyModel"), "should contain AlloyModel");
-    assert!(models.contains("struct OxidtrIR"), "should contain OxidtrIR");
-    assert!(models.contains("struct StructureNode"), "should contain StructureNode");
+    // Verify key types from the self-hosting model exist. Recursive sigs are
+    // emitted as `final class` rather than `struct` (see #88), so accept both.
+    for name in ["SigDecl", "AlloyModel", "OxidtrIR", "StructureNode"] {
+        assert!(
+            models.contains(&format!("struct {name}")) || models.contains(&format!("final class {name}")),
+            "should contain {name}"
+        );
+    }
 }

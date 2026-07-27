@@ -21,7 +21,7 @@ fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
 fn swift_struct_for_sig() {
     let files = generate_swift("sig User { name: one Role }\nsig Role {}");
     let m = find_file(&files, "Models.swift");
-    assert!(m.contains("struct User: Equatable {"));
+    assert!(m.contains("struct User: Equatable, Hashable {"));
     assert!(m.contains("let name: Role"));
 }
 
@@ -63,7 +63,7 @@ fn swift_enum_with_associated_values() {
         "abstract sig Expr {}\nsig Literal extends Expr {}\nsig BinOp extends Expr { left: one Expr, right: one Expr }",
     );
     let m = find_file(&files, "Models.swift");
-    assert!(m.contains("enum Expr: Equatable {"));
+    assert!(m.contains("enum Expr: Equatable, Hashable {"));
     assert!(m.contains("case binOp(left: Expr, right: Expr)"));
     assert!(m.contains("case literal"));
 }
@@ -281,4 +281,120 @@ fn swift_tests_call_bare_fixtures_and_fixtures_are_free_functions() {
     let f = find_file(&files, "Fixtures.swift");
     assert!(!f.contains("static func"), "fixtures must be free functions, got:\n{f}");
     assert!(f.contains("func anomalyEmptyBag()"), "expected free anomaly fixture, got:\n{f}");
+}
+
+// ── #88: generated Swift must actually compile ───────────────────────────────
+
+#[test]
+fn swift_recursive_struct_becomes_class() {
+    // A struct that transitively stores itself by value has infinite size in
+    // Swift. Break the cycle by emitting a reference type.
+    let files = generate_swift("sig Node { parent: lone Node }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("final class Node: Equatable, Hashable {"), "got:\n{m}");
+    assert!(m.contains("let parent: Node?"), "field type must be unchanged:\n{m}");
+    assert!(m.contains("init(parent: Node?) {"), "class needs an explicit memberwise init:\n{m}");
+    assert!(m.contains("static func == (lhs: Node, rhs: Node) -> Bool"), "class needs ==:\n{m}");
+    assert!(m.contains("func hash(into hasher: inout Hasher)"), "class needs hash(into:):\n{m}");
+}
+
+#[test]
+fn swift_mutually_recursive_structs_become_classes() {
+    let files = generate_swift("sig A { b: one B }\nsig B { a: lone A }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("final class A:"), "got:\n{m}");
+    assert!(m.contains("final class B:"), "got:\n{m}");
+}
+
+#[test]
+fn swift_self_reference_through_collection_stays_struct() {
+    // Set/Array are heap-allocated, so `Set<Tree>` does not make Tree infinite.
+    let files = generate_swift("sig Tree { children: set Tree }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("struct Tree: Equatable, Hashable {"), "got:\n{m}");
+    assert!(!m.contains("final class Tree"), "must not over-convert:\n{m}");
+}
+
+#[test]
+fn swift_recursive_enum_is_indirect() {
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Lit extends Expr {}\nsig Neg extends Expr { inner: one Expr }",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("indirect enum Expr:"), "got:\n{m}");
+}
+
+#[test]
+fn swift_non_recursive_enum_is_not_indirect() {
+    let files = generate_swift("abstract sig Color {}\none sig Red extends Color {}\none sig Blue extends Color {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(!m.contains("indirect"), "must not over-convert:\n{m}");
+}
+
+#[test]
+fn swift_keyword_enum_cases_are_escaped() {
+    let files = generate_swift(
+        "abstract sig Op {}\none sig In extends Op {}\none sig Default extends Op {}",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("case `in`"), "Swift keyword case must be escaped:\n{m}");
+    assert!(m.contains("case `default`"), "Swift keyword case must be escaped:\n{m}");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains(".`in`"), "escaped case must be used at reference sites too:\n{f}");
+}
+
+#[test]
+fn swift_keyword_field_names_are_escaped() {
+    let files = generate_swift("sig Val {}\nsig Cfg { default: one Val }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("let `default`: Val"), "Swift keyword field must be escaped:\n{m}");
+}
+
+#[test]
+fn swift_structs_are_hashable_so_set_fields_typecheck() {
+    // `Set<T>` requires `T: Hashable`; declaring only Equatable makes every
+    // set-valued field a compile error.
+    let files = generate_swift("sig Item { tag: one Int }\nsig Box { items: set Item }");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("struct Item: Equatable, Hashable {"), "got:\n{m}");
+    assert!(m.contains("struct Box: Equatable, Hashable {"), "got:\n{m}");
+}
+
+#[test]
+fn swift_payload_enum_is_hashable() {
+    let files = generate_swift(
+        "sig Leaf {}\nabstract sig Shape {}\nsig Circle extends Shape { leaf: one Leaf }\nsig Square extends Shape {}",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("enum Shape: Equatable, Hashable {"), "got:\n{m}");
+}
+
+#[test]
+fn swift_fixture_for_field_less_sig() {
+    // A `one Val` field's fixture calls defaultVal(), so a sig with no fields
+    // still needs a factory (Rust already emits one).
+    let files = generate_swift("sig Val {}\nsig Cfg { x: one Val }");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultVal() -> Val { Val() }"), "got:\n{f}");
+}
+
+#[test]
+fn swift_fixture_uses_literals_for_native_types() {
+    // Int/Str/Bool have no generated factory, so `one Int` must be a literal.
+    let files = generate_swift("sig Node { tag: one Int, name: one Str, ok: one Bool }");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("tag: 0"), "got:\n{f}");
+    assert!(f.contains("name: \"\""), "got:\n{f}");
+    assert!(f.contains("ok: false"), "got:\n{f}");
+    assert!(!f.contains("defaultInt()"), "no factory exists for native types:\n{f}");
+}
+
+#[test]
+fn swift_enum_payload_resolves_native_types() {
+    let files = generate_swift(
+        "abstract sig Tok {}\nsig Word extends Tok { text: one Str }\nsig Num extends Tok { n: one Int }",
+    );
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("case word(text: String)"), "Str must resolve to String:\n{m}");
+    assert!(m.contains("case num(n: Int)"), "got:\n{m}");
 }

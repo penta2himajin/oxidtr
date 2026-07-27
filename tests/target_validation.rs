@@ -13,6 +13,7 @@ use oxidtr::backend::rust;
 use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::backend::go;
+use oxidtr::backend::swift;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -527,6 +528,144 @@ fn go_adversarial_models_compile() {
             all.contains(expected),
             "{name}: compiled, but expected {expected:?} in the output — \
              a vet-clean but semantically wrong translation:\n{all}"
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Swift — swiftc -typecheck
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Type-check a generated Swift package. On macOS the XCTest framework lives in
+/// the SDK platform dir and needs an explicit `-F`; on Linux it is on the
+/// default search path.
+fn swiftc_typecheck(dir: &std::path::Path, files: &[String]) -> std::process::Output {
+    let mut cmd;
+    if cfg!(target_os = "macos") {
+        cmd = std::process::Command::new("xcrun");
+        cmd.args(["swiftc", "-typecheck"]);
+        let out = std::process::Command::new("xcrun")
+            .arg("--show-sdk-platform-path").output()
+            .expect("xcrun --show-sdk-platform-path");
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        // -F finds XCTest.framework; -I finds its Swift overlay, without which
+        // XCTAssert* resolve to the (unusable) C macros.
+        cmd.arg("-F").arg(format!("{path}/Developer/Library/Frameworks"));
+        cmd.arg("-I").arg(format!("{path}/Developer/usr/lib"));
+    } else {
+        cmd = std::process::Command::new("swiftc");
+        cmd.arg("-typecheck");
+    }
+    cmd.args(files)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run swiftc (is swift installed?)")
+}
+
+fn assert_swift_typechecks(ir: &ir::nodes::OxidtrIR, label: &str) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let mut names = Vec::new();
+    for file in &swift::generate(ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        names.push(file.path.clone());
+    }
+    let out = swiftc_typecheck(dir, &names);
+    assert!(
+        out.status.success(),
+        "{label}: swiftc -typecheck on generated Swift failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+#[ignore]
+fn swift_self_hosted_compiles() {
+    assert_swift_typechecks(&parse_and_lower(), "models/oxidtr.als");
+
+    let split = parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+        .expect("parse oxidtr-split.als");
+    let split_ir = ir::lower(&split).expect("lower oxidtr-split.als");
+    assert_swift_typechecks(&split_ir, "models/oxidtr-split.als");
+}
+
+/// Shapes that the self-hosting model does not exercise. Mirrors
+/// `go_adversarial_models_compile`: the third element pins the expected
+/// translation, so a regression to wrong-but-compiling code still fails.
+#[test]
+#[ignore]
+fn swift_adversarial_models_compile() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("self_recursive_lone",
+         "sig Node { parent: lone Node }",
+         "final class Node: Equatable, Hashable {"),
+        ("self_recursive_one",
+         "sig Node { next: one Node }",
+         "final class Node: Equatable, Hashable {"),
+        ("mutual_recursion",
+         "sig A { b: one B }\nsig B { a: lone A }",
+         "final class A: Equatable, Hashable {"),
+        ("recursion_through_collection_stays_value",
+         "sig Tree { children: set Tree }",
+         "struct Tree: Equatable, Hashable {"),
+        ("recursive_enum",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Neg extends Expr { inner: one Expr }",
+         "indirect enum Expr:"),
+        ("swift_keyword_cases",
+         "abstract sig Op {}\none sig In extends Op {}\none sig Default extends Op {}\n\
+          sig Node { op: one Op }",
+         "case `in`"),
+        ("swift_keyword_field",
+         "sig Val {}\nsig Cfg { default: one Val, repeat: lone Val }",
+         "let `default`: Val"),
+        ("set_of_structs_needs_hashable",
+         "sig Item { tag: one Int }\nsig Box { items: set Item }",
+         "struct Item: Equatable, Hashable {"),
+        ("map_field",
+         "sig Value {}\nsig Config { settings: one Int -> Value }",
+         "let settings: [Int: Value]"),
+        ("native_scalar_fields",
+         "sig Node { tag: one Int, name: one Str, ok: one Bool, marks: set Int }",
+         "let tag: Int"),
+        ("variant_with_inherited_fields",
+         "sig Leaf {}\nabstract sig Shape { leaf: one Leaf }\nsig Circle extends Shape {}\n\
+          sig Square extends Shape {}\nsig Drawing { shape: one Shape }",
+         "enum Shape: Equatable, Hashable {"),
+        ("assert_over_quantified_domain",
+         "sig Item {}\nsig Box { items: set Item }\n\
+          assert R { all b: Box | all i: b.items | i = i }",
+         "allSatisfy"),
+        ("transitive_closure",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "func tcParent"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let mut names = Vec::new();
+        let mut all = String::new();
+        for file in &swift::generate(&lowered) {
+            std::fs::write(dir.join(&file.path), &file.content).unwrap();
+            names.push(file.path.clone());
+            all.push_str(&file.content);
+        }
+
+        let out = swiftc_typecheck(dir, &names);
+        assert!(
+            out.status.success(),
+            "{name}: swiftc -typecheck failed!\nstderr:\n{}\n--- generated ---\n{all}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            all.contains(expected),
+            "{name}: expected {expected:?} in generated Swift, got:\n{all}"
         );
     }
 }
