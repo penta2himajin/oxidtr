@@ -714,6 +714,19 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             None => continue,
         };
 
+        // Preflight before *any* branch below: the transition path returns
+        // early, so a guard placed further down never sees it.
+        if let Some(r) = unrenderable_case_ref(
+            &expr_translator::translate_with_ir(&constraint.expr, ir), &case_refs)
+        {
+            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — `{r}` is a case constructor, not a value").unwrap();
+            continue;
+        }
+        if let Some(r) = expr_translator::ambiguous_membership_field(&constraint.expr, ir) {
+            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — field `{r}` has different multiplicities across sigs").unwrap();
+            continue;
+        }
+
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
             let params = expr_translator::extract_params(&constraint.expr, &sig_names);
@@ -761,14 +774,6 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             continue;
         }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
-        if let Some(r) = unrenderable_case_ref(&body, &case_refs) {
-            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — `{r}` is a case constructor, not a value").unwrap();
-            continue;
-        }
-        if let Some(r) = expr_translator::ambiguous_membership_field(&constraint.expr, ir) {
-            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — field `{r}` has different multiplicities across sigs").unwrap();
-            continue;
-        }
 
         // Check if all related constraints are type-guaranteed in Swift
         use crate::analyze::guarantee::{can_guarantee_by_type, Guarantee, TargetLang};

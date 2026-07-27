@@ -691,7 +691,7 @@ fn swift_adversarial_models_compile() {
          "func anomalyEmptyNode() -> Node {\n    Node(\n        `inout`: defaultVal(),"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
-         "marks: Set([0, 1])"),
+         "func boundaryBox() -> Box {\n    Box(\n        marks: Set([0, 1])"),
         ("nested_enum_is_declared",
          "abstract sig Outer {}\nabstract sig Inner extends Outer {}\nsig Leaf extends Inner {}",
          "enum Inner:"),
@@ -708,6 +708,11 @@ fn swift_adversarial_models_compile() {
           sig Value { lit: one Int }\nsig Holder { myExpr: one Value }\n\
           assert A { all h: Holder | h.myExpr.lit = h.myExpr.lit }",
          "h.myExpr.lit == h.myExpr.lit"),
+        ("transition_fact_with_case_ref",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Other extends Expr {}\nsig Holder { var expr: one Expr }\n\
+          fact T { all h: Holder | h.expr' = h.expr and Lit.name = Lit.name }",
+         "is a case constructor"),
         ("recursive_class_identity_equality",
          "sig Node { var parent: lone Node }",
          "        lhs === rhs"),

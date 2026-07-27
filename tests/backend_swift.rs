@@ -577,7 +577,11 @@ fn swift_boundary_set_of_natives_has_distinct_elements() {
     // Repeating one literal collapses the Set, so #marks = 2 never holds.
     let files = generate_swift("sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }");
     let f = find_file(&files, "Fixtures.swift");
-    assert!(f.contains("marks: Set([0, 1])"), "got:\n{f}");
+    // Scoped: `Set([0, 1])` landing in invalidBox() instead would be a bug.
+    let boundary = func_body(f, "func boundaryBox() -> Box {");
+    assert!(boundary.contains("marks: Set([0, 1])"), "got:\n{boundary}");
+    let invalid = func_body(f, "func invalidBox() -> Box {");
+    assert!(invalid.contains("marks: Set([0, 1, 2])"), "got:\n{invalid}");
     assert!(!f.contains("defaultInt()"), "no factory exists for Int:\n{f}");
 }
 
@@ -681,5 +685,19 @@ fn swift_case_ref_guard_is_asymmetric_about_dots() {
     );
     let t = find_file(&ctor, "Tests.swift");
     assert!(t.contains("skipped test_A"), "member access on a constructor:\n{t}");
+    assert!(!t.contains("Expr.lit.name"), "got:\n{t}");
+}
+
+#[test]
+fn swift_transition_facts_go_through_the_case_ref_guard() {
+    // The prime branch returns before the guard used for ordinary facts, so a
+    // payload-case reference escaped into a transition test.
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Other extends Expr {}\nsig Holder { var expr: one Expr }\n\
+         fact T { all h: Holder | h.expr' = h.expr and Lit.name = Lit.name }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("is a case constructor"), "expected a skip:\n{t}");
     assert!(!t.contains("Expr.lit.name"), "got:\n{t}");
 }
