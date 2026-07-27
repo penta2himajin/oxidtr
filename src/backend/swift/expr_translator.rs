@@ -128,9 +128,80 @@ fn enum_of_variant<'a>(name: &str, ir: &'a OxidtrIR) -> Option<&'a str> {
     if parent_struct.is_enum { Some(parent.as_str()) } else { None }
 }
 
+/// For `x = Variant` / `Variant = x`, render the case test on the other side.
+fn case_test_operand(left: &Expr, right: &Expr, ir: &OxidtrIR) -> Option<String> {
+    let sig_names = collect_sig_names(ir);
+    let one_way = |v: &Expr, other: &Expr| -> Option<String> {
+        let Expr::VarRef(name) = v else { return None };
+        let test = variant_case_test(name, ir)?;
+        Some(format!("{}.{test}", translate_inner(other, true, &sig_names, ir)))
+    };
+    one_way(right, left).or_else(|| one_way(left, right))
+}
+
 /// A case that carries a payload is not a value: `Expr.lit` is a constructor
 /// function, so it can be neither compared nor searched. Membership in such a
 /// subsig becomes the generated `is<Case>` test instead.
+/// `field_mult` resolves a field by *name* across every sig, so when two sigs
+/// declare the same name with different multiplicities the `lone`-membership
+/// branch can pick the wrong one and emit `Optional.contains` or `Set == x`.
+/// Without a type environment there is no way to tell which was meant, so the
+/// test is skipped instead of mistranslated.
+pub(crate) fn ambiguous_membership_field(expr: &Expr, ir: &OxidtrIR) -> Option<String> {
+    fn ambiguous(field: &str, ir: &OxidtrIR) -> bool {
+        let mut mults = ir.structures.iter()
+            .flat_map(|s| s.fields.iter())
+            .filter(|f| f.name == field)
+            .map(|f| f.mult.clone());
+        match mults.next() {
+            Some(first) => mults.any(|m| m != first),
+            None => false,
+        }
+    }
+    match expr {
+        Expr::Comparison { op: CompareOp::In, left, right } => {
+            if let Expr::FieldAccess { field, .. } = right.as_ref() {
+                if ambiguous(field, ir) { return Some(field.clone()); }
+            }
+            ambiguous_membership_field(left, ir)
+                .or_else(|| ambiguous_membership_field(right, ir))
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            ambiguous_membership_field(left, ir)
+                .or_else(|| ambiguous_membership_field(right, ir))
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::Prime(inner)
+        | Expr::TemporalUnary { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
+            ambiguous_membership_field(inner, ir)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().find_map(|b| ambiguous_membership_field(&b.domain, ir))
+                .or_else(|| ambiguous_membership_field(body, ir))
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().and_then(|r| ambiguous_membership_field(r, ir))
+                .or_else(|| args.iter().find_map(|a| ambiguous_membership_field(a, ir)))
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => None,
+    }
+}
+
+/// `Enum.case` spellings that are constructors, not values. If one of these
+/// survives translation the expression used a payload case in a position the
+/// backend cannot render, and the test must be skipped rather than emitted.
+pub(crate) fn payload_case_refs(ir: &OxidtrIR) -> Vec<String> {
+    ir.structures.iter()
+        .filter_map(|s| {
+            let parent = enum_of_variant(&s.name, ir)?;
+            variant_case_test(&s.name, ir)?;
+            Some(format!("{parent}.{}", enum_case_name(&s.name)))
+        })
+        .collect()
+}
+
 pub(crate) fn variant_case_test(name: &str, ir: &OxidtrIR) -> Option<String> {
     let parent = enum_of_variant(name, ir)?;
     let variant = ir.structures.iter().find(|s| s.name == name)?;
@@ -189,8 +260,18 @@ fn translate_inner(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => format!("{} == {}", ti(left, false), ti(right, false)),
-                CompareOp::NotEq => format!("{} != {}", ti(left, false), ti(right, false)),
+                // `e = Lit` compares against a *set*, and a payload case is a
+                // constructor rather than a value, so `e == Expr.lit` does not
+                // even typecheck. It is a case test.
+                CompareOp::Eq | CompareOp::NotEq => {
+                    let negate = matches!(op, CompareOp::NotEq);
+                    match case_test_operand(left, right, ir) {
+                        Some(test) if negate => format!("!{test}"),
+                        Some(test) => test,
+                        None if negate => format!("{} != {}", ti(left, false), ti(right, false)),
+                        None => format!("{} == {}", ti(left, false), ti(right, false)),
+                    }
+                }
                 CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
                 CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
                 CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),

@@ -488,3 +488,96 @@ fn swift_unit_variant_membership_stays_a_value_comparison() {
     let t = find_file(&files, "Tests.swift");
     assert!(t.contains("Level.high"), "got:\n{t}");
 }
+
+// ── #92 peer review round 2 (Codex) ─────────────────────────────────────────
+
+#[test]
+fn swift_enum_fixture_picks_a_constructible_case() {
+    // ViaInner *is* constructible because defaultInner() picks `.safe`;
+    // a reachability check that ignores that rejects both cases and falls
+    // back to the recursive one.
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Loop extends Expr { expr: one Expr }\n\
+         sig ViaInner extends Expr { inner: one Inner }\n\
+         abstract sig Inner {}\nsig Safe extends Inner {}\nsig Back extends Inner { expr: one Expr }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultExpr() -> Expr { .viaInner(inner: defaultInner()) }"), "got:\n{f}");
+    assert!(!f.contains(".loop(expr: defaultExpr())"), "picked the diverging case:\n{f}");
+}
+
+#[test]
+fn swift_unconstructible_sig_traps_instead_of_recursing() {
+    let files = generate_swift("sig Node { next: one Node }");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("func defaultNode() -> Node { fatalError("), "got:\n{f}");
+    assert!(!f.contains("next: defaultNode()"), "non-terminating fixture:\n{f}");
+}
+
+#[test]
+fn swift_set_population_sees_through_enum_variants() {
+    // A → B → Expr → Wrap → A is a cycle only if the walk expands the enum's
+    // variants; missing it populates the set and defaultA() never returns.
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig Wrap extends Expr { a: one A }\nsig A { bs: set B }\nsig B { expr: one Expr }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("bs: Set()"), "cyclic set must stay empty:\n{f}");
+    assert!(f.contains("func defaultExpr() -> Expr { .wrap(a: defaultA()) }"), "got:\n{f}");
+}
+
+#[test]
+fn swift_equality_against_payload_variant_uses_case_test() {
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Other extends Expr {}\nassert A { all e: Expr | e = Lit }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("e.isLit"), "got:\n{t}");
+    assert!(!t.contains("== Expr.lit"), "a case constructor is not a value:\n{t}");
+}
+
+#[test]
+fn swift_skips_tests_referencing_a_case_constructor_as_a_value() {
+    // `e in Lit + Ref` has no rendering without payload destructuring; emitting
+    // `Expr.lit.union(...)` would not compile.
+    let files = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Ref extends Expr { rname: one Name }\nassert A { all e: Expr | e in Lit + Ref }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("skipped test_A"), "got:\n{t}");
+    assert!(!t.contains("Expr.lit.union"), "got:\n{t}");
+}
+
+#[test]
+fn swift_skips_tests_with_ambiguously_typed_field() {
+    // `rel` is `set` in one sig and `lone` in another; resolving by name picks
+    // one and emits `Optional.contains`.
+    let files = generate_swift(
+        "sig Item {}\nsig Many { rel: set Item }\nsig Maybe { rel: lone Item }\n\
+         fact NoMember { all m: Maybe | all i: Item | not (i in m.rel) }",
+    );
+    let t = find_file(&files, "Tests.swift");
+    assert!(t.contains("different multiplicities"), "got:\n{t}");
+    assert!(!t.contains("m.rel.contains(i)"), "wrong branch for a lone field:\n{t}");
+}
+
+#[test]
+fn swift_anomaly_fixture_escapes_reserved_argument_labels() {
+    let files = generate_swift(
+        "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
+         assert Reflexive { all n: Node | n = n }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("`inout`: defaultVal()"), "got:\n{f}");
+}
+
+#[test]
+fn swift_boundary_set_of_natives_has_distinct_elements() {
+    // Repeating one literal collapses the Set, so #marks = 2 never holds.
+    let files = generate_swift("sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }");
+    let f = find_file(&files, "Fixtures.swift");
+    assert!(f.contains("marks: Set([0, 1])"), "got:\n{f}");
+    assert!(!f.contains("defaultInt()"), "no factory exists for Int:\n{f}");
+}

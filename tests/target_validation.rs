@@ -657,6 +657,33 @@ fn swift_adversarial_models_compile() {
          "abstract sig Expr {}\nsig Wrap extends Expr { node: one Node }\nsig Leaf extends Expr {}\n\
           sig Node { expr: one Expr }",
          "func defaultExpr() -> Expr { .leaf }"),
+        ("enum_fixture_picks_constructible_case",
+         "abstract sig Expr {}\nsig Loop extends Expr { expr: one Expr }\n\
+          sig ViaInner extends Expr { inner: one Inner }\n\
+          abstract sig Inner {}\nsig Safe extends Inner {}\nsig Back extends Inner { expr: one Expr }",
+         "func defaultExpr() -> Expr { .viaInner(inner: defaultInner()) }"),
+        ("unconstructible_sig_traps",
+         "sig Node { next: one Node }",
+         "func defaultNode() -> Node { fatalError("),
+        ("set_population_through_enum_variants",
+         "abstract sig Expr {}\nsig Wrap extends Expr { a: one A }\nsig A { bs: set B }\n\
+          sig B { expr: one Expr }",
+         "bs: Set()"),
+        ("equality_against_payload_variant",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Other extends Expr {}\nassert A { all e: Expr | e = Lit }",
+         "e.isLit"),
+        ("ambiguous_field_multiplicity",
+         "sig Item {}\nsig Many { rel: set Item }\nsig Maybe { rel: lone Item }\n\
+          fact NoMember { all m: Maybe | all i: Item | not (i in m.rel) }",
+         "different multiplicities"),
+        ("reserved_argument_label",
+         "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
+          assert Reflexive { all n: Node | n = n }",
+         "`inout`: defaultVal()"),
+        ("boundary_set_of_natives",
+         "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
+         "marks: Set([0, 1])"),
         ("recursive_class_identity_equality",
          "sig Node { var parent: lone Node }",
          "        lhs === rhs"),
