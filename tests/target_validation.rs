@@ -481,6 +481,18 @@ fn go_adversarial_models_compile() {
          "sig Item {}\nsig Box { item: one Item }\n\
           assert R { all b: Box | b.item in b.item }",
          "equal(b.Item, b.Item)"),
+        ("one_multiplicity_closure",
+         "sig Node { next: one Node }\n\
+          assert R { all n: Node | all x: n.^next | x = x }",
+         "result = append(result, *current)"),
+        ("set_in_set_is_subset",
+         "sig Item {}\nsig Box { xs: set Item, ys: set Item }\n\
+          assert R { all b: Box | b.xs in b.ys }",
+         "isSubset(b.Xs, b.Ys)"),
+        ("two_disjoint_groups",
+         "sig S { id: one Int }\n\
+          assert R { all disj a, b: S, disj c, d: S | a = c }",
+         "!equal(c, d)"),
         ("disjoint_quantifier",
          "sig Tag {}\nsig Person { tags: set Tag }\n\
           assert R { all disj a, b: Person | a != b }",

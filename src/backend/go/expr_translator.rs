@@ -235,7 +235,16 @@ fn translate_inner(
                         }
                     }
                     let r = ti(right, false);
-                    format!("contains({r}, {l})")
+                    // A set-valued left operand makes `in` subset containment,
+                    // not element membership.
+                    let left_is_set = matches!(left.as_ref(), Expr::FieldAccess { base, field }
+                        if resolve_field(base, field, sig_names, ir, env)
+                            .is_some_and(|f| matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)));
+                    if left_is_set {
+                        format!("isSubset({l}, {r})")
+                    } else {
+                        format!("contains({r}, {l})")
+                    }
                 }
             }
         }

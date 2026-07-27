@@ -529,6 +529,21 @@ fn generate_collection_helpers(out: &mut String) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// isSubset reports whether every element of xs is in ys.").unwrap();
+    writeln!(out, "func isSubset(xs any, ys any) bool {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(xs)").unwrap();
+    writeln!(out, "\tif rv.Kind() != reflect.Slice {{").unwrap();
+    writeln!(out, "\t\treturn contains(ys, xs)").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\tfor i := 0; i < rv.Len(); i++ {{").unwrap();
+    writeln!(out, "\t\tif !contains(ys, rv.Index(i).Interface()) {{").unwrap();
+    writeln!(out, "\t\t\treturn false").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn true").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// oneOf lifts a `one` relation into the slice forAll/exists take.").unwrap();
     writeln!(out, "func oneOf[T any](v T) []T {{").unwrap();
     writeln!(out, "\treturn []T{{v}}").unwrap();
@@ -611,12 +626,16 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "\treturn result").unwrap();
             writeln!(out, "}}").unwrap();
         }
+        // A TC field is self-referential by definition, so a `one` one is boxed
+        // to *T exactly like `lone` — deref before appending.
         Multiplicity::One => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
+            writeln!(out, "\tseen := make(map[*{sig}]bool)").unwrap();
             writeln!(out, "\tcurrent := start.{field}").unwrap();
-            writeln!(out, "\tfor !contains(result, current) {{").unwrap();
-            writeln!(out, "\t\tresult = append(result, current)").unwrap();
+            writeln!(out, "\tfor current != nil && !seen[current] {{").unwrap();
+            writeln!(out, "\t\tseen[current] = true").unwrap();
+            writeln!(out, "\t\tresult = append(result, *current)").unwrap();
             writeln!(out, "\t\tcurrent = current.{field}").unwrap();
             writeln!(out, "\t}}").unwrap();
             writeln!(out, "\treturn result").unwrap();
@@ -1288,7 +1307,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                                 "{}: {}",
                                 expr_translator::capitalize(&f.name),
                                 if f.value_type.is_some() { "nil".to_string() }
-                                else { go_default_value(&f.target, &f.mult) },
+                                else { go_field_default(&s.name, f, ctx) },
                             ))
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -1324,7 +1343,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                 let safe = HashSet::from([f.target.clone()]);
                 go_default_value_inner(&f.target, &f.mult, &safe)
             } else {
-                go_default_value(&f.target, &f.mult)
+                go_field_default(&s.name, f, ctx)
             };
             writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
         }
@@ -1353,10 +1372,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                         };
                         go_boundary_value(&f.target, &f.mult, count)
                     } else {
-                        go_default_value(&f.target, &f.mult)
+                        go_field_default(&s.name, f, ctx)
                     }
                 } else {
-                    go_default_value(&f.target, &f.mult)
+                    go_field_default(&s.name, f, ctx)
                 };
                 writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
             }
@@ -1379,10 +1398,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                         };
                         go_boundary_value(&f.target, &f.mult, violation)
                     } else {
-                        go_default_value(&f.target, &f.mult)
+                        go_field_default(&s.name, f, ctx)
                     }
                 } else {
-                    go_default_value(&f.target, &f.mult)
+                    go_field_default(&s.name, f, ctx)
                 };
                 writeln!(out, "\t\t{}: {val},", expr_translator::capitalize(&f.name)).unwrap();
             }
@@ -1411,7 +1430,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
             for f in &s.fields {
                 let val = match &f.mult {
                     Multiplicity::Set | Multiplicity::Seq => "nil".to_string(),
-                    _ => go_default_value(&f.target, &f.mult),
+                    _ => go_field_default(&s.name, f, ctx),
                 };
                 let upper = expr_translator::capitalize(&f.name);
                 writeln!(out, "\t\t{upper}: {},", val).unwrap();
@@ -1445,6 +1464,16 @@ fn go_return_type(type_name: &str, mult: &Multiplicity) -> String {
         Multiplicity::Lone => format!("*{type_name}"),
         Multiplicity::Set | Multiplicity::Seq => format!("[]{type_name}"),
     }
+}
+
+/// A self-referential `one` field is boxed to *T and cannot be built eagerly —
+/// constructing it would recurse forever — so the fixture leaves it nil.
+fn go_field_default(sig: &str, f: &IRField, ctx: &GoContext) -> String {
+    if f.mult == Multiplicity::One
+        && ctx.cyclic_fields.contains(&(sig.to_string(), f.name.clone())) {
+        return "nil".to_string();
+    }
+    go_default_value(&f.target, &f.mult)
 }
 
 fn go_default_value(target: &str, mult: &Multiplicity) -> String {

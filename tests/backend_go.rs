@@ -631,3 +631,44 @@ fn go_transitive_closure_is_cycle_safe() {
         "closure must track visited nodes to terminate on a cycle:\n{helpers}"
     );
 }
+
+/// A transitive-closure field is self-referential by definition, so a `one`
+/// one is boxed to `*T` — the closure must deref it, and the default fixture
+/// must be nil rather than an infinitely recursive construction. Previously
+/// only the `lone` shape was covered, so this never compiled.
+#[test]
+fn go_one_multiplicity_transitive_closure_compiles() {
+    let files = generate_go(r#"
+        sig Node { next: one Node }
+        assert R { all n: Node | all x: n.^next | x = x }
+    "#);
+    let helpers = find_file(&files, "helpers.go");
+    assert!(
+        helpers.contains("result = append(result, *current)"),
+        "a boxed `one` self-reference must be dereferenced before append:\n{helpers}"
+    );
+    let fixtures = find_file(&files, "fixtures.go");
+    assert!(
+        fixtures.contains("Next: nil"),
+        "a self-referential `one` field cannot be built eagerly:\n{fixtures}"
+    );
+}
+
+/// `setA in setB` is subset containment in Alloy, not element membership.
+#[test]
+fn go_set_in_set_is_subset_not_element_membership() {
+    let files = generate_go(r#"
+        sig Item {}
+        sig Box { xs: set Item, ys: set Item }
+        assert R { all b: Box | b.xs in b.ys }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("isSubset(b.Xs, b.Ys)"),
+        "set-to-set `in` is subset containment:\n{tests}"
+    );
+    assert!(
+        !tests.contains("contains(b.Ys, b.Xs)"),
+        "must not treat a whole set as a single element:\n{tests}"
+    );
+}
