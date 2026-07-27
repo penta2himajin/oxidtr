@@ -1609,3 +1609,54 @@ fn rust_builtin_arithmetic_is_not_confused_with_a_same_named_pred() {
     let t = find_file(&files, "tests.rs");
     assert!(t.contains("fn check_liveness_arithmetic_only"), "falsely skipped:\n{t}");
 }
+
+#[test]
+fn rust_no_quantifier_flips_polarity() {
+    // `no p | always P` is antitone in its body, so the snapshot reading of
+    // `always` runs the wrong way.
+    let files = generate_from("sig P { x: one Int }\nassert NoAlways { no p: P | always p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NoAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_eventually_with_prime_is_not_a_plain_transition() {
+    // The prime branch runs before the temporal gate; `eventually p.x' > 0`
+    // does not imply next-positive now.
+    let files = generate_from(
+        "sig P { var x: one Int }\nfact LaterNext { eventually all p: P | p.x' > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterNext"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("next_p.x > 0"), "emitted a single-step check:\n{t}");
+}
+
+#[test]
+fn rust_always_with_prime_still_gets_its_transition_test() {
+    // The idiomatic Alloy transition fact: one step is a sound necessary check.
+    let files = generate_from(
+        "sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_mono"), "sound transition test was dropped:\n{t}");
+}
+
+#[test]
+fn rust_temporal_pred_export_is_annotated_as_weakened() {
+    // `always P` in a positive position can be weakened to a current-state
+    // necessary condition — but the export must not read as faithful.
+    let files = generate_from("sig P { x: one Int }\npred Stable[p: one P] { always p.x > 0 }\nfact Use { all p: P | Stable[p] }");
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("NOTE: weakened"), "silent weakening:\n{ops}");
+}
+
+#[test]
+fn rust_mixed_fact_keeps_its_sound_conjunct() {
+    // Discarding the whole constraint loses the current-state `max 1` bound.
+    let files = generate_from(
+        "sig Item {}\nsig P { items: set Item }\n\
+         fact Mixed { (all p: P | #p.items <= 1) and (eventually all p: P | #p.items >= 1) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(nt.contains("items.len() > 1"), "sound conjunct was discarded:\n{nt}");
+}

@@ -1047,12 +1047,19 @@ fn param_type_str(p: &IRParam) -> String {
 /// each conjunct compiled via `translate_operation_clause` and joined with
 /// `&&`.
 fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, indent: &str) {
-    // A temporal pred body cannot be evaluated against one state; emitting the
-    // erased translation exports a wrong implementation that every caller then
-    // inherits. Stub it until #104 supplies a compositional translation.
+    // A body a snapshot cannot express at all would export a wrong
+    // implementation that every caller inherits — stub it.
     if op.body.iter().any(|b| !analyze::snapshot_is_sound(b, ir)) {
         writeln!(out, "{indent}todo!(\"oxidtr: {} is temporal; needs a trace, see #104\");", op.name).unwrap();
         return;
+    }
+    // `always`/`historically` in a positive position *can* be weakened to a
+    // current-state necessary condition — that keeps callers sound and
+    // compiling — but the export is then weaker than the Alloy predicate, so
+    // say so rather than letting it read as a faithful implementation.
+    if op.body.iter().any(|b| analyze::contains_temporal(b, ir)) {
+        writeln!(out, "{indent}// NOTE: weakened to a current-state necessary condition;").unwrap();
+        writeln!(out, "{indent}// the Alloy predicate is temporal and needs a trace (see #104).").unwrap();
     }
     if op.body.is_empty() {
         writeln!(out, "{indent}true").unwrap();
@@ -1341,6 +1348,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // Skip: fact references a concrete-parent singleton whose value oxidtr
         // cannot construct — a generated assertion using it would not typecheck.
         if expr_refs_any(&constraint.expr, &concrete_singletons) {
+            continue;
+        }
+
+        // The prime branch below runs before the temporal gate, so it needs
+        // its own. `always <transition>` is fine — a single step is a sound
+        // necessary check for it — but `eventually p.x' > 0` does not imply
+        // next-positive now.
+        if analyze::expr_contains_prime(&constraint.expr)
+            && !analyze::transition_is_sound(&constraint.expr, ir)
+        {
+            writeln!(out, "// oxidtr: skipped {fact_name} — a temporal operator combined with").unwrap();
+            writeln!(out, "// prime is not a plain transition. See #104.").unwrap();
+            writeln!(out).unwrap();
             continue;
         }
 

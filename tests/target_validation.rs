@@ -770,7 +770,11 @@ fn rust_temporal_checkers_match_their_definitions() {
         assert ReleaseOk { (all p: P | p.f = 1) release (all p: P | p.g = 1) }\n\
         assert TriggeredOk { (all p: P | p.f = 1) triggered (all p: P | p.g = 1) }\n\
         assert NoParamUntil { 1 = 1 until 1 = 2 }\n\
-        assert NoParamEventually { eventually 1 = 2 }";
+        assert NoParamEventually { eventually 1 = 2 }\n\
+        assert EventuallyOk { eventually all p: P | p.g = 1 }\n\
+        assert OnceOk { once all p: P | p.g = 1 }\n\
+        sig Q { h: one Int }\n\
+        assert TupleUntil { (all p: P | p.f = 1) until (all q: Q | q.h = 1) }";
 
     let model = parser::parse(MODEL).expect("parse");
     let ir = ir::lower(&model).expect("lower");
@@ -841,6 +845,40 @@ mod semantics {
     /// can never be satisfied, and `eventually 1 = 2` likewise.
     fn unit_traces() -> Vec<Vec<()>> {
         (0..=3usize).map(|n| vec![(); n]).collect()
+    }
+
+    /// The heterogeneous tuple branch: two quantified params of different
+    /// sigs, so the checker takes `&[(Vec<P>, Vec<Q>)]` rather than `&[Vec<P>]`.
+    #[test]
+    fn tuple_checker_matches_its_definition() {
+        let p = |f: bool| vec![P { f: if f { 1 } else { 0 }, g: 0 }];
+        let q = |h: bool| vec![Q { h: if h { 1 } else { 0 } }];
+        let combos = [(false, false), (false, true), (true, false), (true, true)];
+        for len in 1..=3usize {
+            for mut n in 0..4usize.pow(len as u32) {
+                let mut t: Vec<(Vec<P>, Vec<Q>)> = Vec::new();
+                for _ in 0..len {
+                    let (f, h) = combos[n % 4];
+                    t.push((p(f), q(h)));
+                    n /= 4;
+                }
+                let f_of = |s: &(Vec<P>, Vec<Q>)| s.0.iter().all(|x| x.f == 1);
+                let g_of = |s: &(Vec<P>, Vec<Q>)| s.1.iter().all(|x| x.h == 1);
+                let expected = (0..t.len()).any(|j| g_of(&t[j]) && t[..j].iter().all(&f_of));
+                assert_eq!(check_until_tuple_until(&t), expected, "tuple until mismatch on {t:?}");
+            }
+        }
+    }
+
+    /// Liveness on non-empty traces, satisfying and not — the empty-trace test
+    /// the generator emits only pins the false case.
+    #[test]
+    fn unary_checkers_on_non_empty_traces() {
+        let g = |ok: bool| vec![P { f: 1, g: if ok { 1 } else { 0 } }];
+        assert!(check_liveness_eventually_ok(&[g(false), g(true)]), "eventually should find the later state");
+        assert!(!check_liveness_eventually_ok(&[g(false), g(false)]), "no satisfying state");
+        assert!(check_past_liveness_once_ok(&[g(true), g(false)]), "once should find the earlier state");
+        assert!(!check_past_liveness_once_ok(&[g(false), g(false)]), "no satisfying state");
     }
 
     #[test]

@@ -333,56 +333,71 @@ fn resolved_callees<'a>(
 ///
 /// Call-aware: a `pred` body can hide an operator from a syntactic scan.
 pub fn snapshot_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
-    snapshot_sound_inner(expr, ir, true, &mut Vec::new())
+    snapshot_sound_inner(expr, ir, true, false, &mut Vec::new())
 }
 
-fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, positive: bool, seen: &mut Vec<String>) -> bool {
+/// As `snapshot_is_sound`, but a prime is acceptable: the transition path
+/// exists precisely to handle it. `always <transition>` is therefore fine —
+/// one step is a sound necessary check — while `eventually p.x' > 0` is not.
+pub fn transition_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
+    snapshot_sound_inner(expr, ir, true, true, &mut Vec::new())
+}
+
+fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, positive: bool, allow_prime: bool, seen: &mut Vec<String>) -> bool {
     match expr {
         Expr::TemporalUnary { op, expr: inner } => match op {
             TemporalUnaryOp::Always | TemporalUnaryOp::Historically => {
-                positive && snapshot_sound_inner(inner, ir, positive, seen)
+                positive && snapshot_sound_inner(inner, ir, positive, allow_prime, seen)
             }
             _ => false,
         },
-        Expr::TemporalBinary { .. } | Expr::Prime(_) => false,
-        Expr::Not(inner) => snapshot_sound_inner(inner, ir, !positive, seen),
+        Expr::TemporalBinary { .. } => false,
+        Expr::Prime(inner) => allow_prime && snapshot_sound_inner(inner, ir, positive, allow_prime, seen),
+        Expr::Not(inner) => snapshot_sound_inner(inner, ir, !positive, allow_prime, seen),
         Expr::BinaryLogic { op, left, right } => match op {
             LogicOp::Implies => {
-                snapshot_sound_inner(left, ir, !positive, seen)
-                    && snapshot_sound_inner(right, ir, positive, seen)
+                snapshot_sound_inner(left, ir, !positive, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
             }
             // Neither side of `iff` is monotone.
             LogicOp::Iff => {
-                snapshot_sound_inner(left, ir, true, seen) && snapshot_sound_inner(left, ir, false, seen)
-                    && snapshot_sound_inner(right, ir, true, seen) && snapshot_sound_inner(right, ir, false, seen)
+                snapshot_sound_inner(left, ir, true, allow_prime, seen) && snapshot_sound_inner(left, ir, false, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, true, allow_prime, seen) && snapshot_sound_inner(right, ir, false, allow_prime, seen)
             }
             _ => {
-                snapshot_sound_inner(left, ir, positive, seen)
-                    && snapshot_sound_inner(right, ir, positive, seen)
+                snapshot_sound_inner(left, ir, positive, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
             }
         },
         Expr::Comparison { left, right, .. } | Expr::SetOp { left, right, .. }
         | Expr::Product { left, right } => {
-            snapshot_sound_inner(left, ir, positive, seen)
-                && snapshot_sound_inner(right, ir, positive, seen)
+            snapshot_sound_inner(left, ir, positive, allow_prime, seen)
+                && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
         }
         Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
-            snapshot_sound_inner(inner, ir, positive, seen)
+            snapshot_sound_inner(inner, ir, positive, allow_prime, seen)
         }
-        Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().all(|b| snapshot_sound_inner(&b.domain, ir, positive, seen))
-                && snapshot_sound_inner(body, ir, positive, seen)
+        // `all` is antitone in its domain and monotone in its body; `some` is
+        // monotone in both; `no` is antitone in both.
+        Expr::Quantifier { kind, bindings, body, .. } => {
+            let (dom, bod) = match kind {
+                QuantKind::All => (!positive, positive),
+                QuantKind::No => (!positive, !positive),
+                _ => (positive, positive),
+            };
+            bindings.iter().all(|b| snapshot_sound_inner(&b.domain, ir, dom, allow_prime, seen))
+                && snapshot_sound_inner(body, ir, bod, allow_prime, seen)
         }
         Expr::FunApp { name, receiver, args } => {
-            if receiver.as_deref().is_some_and(|r| !snapshot_sound_inner(r, ir, positive, seen)) {
+            if receiver.as_deref().is_some_and(|r| !snapshot_sound_inner(r, ir, positive, allow_prime, seen)) {
                 return false;
             }
-            if args.iter().any(|a| !snapshot_sound_inner(a, ir, positive, seen)) { return false; }
+            if args.iter().any(|a| !snapshot_sound_inner(a, ir, positive, allow_prime, seen)) { return false; }
             if seen.iter().any(|n| n == name) { return true; }
             seen.push(name.clone());
             let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
-                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, positive, seen)));
+                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, positive, allow_prime, seen)));
             seen.pop();
             ok
         }
@@ -530,15 +545,35 @@ pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
         // the current state. Every analyzer-derived consumer routes through
         // here, so this is the one place the gate has to hold.
         let name = c.name.clone().unwrap_or_default();
-        let infos = analyze_expr(&c.expr, &name, ir);
         if snapshot_is_sound(&c.expr, ir) {
-            results.extend(infos);
-        } else {
-            // `Named` is documentation; the rest are enforced.
-            results.extend(infos.into_iter().filter(|i| matches!(i, ConstraintInfo::Named { .. })));
+            results.extend(analyze_expr(&c.expr, &name, ir));
+            continue;
+        }
+        // Mixed fact: keep whatever conjuncts *are* snapshot-sound rather than
+        // discarding the whole thing. `Named` is documentation, so it survives
+        // either way; the rest are enforced and must not.
+        results.extend(analyze_expr(&c.expr, &name, ir).into_iter()
+            .filter(|i| matches!(i, ConstraintInfo::Named { .. })));
+        for conj in conjuncts(&c.expr) {
+            if snapshot_is_sound(conj, ir) {
+                results.extend(analyze_expr(conj, &name, ir).into_iter()
+                    .filter(|i| !matches!(i, ConstraintInfo::Named { .. })));
+            }
         }
     }
     results
+}
+
+/// Split a top-level conjunction into its conjuncts.
+fn conjuncts(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
+            let mut out = conjuncts(left);
+            out.extend(conjuncts(right));
+            out
+        }
+        _ => vec![expr],
+    }
 }
 
 /// Get constraints relevant to a specific sig.
@@ -1244,8 +1279,12 @@ pub fn value_bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -
 /// Check if a quantifier expression uses `disj` on a binding that iterates a specific sig's field.
 /// Returns a list of (sig_name, field_name) pairs where `disj` implies uniqueness.
 pub fn disj_fields(ir: &OxidtrIR) -> Vec<(String, String)> {
+    // Enforced directly by the TS/Kotlin validators, so it needs the same
+    // eligibility filter as everything routed through `analyze()`.
+
     let mut results = Vec::new();
     for c in &ir.constraints {
+        if !snapshot_is_sound(&c.expr, ir) { continue; }
         collect_disj_fields(&c.expr, &mut results);
     }
     results.sort();
