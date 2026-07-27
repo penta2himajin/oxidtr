@@ -1660,3 +1660,52 @@ fn rust_mixed_fact_keeps_its_sound_conjunct() {
     let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
     assert!(nt.contains("items.len() > 1"), "sound conjunct was discarded:\n{nt}");
 }
+
+#[test]
+fn rust_skipped_fact_leaves_no_dangling_doc_comment() {
+    // The gate used to run after the `/// @temporal` annotation, so a skipped
+    // fact at end of file produced `expected item after doc comment`.
+    let files = generate_from(
+        "sig P { x: one Int }\nfact Mixed { (all p: P | p.x = 0) and eventually (all p: P | p.x = 1) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(!t.contains("/// @temporal"), "annotation emitted for a skipped fact:\n{t}");
+    assert!(t.trim_end().ends_with("See #104."), "dangling annotation at EOF:\n{t}");
+}
+
+#[test]
+fn rust_prime_hidden_in_a_pred_reaches_the_prime_gate() {
+    // `expr_contains_prime` only scans a call's receiver and arguments.
+    let files = generate_from(
+        "sig P { var x: one Int }\npred Step[p: one P] { p.x' = p.x }\n\
+         assert CalledPrime { always all p: P | Step[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped CalledPrime"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("step(p)"), "calls a stubbed pred:\n{t}");
+}
+
+#[test]
+fn rust_eventually_some_does_not_seed_a_current_state_fixture() {
+    // `strip_outer_quantifier` also strips `eventually`, so this fact used to
+    // build an `all_ps()` containing `P { x: 1 }` that broke `NowZero`.
+    let files = generate_from(
+        "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+         fact NowZero { all q: Q | all p: P | p.x = 0 }\n\
+         fact LaterOne { eventually some p: P | p.x = 1 }",
+    );
+    let f = find_file(&files, "fixtures.rs");
+    assert!(!f.contains("x: 1i64"), "temporal existential leaked into a fixture:\n{f}");
+}
+
+#[test]
+fn rust_disjunction_does_not_pin_one_alternative() {
+    // `A.rank = 0 or always A.rank = 2` entails neither operand; mining the
+    // first silently deleted the second.
+    let files = generate_from(
+        "abstract sig Kind { rank: one Int }\none sig A extends Kind {}\none sig B extends Kind {}\n\
+         fact MaybeA { A.rank = 0 or always A.rank = 2 }",
+    );
+    let m = find_file(&files, "models.rs");
+    assert!(m.contains("rank: i64"), "field eliminated in favour of one branch:\n{m}");
+}

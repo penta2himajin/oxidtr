@@ -564,6 +564,37 @@ pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     results
 }
 
+/// `expr_contains_prime` only scans a call's receiver and arguments, so a
+/// prime inside the called `pred`'s body slips past every prime gate.
+pub fn contains_prime_through_calls(expr: &Expr, ir: &OxidtrIR) -> bool {
+    fn scan(e: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+        match e {
+            Expr::Prime(_) => true,
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => scan(left, ir, seen) || scan(right, ir, seen),
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } => scan(i, ir, seen),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().any(|b| scan(&b.domain, ir, seen)) || scan(body, ir, seen)
+            }
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| scan(r, ir, seen)) { return true; }
+                if args.iter().any(|a| scan(a, ir, seen)) { return true; }
+                if seen.iter().any(|n| n == name) { return false; }
+                seen.push(name.clone());
+                let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .any(|op| op.body.iter().any(|b| scan(b, ir, seen)));
+                seen.pop();
+                hit
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+        }
+    }
+    scan(expr, ir, &mut Vec::new())
+}
+
 /// Split a top-level conjunction into its conjuncts.
 fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     match expr {
@@ -1239,6 +1270,9 @@ pub fn bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Opti
 pub fn fixed_value_fields(ir: &OxidtrIR) -> std::collections::HashMap<(String, String), i64> {
     let mut result = std::collections::HashMap::new();
     for c in &ir.constraints {
+        // This controls enum representation and fixtures, so it must only ever
+        // record values the fact actually entails.
+        if !snapshot_is_sound(&c.expr, ir) { continue; }
         collect_fixed_values(&c.expr, &mut result);
     }
     result
@@ -1255,7 +1289,9 @@ fn collect_fixed_values(expr: &Expr, result: &mut std::collections::HashMap<(Str
                 }
             }
         }
-        Expr::BinaryLogic { left, right, .. } => {
+        // Only a conjunction entails its operands. Mining an `or` branch pins
+        // one alternative and silently deletes the others.
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
             collect_fixed_values(left, result);
             collect_fixed_values(right, result);
         }

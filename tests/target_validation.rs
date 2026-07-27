@@ -753,6 +753,35 @@ fn swift_adversarial_models_compile() {
     }
 }
 
+/// A model mixing a temporal fact with an ordinary one must still produce
+/// generated tests that *pass*. `eventually some p | p.x = 1` used to seed a
+/// current-state fixture that made the unrelated `NowZero` fact fail.
+#[test]
+#[ignore]
+fn rust_mixed_temporal_model_tests_pass() {
+    const MODEL: &str = "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+        fact NowZero { all q: Q | all p: P | p.x = 0 }\n\
+        fact LaterOne { eventually some p: P | p.x = 1 }";
+    let model = parser::parse(MODEL).expect("parse");
+    let lowered = ir::lower(&model).expect("lower");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("mixed_crate");
+    write_rust_crate(&lowered, crate_dir.to_str().unwrap());
+
+    let out = std::process::Command::new("cargo")
+        .arg("test")
+        .current_dir(&crate_dir)
+        .output()
+        .expect("failed to run cargo test");
+    assert!(
+        out.status.success(),
+        "generated tests for a mixed temporal model failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// Compile and *run* the generated temporal trace checkers against every trace
 /// of length 1–3, comparing them to the operator definitions computed
 /// independently. String assertions cannot catch a checker that is semantically

@@ -1290,7 +1290,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out).unwrap();
             continue;
         }
-        if analyze::expr_contains_prime(&prop.expr) {
+        if analyze::contains_prime_through_calls(&prop.expr, ir) {
             // The transition machinery lives on the fact path only; without it
             // a prime translates to a `next_*` field that does not exist.
             writeln!(out, "// oxidtr: skipped {} — prime on the assert path needs transition", prop.name).unwrap();
@@ -1355,7 +1355,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // its own. `always <transition>` is fine — a single step is a sound
         // necessary check for it — but `eventually p.x' > 0` does not imply
         // next-positive now.
-        if analyze::expr_contains_prime(&constraint.expr)
+        if analyze::contains_prime_through_calls(&constraint.expr, ir)
             && !analyze::transition_is_sound(&constraint.expr, ir)
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — a temporal operator combined with").unwrap();
@@ -1423,6 +1423,17 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
 
         // Use temporal classification for test name prefix
+        // Before any annotation or guarantee classification: a gate placed
+        // after them leaves a dangling doc comment (and can label a skipped
+        // fact "Type-guaranteed" because a sibling constraint was).
+        if !analyze::snapshot_is_sound(&constraint.expr, ir)
+            && !analyze::temporal_is_outermost(&constraint.expr, ir)
+        {
+            writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
+            writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         let temporal_kind = analyze::expr_temporal_kind(&constraint.expr);
         let test_prefix = match temporal_kind {
             Some(analyze::TemporalKind::Liveness) => "liveness",
@@ -1489,14 +1500,6 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // one and assert that fixed outcome: real coverage of the checker's
         // control flow (slicing, position/rposition) without ever risking a
         // false failure on someone else's model.
-        if !analyze::snapshot_is_sound(&constraint.expr, ir)
-            && !analyze::temporal_is_outermost(&constraint.expr, ir)
-        {
-            writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
-            writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
-            writeln!(out).unwrap();
-            continue;
-        }
         if !emit_temporal_static_test(&mut out, &test_name, &fact_name, &constraint.expr, &params, ir, temporal_kind) {
         // Detect ownership facts: `all x: A | some y: B | x in y.field`
         // These need linked fixture setup where B.field contains x.
@@ -2617,7 +2620,11 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         .collect();
 
     // Collect variant names referenced in existential facts
+    // `strip_outer_quantifier` also strips `eventually`, so a fact like
+    // `eventually some p: P | p.x = 1` would otherwise seed a *current-state*
+    // fixture that contradicts the model's other facts.
     let existential_variants: HashSet<String> = ir.constraints.iter().flat_map(|c| {
+        if !analyze::snapshot_is_sound(&c.expr, ir) { return Vec::new(); }
         if let Some((kind, bindings, body)) = analyze::strip_outer_quantifier(&c.expr) {
             if matches!(kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
                 let var_name = &bindings[0].vars[0];
@@ -2881,6 +2888,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
     {
         let mut existential_by_sig: HashMap<String, Vec<Vec<(String, String)>>> = HashMap::new();
         for constraint in &ir.constraints {
+            if !analyze::snapshot_is_sound(&constraint.expr, ir) { continue; }
             if let Some((_kind, bindings, body)) = analyze::strip_outer_quantifier(&constraint.expr) {
                 if matches!(_kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
                     if let Expr::VarRef(sig_name) = &bindings[0].domain {
@@ -3448,6 +3456,7 @@ mod diverse_fixture_literals_tests {
 /// Check if a sig type has existential (some) constraints, meaning all_{plural}s() was generated.
 fn has_existential_fixture(sig_name: &str, ir: &OxidtrIR) -> bool {
     for constraint in &ir.constraints {
+        if !analyze::snapshot_is_sound(&constraint.expr, ir) { continue; }
         if let Some((_kind, bindings, body)) = analyze::strip_outer_quantifier(&constraint.expr) {
             if matches!(_kind, crate::parser::ast::QuantKind::Some) && bindings.len() == 1 {
                 if let Expr::VarRef(name) = &bindings[0].domain {
