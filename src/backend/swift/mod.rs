@@ -659,10 +659,15 @@ fn variant_domain<'a>(params: &'a [(String, String)], ctx: &SwiftContext) -> Opt
 fn unrenderable_case_ref(body: &str, refs: &[String]) -> Option<String> {
     // Match on an identifier boundary: `Expr.lit` is a prefix of the perfectly
     // valid `Expr.literal`.
-    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '.');
+    // Asymmetric on `.`: a dot *before* the match means it is the tail of a
+    // longer path (`h.myExpr.lit` is not `Expr.lit`), but a dot *after* it just
+    // starts a member access on the constructor (`Expr.lit.name` is).
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
+    let left_ok = |c: Option<char>| c.is_none_or(|c| !ident(c) && c != '.');
+    let right_ok = |c: Option<char>| c.is_none_or(|c| !ident(c));
     refs.iter().find(|r| {
         body.match_indices(r.as_str()).any(|(i, m)| {
-            boundary(body[..i].chars().next_back()) && boundary(body[i + m.len()..].chars().next())
+            left_ok(body[..i].chars().next_back()) && right_ok(body[i + m.len()..].chars().next())
         })
     }).cloned()
 }

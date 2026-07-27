@@ -662,3 +662,24 @@ fn swift_native_defaults_are_in_the_default_fixture_itself() {
     assert!(default_node.contains("name: \"\""), "got:\n{default_node}");
     assert!(default_node.contains("ok: false"), "got:\n{default_node}");
 }
+
+#[test]
+fn swift_case_ref_guard_is_asymmetric_about_dots() {
+    // A dot *before* the match means a longer path (`h.myExpr.lit` is fine);
+    // a dot *after* it is member access on the constructor (`Expr.lit.name`).
+    let path = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Value { lit: one Int }\nsig Holder { myExpr: one Value }\n\
+         assert A { all h: Holder | h.myExpr.lit = h.myExpr.lit }",
+    );
+    let t = find_file(&path, "Tests.swift");
+    assert!(t.contains("h.myExpr.lit == h.myExpr.lit"), "valid test was skipped:\n{t}");
+
+    let ctor = generate_swift(
+        "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+         sig Other extends Expr {}\nassert A { Lit.name = Lit.name }",
+    );
+    let t = find_file(&ctor, "Tests.swift");
+    assert!(t.contains("skipped test_A"), "member access on a constructor:\n{t}");
+    assert!(!t.contains("Expr.lit.name"), "got:\n{t}");
+}

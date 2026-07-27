@@ -699,6 +699,10 @@ fn swift_adversarial_models_compile() {
          "abstract sig Expr {}\nsig ViaBox extends Expr { box: one Box }\n\
           sig Box { nodes: set Node }\nsig Node { next: one Node }",
          "func defaultBox() -> Box {\n    Box(\n        nodes: Set()"),
+        ("case_ref_guard_catches_member_access_on_constructor",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Other extends Expr {}\nassert A { Lit.name = Lit.name }",
+         "is a case constructor"),
         ("case_ref_guard_respects_left_boundary",
          "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
           sig Value { lit: one Int }\nsig Holder { myExpr: one Value }\n\
