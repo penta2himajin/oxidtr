@@ -8,6 +8,15 @@ fn generate_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
     rust::generate(&ir)
 }
 
+/// Slice one generated item out of a file. Asserting against a whole file lets
+/// a claim about `fn foo` be satisfied by a neighbouring function.
+fn fn_body<'a>(src: &'a str, header: &str) -> &'a str {
+    let start = src.find(header).unwrap_or_else(|| panic!("no `{header}` in:\n{src}"));
+    let rest = &src[start + header.len()..];
+    let end = rest.find("\nfn ").unwrap_or(rest.len());
+    &rest[..end]
+}
+
 fn find_file<'a>(files: &'a [oxidtr::backend::GeneratedFile], path: &str) -> &'a str {
     files
         .iter()
@@ -1381,8 +1390,11 @@ fn rust_assert_liveness_emits_a_trace_checker() {
         "sig Person { age: one Int }\nassert EventuallyOk { eventually all p: Person | p.age > 0 }",
     );
     let t = find_file(&files, "tests.rs");
-    assert!(t.contains("fn check_liveness_eventually_ok"), "no trace checker:\n{t}");
-    assert!(t.contains("trace.iter().any("), "liveness is an existential over states:\n{t}");
+    let test = fn_body(t, "fn eventually_ok() {");
+    assert!(test.contains("check_liveness_eventually_ok(&trace)"),
+        "the test must call its checker, not merely coexist with it:\n{test}");
+    let checker = fn_body(t, "fn check_liveness_eventually_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace.iter().any("), "liveness is existential over states:\n{checker}");
     assert!(t.contains("@temporal"), "the test must be labelled temporal:\n{t}");
     assert!(!t.contains("assert!(persons.iter().all(|p| { let p = p.clone(); p.age > 0 }));"),
         "`eventually` was erased into a snapshot assertion:\n{t}");
@@ -1395,8 +1407,10 @@ fn rust_assert_until_emits_a_trace_checker() {
          assert UntilOk { (all p: Person | p.age >= 0) until (all p: Person | p.age > 0) }",
     );
     let t = find_file(&files, "tests.rs");
-    assert!(t.contains("fn check_until_until_ok"), "no trace checker:\n{t}");
-    assert!(t.contains("trace.iter().position("), "until is position-based:\n{t}");
+    let test = fn_body(t, "fn until_ok() {");
+    assert!(test.contains("check_until_until_ok(&trace)"), "the test must call its checker:\n{test}");
+    let checker = fn_body(t, "fn check_until_until_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace.iter().position("), "until is position-based:\n{checker}");
     assert!(!t.contains("}) && persons.iter().all("), "`until` was flattened to `&&`:\n{t}");
 }
 
@@ -1408,6 +1422,82 @@ fn rust_assert_invariant_still_uses_a_snapshot() {
         "sig Person { age: one Int }\nassert AlwaysOk { always all p: Person | p.age > 0 }",
     );
     let t = find_file(&files, "tests.rs");
-    assert!(t.contains("assert!(persons.iter().all("), "invariant should stay a snapshot:\n{t}");
+    let test = fn_body(t, "fn always_ok() {");
+    assert!(test.contains("assert!(persons.iter().all("), "invariant should stay a snapshot:\n{test}");
     assert!(!t.contains("fn check_liveness_always_ok"), "no trace checker needed:\n{t}");
+}
+
+#[test]
+fn rust_nested_temporal_is_skipped_not_mistranslated() {
+    // Wrapping the whole body in `any(..)` would assert `exists s. A(s) && B(s)`
+    // instead of `A(now) && exists s. B(s)` — a different formula.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert Nested { (all p: Person | p.age >= 0) and eventually (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Nested"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_liveness_nested"), "a wrong checker was emitted:\n{t}");
+}
+
+#[test]
+fn rust_nested_binary_temporal_does_not_drop_context() {
+    // `find_temporal_binary` returns only the binary node, so emitting a
+    // checker here would silently discard the surrounding conjunct.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert NestedUntil { (all p: Person | p.age >= 0) and ((all p: Person | p.age > 0) until (all p: Person | p.age > 1)) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NestedUntil"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_until_nested_until"), "a context-dropping checker was emitted:\n{t}");
+}
+
+#[test]
+fn rust_prime_on_the_assert_path_is_skipped() {
+    // Only the fact path has transition handling; without it a prime becomes
+    // `next_age`, a field that does not exist.
+    let files = generate_from(
+        "sig Person { var age: one Int }\nassert PrimeOnly { all p: Person | p.age' > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped PrimeOnly"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("next_age"), "prime leaked into a snapshot assertion:\n{t}");
+}
+
+#[test]
+fn rust_parameterless_temporal_assert_still_calls_its_checker() {
+    // With no quantified params the trace is a sequence of unit states; a
+    // `None` trace type emitted a test that asserted nothing at all.
+    let files = generate_from("sig S { x: one Int }\nassert NoParamEventually { eventually 1 = 2 }");
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn no_param_eventually() {");
+    assert!(test.contains("check_liveness_no_param_eventually(&trace)"),
+        "the test must call its checker:\n{test}");
+    assert!(t.contains("trace: &[()]"), "unit trace state expected:\n{t}");
+}
+
+#[test]
+fn rust_since_requires_left_strictly_after_the_witness() {
+    // `F since G` does not require F at the state where G holds.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert SinceOk { (all p: Person | p.age >= 0) since (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let checker = fn_body(t, "fn check_since_since_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace[pos + 1..]"), "since must exclude the witness state:\n{checker}");
+}
+
+#[test]
+fn rust_triggered_is_the_past_dual_of_release() {
+    // !( !F since !G ): at every state, G holds there or F holds strictly after.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert TrigOk { (all p: Person | p.age >= 0) triggered (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let checker = fn_body(t, "fn check_triggered_trig_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace[i + 1..]"), "triggered looks strictly forward:\n{checker}");
+    assert!(!checker.contains("trace[..=i]"), "old at-or-before reading:\n{checker}");
 }

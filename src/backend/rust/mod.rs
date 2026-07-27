@@ -1262,6 +1262,14 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // treatment as a `fact`. Without this the operator is erased —
         // `eventually P` becomes a snapshot assertion of `P`, which is a
         // strictly different property that compiles and passes green.
+        if analyze::expr_contains_prime(&prop.expr) {
+            // The transition machinery lives on the fact path only; without it
+            // a prime translates to a `next_*` field that does not exist.
+            writeln!(out, "// oxidtr: skipped {} — prime on the assert path needs transition", prop.name).unwrap();
+            writeln!(out, "// handling, which only the fact path has. See #104.").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
         if let Some(kind) = temporal_kind {
             writeln!(out, "/// {}", temporal_annotation(kind)).unwrap();
@@ -3411,13 +3419,26 @@ fn emit_temporal_static_test(
     params: &[(String, String)],
     temporal_kind: Option<analyze::TemporalKind>,
 ) -> bool {
+    // The checker templates wrap the whole body in one quantifier over states,
+    // which only means what the model means when the operator is outermost.
+    // `A and eventually B` would become `any(|s| A(s) && B(s))`; a nested
+    // binary would drop `A` entirely. Decline rather than emit a wrong check.
+    if temporal_kind.is_some() && !analyze::temporal_is_outermost(constraint_expr) {
+        writeln!(out, "// oxidtr: skipped {name} — temporal operator is not outermost; a trace").unwrap();
+        writeln!(out, "// checker for it would assert a different formula. See #104.").unwrap();
+        writeln!(out).unwrap();
+        return true;
+    }
     let fact_name = name.to_string();
+    // A trace state is one collection per quantified param. With no params
+    // there is still a trace — of unit states — so the checker still gets
+    // called; `None` here emitted a test that asserted nothing at all.
     let trace_state_ty = if params.len() == 1 {
         Some(format!("Vec<{}>", params[0].1))
     } else if !params.is_empty() {
         Some(format!("({})", params.iter().map(|(_, t)| format!("Vec<{t}>")).collect::<Vec<_>>().join(", ")))
     } else {
-        None
+        Some("()".to_string())
     };
     if temporal_kind == Some(analyze::TemporalKind::Binary) {
         let op = analyze::find_temporal_binary(constraint_expr).map(|(op, _, _)| op);
@@ -3474,6 +3495,7 @@ fn emit_trace_checker(
     ir: &OxidtrIR,
     temporal_kind: Option<analyze::TemporalKind>,
 ) {
+    if temporal_kind.is_some() && !analyze::temporal_is_outermost(constraint_expr) { return; }
     let fact_name = name.to_string();
     if let Some(kind) = temporal_kind {
         let snake_name = to_snake_case(&fact_name);
@@ -3535,7 +3557,7 @@ fn emit_trace_checker(
                             }
                             TemporalBinaryOp::Since => {
                                 writeln!(out, "    match trace.iter().rposition(|{pname}| {{ {right_body} }}) {{").unwrap();
-                                writeln!(out, "        Some(pos) => trace[pos..].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
+                                writeln!(out, "        Some(pos) => trace[pos + 1..].iter().all(|{pname}| {{ {left_body} }}),").unwrap();
                                 writeln!(out, "        None => false,").unwrap();
                                 writeln!(out, "    }}").unwrap();
                             }
@@ -3547,9 +3569,11 @@ fn emit_trace_checker(
                                 writeln!(out, "    }}").unwrap();
                             }
                             TemporalBinaryOp::Triggered => {
-                                // Triggered: if right ever holds, left must hold at or before that point
+                                // `F triggered G` is the past dual of release —
+                                // !( !F since !G ) — i.e. at every state either G
+                                // holds there or F holds strictly after it.
                                 writeln!(out, "    trace.iter().enumerate().all(|(i, {pname})| {{").unwrap();
-                                writeln!(out, "        if {right_body} {{ trace[..=i].iter().any(|{pname}| {{ {left_body} }}) }} else {{ true }}").unwrap();
+                                writeln!(out, "        {{ {right_body} }} || trace[i + 1..].iter().any(|{pname}| {{ {left_body} }})").unwrap();
                                 writeln!(out, "    }})").unwrap();
                             }
                         }
@@ -3567,7 +3591,7 @@ fn emit_trace_checker(
                             }
                             TemporalBinaryOp::Since => {
                                 writeln!(out, "    match trace.iter().rposition(|({pnames})| {{ {right_body} }}) {{").unwrap();
-                                writeln!(out, "        Some(pos) => trace[pos..].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
+                                writeln!(out, "        Some(pos) => trace[pos + 1..].iter().all(|({pnames})| {{ {left_body} }}),").unwrap();
                                 writeln!(out, "        None => false,").unwrap();
                                 writeln!(out, "    }}").unwrap();
                             }
@@ -3579,7 +3603,7 @@ fn emit_trace_checker(
                             }
                             TemporalBinaryOp::Triggered => {
                                 writeln!(out, "    trace.iter().enumerate().all(|(i, ({pnames}))| {{").unwrap();
-                                writeln!(out, "        if {right_body} {{ trace[..=i].iter().any(|({pnames})| {{ {left_body} }}) }} else {{ true }}").unwrap();
+                                writeln!(out, "        {{ {right_body} }} || trace[i + 1..].iter().any(|({pnames})| {{ {left_body} }})").unwrap();
                                 writeln!(out, "    }})").unwrap();
                             }
                         }

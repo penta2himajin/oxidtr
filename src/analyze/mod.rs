@@ -301,6 +301,25 @@ pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
     scan_temporal_kind(expr)
 }
 
+/// Is the temporal operator the *root* of this expression, with no further
+/// temporal operator underneath it?
+///
+/// The trace-checker templates wrap the generic (temporal-erasing) translation
+/// of the whole body in one quantifier over states, which is only faithful when
+/// the operator is outermost. `A and eventually B` would become
+/// `any(|s| A(s) && B(s))` instead of `A(now) && exists s. B(s)`, and
+/// `all p | eventually P` would swap the quantifiers. Those are different
+/// formulas, so the caller must decline to emit rather than emit a wrong check.
+pub fn temporal_is_outermost(expr: &Expr) -> bool {
+    match expr {
+        Expr::TemporalUnary { expr: inner, .. } => scan_temporal_kind(inner).is_none(),
+        Expr::TemporalBinary { left, right, .. } => {
+            scan_temporal_kind(left).is_none() && scan_temporal_kind(right).is_none()
+        }
+        _ => false,
+    }
+}
+
 /// Find the first `TemporalBinary` node nested inside an expression tree,
 /// walking through quantifiers and logical connectives.
 /// Returns the operator, left, and right sub-expressions.
