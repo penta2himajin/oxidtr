@@ -1282,8 +1282,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // strictly different property that compiles and passes green.
         // A formula whose only temporal operator is inside a called pred has
         // no surface kind, so classification alone never reaches the gate.
-        if !analyze::snapshot_is_sound(&prop.expr, ir)
-            && !analyze::temporal_is_outermost(&prop.expr, ir)
+        // A callee that quantifies over a sig universe it was not passed also
+        // cannot be called from a trace checker.
+        if (!analyze::snapshot_is_sound(&prop.expr, ir)
+            && !analyze::temporal_is_outermost(&prop.expr, ir))
+            || (analyze::contains_temporal(&prop.expr, ir)
+                && analyze::calls_op_with_free_universe(&prop.expr, ir))
         {
             writeln!(out, "// oxidtr: skipped {} — temporal content the snapshot path", prop.name).unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
@@ -1355,8 +1359,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // its own. `always <transition>` is fine — a single step is a sound
         // necessary check for it — but `eventually p.x' > 0` does not imply
         // next-positive now.
+        // A prime needs the transition rewriter, which only handles one
+        // universally quantified variable over a plain sig and cannot reach
+        // into a callee body at all.
         if analyze::contains_prime_through_calls(&constraint.expr, ir)
-            && !analyze::transition_is_sound(&constraint.expr, ir)
+            && (!analyze::transition_is_sound(&constraint.expr, ir)
+                || !analyze::transition_shape_supported(&constraint.expr, ir))
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — a temporal operator combined with").unwrap();
             writeln!(out, "// prime is not a plain transition. See #104.").unwrap();
@@ -1426,8 +1434,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // Before any annotation or guarantee classification: a gate placed
         // after them leaves a dangling doc comment (and can label a skipped
         // fact "Type-guaranteed" because a sibling constraint was).
-        if !analyze::snapshot_is_sound(&constraint.expr, ir)
-            && !analyze::temporal_is_outermost(&constraint.expr, ir)
+        if (!analyze::snapshot_is_sound(&constraint.expr, ir)
+            && !analyze::temporal_is_outermost(&constraint.expr, ir))
+            || (analyze::contains_temporal(&constraint.expr, ir)
+                && analyze::calls_op_with_free_universe(&constraint.expr, ir))
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();

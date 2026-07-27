@@ -1709,3 +1709,48 @@ fn rust_disjunction_does_not_pin_one_alternative() {
     let m = find_file(&files, "models.rs");
     assert!(m.contains("rank: i64"), "field eliminated in favour of one branch:\n{m}");
 }
+
+#[test]
+fn rust_transition_emitter_declines_shapes_it_cannot_rewrite() {
+    // The rewriter zips a pre- and post-state collection, so it handles exactly
+    // one universally quantified variable over a plain sig. Each of these used
+    // to be emitted anyway: a `todo!()` call that panicked at runtime, a green
+    // `some` silently rendered as `all`, unbound `next_*` references, and a
+    // primed domain that panicked the generator itself.
+    let cases: &[(&str, &str)] = &[
+        ("CalledPrime",
+         "some sig P { var x: one Int }\npred Step[p: one P] { p.x' = p.x }\n\
+          fact CalledPrime { always all p: P | Step[p] }"),
+        ("SomeStutters",
+         "some sig P { var x: one Int }\nfact SomeStutters { always some p: P | p.x' = p.x }"),
+        ("MultiStep",
+         "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+          fact MultiStep { always all p: P, q: Q | p.x' = q.y }"),
+        ("NextZero",
+         "some sig P { var x: one Int }\nfact NextZero { always all p: P' | p.x = 0 }"),
+    ];
+    for (name, model) in cases {
+        let files = generate_from(model);
+        let t = find_file(&files, "tests.rs");
+        assert!(t.contains(&format!("skipped {name}")), "{name} was emitted:\n{t}");
+    }
+}
+
+#[test]
+fn rust_supported_transition_shape_is_still_emitted() {
+    let files = generate_from("sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_mono"), "the one supported shape was lost:\n{t}");
+}
+
+#[test]
+fn rust_temporal_call_needing_an_unpassed_universe_is_skipped() {
+    // `pos()` quantifies over P but takes no parameter, so a trace checker has
+    // no way to give it that collection — the call does not compile.
+    let files = generate_from(
+        "some sig P { x: one Int }\npred Pos { all p: P | p.x >= 0 }\n\
+         assert LaterPos { eventually Pos[] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}

@@ -595,6 +595,98 @@ pub fn contains_prime_through_calls(expr: &Expr, ir: &OxidtrIR) -> bool {
     scan(expr, ir, &mut Vec::new())
 }
 
+/// Can the transition rewriter actually handle this shape?
+///
+/// It rewrites `x'` to a `next_x` binding produced by zipping a pre-state and
+/// post-state collection, which only works for one universally quantified
+/// variable ranging over a plain sig. Everything else — an existential (which
+/// it silently emits as a `for` loop, i.e. `all`), several bindings (unbound
+/// `next_*` references), a primed domain (no parameter at all, which panics
+/// the generator), or a prime that is only reachable through a callee body it
+/// cannot rewrite — must be declined rather than emitted.
+pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
+    // A prime the rewriter cannot see is a prime it cannot rewrite.
+    if !expr_contains_prime(expr) { return false; }
+    let sig_names: std::collections::HashSet<&str> =
+        ir.structures.iter().map(|s| s.name.as_str()).collect();
+    match strip_outer_quantifier(expr) {
+        Some((QuantKind::All, bindings, _)) => {
+            let vars: usize = bindings.iter().map(|b| b.vars.len()).sum();
+            vars == 1
+                && bindings.len() == 1
+                && !expr_contains_prime(&bindings[0].domain)
+                && matches!(&bindings[0].domain, Expr::VarRef(d) if sig_names.contains(d.as_str()))
+        }
+        _ => false,
+    }
+}
+
+/// Does this expression call an operation whose body quantifies over a sig
+/// universe that is not one of its parameters? The generated function has no
+/// way to see that collection, so the call does not compile — and the caller
+/// has no way to pass it.
+pub fn calls_op_with_free_universe(expr: &Expr, ir: &OxidtrIR) -> bool {
+    fn body_has_free_universe(op: &OperationNode, ir: &OxidtrIR) -> bool {
+        let param_types: std::collections::HashSet<&str> =
+            op.params.iter().map(|p| p.type_name.as_str()).collect();
+        let sig_names: std::collections::HashSet<&str> =
+            ir.structures.iter().map(|s| s.name.as_str()).collect();
+        fn scan(
+            e: &Expr, sigs: &std::collections::HashSet<&str>,
+            params: &std::collections::HashSet<&str>,
+        ) -> bool {
+            match e {
+                Expr::Quantifier { bindings, body, .. } => {
+                    bindings.iter().any(|b| matches!(&b.domain, Expr::VarRef(d)
+                        if sigs.contains(d.as_str()) && !params.contains(d.as_str())))
+                        || scan(body, sigs, params)
+                }
+                Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+                | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+                | Expr::TemporalBinary { left, right, .. } => {
+                    scan(left, sigs, params) || scan(right, sigs, params)
+                }
+                Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+                | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+                | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => scan(i, sigs, params),
+                Expr::FunApp { receiver, args, .. } => {
+                    receiver.as_deref().is_some_and(|r| scan(r, sigs, params))
+                        || args.iter().any(|a| scan(a, sigs, params))
+                }
+                Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+            }
+        }
+        op.body.iter().any(|b| scan(b, &sig_names, &param_types))
+    }
+
+    fn walk(e: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+        match e {
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| walk(r, ir, seen)) { return true; }
+                if args.iter().any(|a| walk(a, ir, seen)) { return true; }
+                if seen.iter().any(|n| n == name) { return false; }
+                seen.push(name.clone());
+                let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .any(|op| body_has_free_universe(op, ir)
+                        || op.body.iter().any(|b| walk(b, ir, seen)));
+                seen.pop();
+                hit
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => walk(left, ir, seen) || walk(right, ir, seen),
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => walk(i, ir, seen),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().any(|b| walk(&b.domain, ir, seen)) || walk(body, ir, seen)
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+        }
+    }
+    walk(expr, ir, &mut Vec::new())
+}
+
 /// Split a top-level conjunction into its conjuncts.
 fn conjuncts(expr: &Expr) -> Vec<&Expr> {
     match expr {
