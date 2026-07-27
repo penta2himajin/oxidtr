@@ -19,7 +19,10 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
         || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
 
-    if has_tc {
+    // helpers.go also carries forAll/exists/contains, which any translated
+    // quantifier or `in` expression calls — so it is needed whenever there is
+    // a constraint or property at all, not just when a TC field exists.
+    if has_tc || !ir.constraints.is_empty() || !ir.properties.is_empty() {
         files.push(GeneratedFile {
             path: "helpers.go".to_string(),
             content: generate_helpers(ir),
@@ -445,10 +448,90 @@ fn mult_to_go_type(target: &str, mult: &Multiplicity, is_indirect: bool) -> Stri
 
 // ── helpers.go ───────────────────────────────────────────────────────────────
 
+/// Emit the generic collection helpers the expression translator compiles
+/// quantifiers and `in` down to. Without these the generated package references
+/// undefined functions and nothing builds.
+///
+/// Named `forAll`/`exists` rather than `all`/`any` on purpose: `any` is a
+/// predeclared type alias for `interface{}`, so a package-level `func any[...]`
+/// would shadow it and break every use of `any` as a type — including this
+/// file's own `[T any]` constraints and the translator's unresolved-domain
+/// fallback.
+///
+/// Emitted unconditionally: unused package-level functions are legal Go (unlike
+/// unused imports or locals), so this costs nothing and avoids threading
+/// "is this helper reachable" detection through every expression site.
+fn generate_collection_helpers(out: &mut String) {
+    writeln!(out, "// forAll reports whether f holds for every element of xs.").unwrap();
+    writeln!(out, "func forAll[T any](xs []T, f func(T) bool) bool {{").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tif !f(x) {{").unwrap();
+    writeln!(out, "\t\t\treturn false").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn true").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// exists reports whether f holds for at least one element of xs.").unwrap();
+    writeln!(out, "func exists[T any](xs []T, f func(T) bool) bool {{").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tif f(x) {{").unwrap();
+    writeln!(out, "\t\t\treturn true").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn false").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    // `comparable` is too strict: a sig lowered to a struct containing a slice
+    // field is not comparable in Go, so `contains[T comparable]` fails to
+    // instantiate for most generated types. reflect.DeepEqual accepts any type.
+    // Deliberately NOT generic: a `lone` field lowers to *T while the value it
+    // is compared against is T, and generic inference rejects that mismatch.
+    // Taking `any` also lets deref normalize the optional away, so comparing a
+    // value to a `lone` field means "compares equal to its pointee".
+    writeln!(out, "// equal reports whether a and b are deeply equal, treating a").unwrap();
+    writeln!(out, "// pointer (a `lone` field) as its pointee.").unwrap();
+    writeln!(out, "func equal(a any, b any) bool {{").unwrap();
+    writeln!(out, "\treturn reflect.DeepEqual(deref(a), deref(b))").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// deref unwraps one level of pointer indirection, if present.").unwrap();
+    writeln!(out, "func deref(v any) any {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(v)").unwrap();
+    writeln!(out, "\tif rv.Kind() == reflect.Ptr {{").unwrap();
+    writeln!(out, "\t\tif rv.IsNil() {{").unwrap();
+    writeln!(out, "\t\t\treturn nil").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t\treturn rv.Elem().Interface()").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn v").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// contains reports whether v is an element of xs.").unwrap();
+    writeln!(out, "func contains[T any](xs []T, v T) bool {{").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tif reflect.DeepEqual(x, v) {{").unwrap();
+    writeln!(out, "\t\t\treturn true").unwrap();
+    writeln!(out, "\t\t}}").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn false").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+}
+
 fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     writeln!(out, "package models").unwrap();
     writeln!(out).unwrap();
+    // Always used: `contains` below compares with reflect.DeepEqual.
+    writeln!(out, "import \"reflect\"").unwrap();
+    writeln!(out).unwrap();
+
+    generate_collection_helpers(&mut out);
 
     let mut tc_fields = Vec::new();
     for c in &ir.constraints {
@@ -1152,12 +1235,44 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
             let all_unit = variants.iter().all(|v| {
                 ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
             });
-            if all_unit {
-                let first = &variants[0];
-                writeln!(out, "// Default{} returns a default value for {}.", s.name, s.name).unwrap();
-                writeln!(out, "func Default{}() {} {{ return {} }}", s.name, s.name, first).unwrap();
-                writeln!(out).unwrap();
-            }
+            // All-unit hierarchies lower to `type X int` + iota constants, so the
+            // default is the bare constant. A hierarchy with any data-carrying
+            // variant lowers to an interface whose variants are structs, so the
+            // default must actually construct one — prefer a fieldless variant
+            // (`V{}`), else defer to that variant's own factory. Emitting nothing
+            // here used to leave `undefined: DefaultX` wherever a field targets
+            // the interface.
+            let default_expr = if all_unit {
+                variants[0].clone()
+            } else {
+                match variants.iter().find(|v| {
+                    ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+                }) {
+                    Some(unit) => format!("{unit}{{}}"),
+                    // No fieldless variant: construct the first one inline with
+                    // defaulted fields, matching what the Rust backend emits.
+                    // Variants get no `Default*` factory of their own (the loop
+                    // below skips them), so this must not call one.
+                    None => {
+                        let v = &variants[0];
+                        let fields = ctx.struct_map.get(v.as_str())
+                            .map(|st| st.fields.iter()
+                                .map(|f| format!(
+                                    "{}: {}",
+                                    expr_translator::capitalize(&f.name),
+                                    if f.value_type.is_some() { "nil".to_string() }
+                                    else { go_default_value(&f.target, &f.mult) },
+                                ))
+                                .collect::<Vec<_>>()
+                                .join(", "))
+                            .unwrap_or_default();
+                        format!("{v}{{{fields}}}")
+                    }
+                }
+            };
+            writeln!(out, "// Default{} returns a default value for {}.", s.name, s.name).unwrap();
+            writeln!(out, "func Default{}() {} {{ return {} }}", s.name, s.name, default_expr).unwrap();
+            writeln!(out).unwrap();
         }
     }
 

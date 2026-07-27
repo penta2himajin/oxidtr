@@ -241,3 +241,87 @@ fn go_derived_field_generates_method() {
     let models = find_file(&files, "models.go");
     assert!(models.contains("func (s *Account) Balance()"), "should generate method:\n{models}");
 }
+
+// ── Compilable quantifier output (#80) ──────────────────────────────────────
+
+/// Go func literals require an explicit parameter type — `func(p) bool` is a
+/// syntax error. The quantifier translation must emit the element type of the
+/// domain it iterates.
+#[test]
+fn go_quantifier_closure_declares_parameter_type() {
+    let files = generate_go(r#"
+        sig Person { age: one Int }
+        assert AllAdults { all p: Person | p.age >= 0 }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        !tests.contains("func(p) bool"),
+        "func literal must not omit its parameter type:\n{tests}"
+    );
+    assert!(
+        tests.contains("func(p Person) bool"),
+        "expected the domain's element type on the closure parameter:\n{tests}"
+    );
+}
+
+/// A nested quantifier over a field domain (`all f: s.fields | ...`) must
+/// resolve the element type through the field's target, not just bare sigs.
+#[test]
+fn go_nested_quantifier_over_field_domain_declares_parameter_type() {
+    let files = generate_go(r#"
+        sig Container { items: set Item }
+        sig Item { size: one Int }
+        assert AllSized { all c: Container | all i: c.items | i.size >= 0 }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        !tests.contains("func(i) bool") && !tests.contains("func(c) bool"),
+        "no func literal may omit its parameter type:\n{tests}"
+    );
+    assert!(
+        tests.contains("func(c Container) bool") && tests.contains("func(i Item) bool"),
+        "expected both closure parameters typed:\n{tests}"
+    );
+}
+
+/// The quantifier translation calls `all(...)` / `any(...)`, so those generic
+/// helpers must actually be defined, or nothing compiles.
+#[test]
+fn go_helpers_define_all_and_any_when_quantifiers_used() {
+    let files = generate_go(r#"
+        sig Person { age: one Int }
+        assert AllAdults { all p: Person | p.age >= 0 }
+    "#);
+    let helpers = find_file(&files, "helpers.go");
+    assert!(
+        helpers.contains("func forAll["),
+        "generated code calls forAll() — it must be defined:\n{helpers}"
+    );
+    assert!(
+        helpers.contains("func exists["),
+        "generated code calls exists() — it must be defined:\n{helpers}"
+    );
+}
+
+/// An abstract sig with at least one data-carrying variant becomes a Go
+/// interface. Fields targeting it still call `DefaultX()`, so that factory
+/// must exist — previously it was only emitted when *every* variant was a
+/// unit variant, leaving `undefined: DefaultExpr` for mixed hierarchies.
+#[test]
+fn go_fixture_factory_exists_for_interface_style_abstract_sig() {
+    let files = generate_go(r#"
+        abstract sig Expr {}
+        sig VarRef extends Expr {}
+        sig Comparison extends Expr { left: one Expr }
+        sig Binding { domain: one Expr }
+    "#);
+    let fixtures = find_file(&files, "fixtures.go");
+    assert!(
+        fixtures.contains("func DefaultExpr() Expr"),
+        "a field targeting the interface calls DefaultExpr() — it must be defined:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("return VarRef{}"),
+        "expected the fieldless variant as the default:\n{fixtures}"
+    );
+}

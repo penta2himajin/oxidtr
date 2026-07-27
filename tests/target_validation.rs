@@ -1,7 +1,7 @@
 /// Target validation tests — verify generated code compiles and tests pass
 /// in each target language's own toolchain.
 ///
-/// These tests require external tools (cargo, bun, gradle) and are separated
+/// These tests require external tools (cargo, bun, gradle, go) and are separated
 /// from unit/self-hosting tests so they can be run independently.
 ///
 /// All tests are `#[ignore]` by default — run with:
@@ -12,6 +12,7 @@ use oxidtr::ir;
 use oxidtr::backend::rust;
 use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
+use oxidtr::backend::go;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -368,5 +369,56 @@ test { useJUnitPlatform() }
     assert!(
         output.status.success(),
         "gradle test (Java) failed!\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Go — go vet + go test
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Generate Go from oxidtr.als and type-check + run it with the Go toolchain.
+///
+/// Go was previously absent from this file, and every Go defect below shipped
+/// undetected as a result — `go vet` catches all of them in one pass, while the
+/// string-level assertions in `tests/backend_go.rs` caught none:
+///   * quantifier closures emitted as `func(p) bool` (no parameter type)
+///   * `forAll`/`exists`/`contains` called but never defined
+///   * `DefaultX()` missing for an interface-style abstract sig
+///   * `==` applied to structs containing slices, which Go rejects
+/// See #80 / #84.
+#[test]
+#[ignore]
+fn go_self_hosted_compiles_and_tests_pass() {
+    let ir = parse_and_lower();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    for file in &go::generate(&ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+    std::fs::write(dir.join("go.mod"), "module models\n\ngo 1.24\n").unwrap();
+
+    let vet = std::process::Command::new("go")
+        .args(["vet", "./..."])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run go vet (is go installed?)");
+    assert!(
+        vet.status.success(),
+        "go vet on generated code failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&vet.stdout),
+        String::from_utf8_lossy(&vet.stderr)
+    );
+
+    let test = std::process::Command::new("go")
+        .args(["test", "./..."])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run go test");
+    assert!(
+        test.status.success(),
+        "go test on generated code failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&test.stdout),
+        String::from_utf8_lossy(&test.stderr)
     );
 }

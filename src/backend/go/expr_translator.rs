@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::{TargetLang, resolve_type, is_native_type_alias};
 use std::collections::{HashSet, BTreeSet};
 
 /// TC field info.
@@ -158,8 +159,26 @@ fn translate_inner(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => format!("{} == {}", ti(left, false), ti(right, false)),
-                CompareOp::NotEq => format!("{} != {}", ti(left, false), ti(right, false)),
+                // Go refuses `==` on a struct containing a slice, and most sigs
+                // lower to exactly that. Keep `==` where both operands are
+                // statically primitive; otherwise defer to the DeepEqual-based
+                // `equal` helper, which is correct for every type.
+                CompareOp::Eq => {
+                    let (l, r) = (ti(left, false), ti(right, false));
+                    if is_primitive_operand(left, ir) && is_primitive_operand(right, ir) {
+                        format!("{l} == {r}")
+                    } else {
+                        format!("equal({l}, {r})")
+                    }
+                }
+                CompareOp::NotEq => {
+                    let (l, r) = (ti(left, false), ti(right, false));
+                    if is_primitive_operand(left, ir) && is_primitive_operand(right, ir) {
+                        format!("{l} != {r}")
+                    } else {
+                        format!("!equal({l}, {r})")
+                    }
+                }
                 CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
                 CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
                 CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
@@ -169,7 +188,9 @@ fn translate_inner(
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
                         if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
-                            return format!("{r_base}.{} == {l}", capitalize(field));
+                            // `lone` lowers to *T, so `==` against the bare value
+                            // is a type error; equal() derefs before comparing.
+                            return format!("equal({r_base}.{}, {l})", capitalize(field));
                         }
                     }
                     let r = ti(right, false);
@@ -248,6 +269,59 @@ fn translate_inner(
     }
 }
 
+/// Resolve the Go element type of a quantifier domain — the type that must be
+/// written on the generated closure parameter (`func(p Person) bool`). Go, unlike
+/// Rust, never infers a func literal's parameter type from context, so omitting
+/// it is a syntax error rather than a style choice.
+///
+/// A bare sig domain (`p: Person`) resolves directly. A field domain
+/// (`i: c.items`) is resolved by field name across the IR; when several sigs
+/// share that field name they must agree on the target type, otherwise the
+/// domain is ambiguous and we report `None` rather than guess.
+/// True when the operand's static Go type is a primitive, so `==` is legal.
+/// A sig lowers to a struct that may contain slice fields, and Go rejects `==`
+/// on those outright ("struct containing []T cannot be compared").
+fn is_primitive_operand(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::IntLiteral(_) | Expr::Cardinality(_) => true,
+        Expr::FieldAccess { field, .. } => {
+            let resolved: BTreeSet<(&str, bool)> = ir.structures.iter()
+                .flat_map(|s| s.fields.iter())
+                .filter(|f| f.name == *field)
+                .map(|f| (f.target.as_str(), f.mult == Multiplicity::One))
+                .collect();
+            match resolved.iter().next() {
+                Some((target, is_one)) if resolved.len() == 1 => {
+                    *is_one && is_native_type_alias(target)
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn domain_element_type(domain: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Option<String> {
+    match domain {
+        Expr::VarRef(name) if sig_names.contains(name) => {
+            Some(resolve_type(TargetLang::Go, name))
+        }
+        Expr::FieldAccess { field, .. } => {
+            let targets: BTreeSet<&str> = ir.structures.iter()
+                .flat_map(|s| s.fields.iter())
+                .filter(|f| f.name == *field)
+                .map(|f| f.target.as_str())
+                .collect();
+            if targets.len() == 1 {
+                Some(resolve_type(TargetLang::Go, targets.iter().next().unwrap()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
 fn build_nested_quantifier(
     kind: &QuantKind,
     bindings: &[QuantBinding],
@@ -255,7 +329,7 @@ fn build_nested_quantifier(
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
 ) -> String {
-    let mut vars: Vec<(String, String, bool)> = Vec::new();
+    let mut vars: Vec<(String, String, bool, String)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
@@ -263,8 +337,12 @@ fn build_nested_quantifier(
         } else {
             translate_inner(&b.domain, false, sig_names, ir)
         };
+        // `any` is Go's empty interface: a domain we cannot resolve still
+        // parses, instead of emitting an outright syntax error.
+        let elem_ty = domain_element_type(&b.domain, sig_names, ir)
+            .unwrap_or_else(|| "any".to_string());
         for v in &b.vars {
-            vars.push((v.clone(), d.clone(), b.disj));
+            vars.push((v.clone(), d.clone(), b.disj, elem_ty.clone()));
         }
     }
 
@@ -296,15 +374,15 @@ fn build_nested_quantifier(
 
     let mut result = guarded_body;
     for idx in (0..vars.len()).rev() {
-        let (ref var, ref domain, _) = vars[idx];
+        let (ref var, ref domain, _, ref ty) = vars[idx];
         result = match kind {
-            QuantKind::All => format!("all({domain}, func({var}) bool {{ return {body} }})", body = result),
-            QuantKind::Some => format!("any({domain}, func({var}) bool {{ return {body} }})", body = result),
+            QuantKind::All => format!("forAll({domain}, func({var} {ty}) bool {{ return {body} }})", body = result),
+            QuantKind::Some => format!("exists({domain}, func({var} {ty}) bool {{ return {body} }})", body = result),
             QuantKind::No => {
                 if idx == 0 {
-                    format!("!any({domain}, func({var}) bool {{ return {body} }})", body = result)
+                    format!("!exists({domain}, func({var} {ty}) bool {{ return {body} }})", body = result)
                 } else {
-                    format!("any({domain}, func({var}) bool {{ return {body} }})", body = result)
+                    format!("exists({domain}, func({var} {ty}) bool {{ return {body} }})", body = result)
                 }
             }
         };
