@@ -511,14 +511,36 @@ fn generate_collection_helpers(out: &mut String) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    // Non-generic on purpose: a concrete variant is assignable to its abstract
+    // interface, but `contains[T]` would force the slice and the value to the
+    // same static type and reject `Circle` against `[]Shape`.
     writeln!(out, "// contains reports whether v is an element of xs.").unwrap();
-    writeln!(out, "func contains[T any](xs []T, v T) bool {{").unwrap();
-    writeln!(out, "\tfor _, x := range xs {{").unwrap();
-    writeln!(out, "\t\tif reflect.DeepEqual(x, v) {{").unwrap();
+    writeln!(out, "func contains(xs any, v any) bool {{").unwrap();
+    writeln!(out, "\trv := reflect.ValueOf(xs)").unwrap();
+    writeln!(out, "\tif rv.Kind() != reflect.Slice {{").unwrap();
+    writeln!(out, "\t\treturn false").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\tfor i := 0; i < rv.Len(); i++ {{").unwrap();
+    writeln!(out, "\t\tif equal(rv.Index(i).Interface(), v) {{").unwrap();
     writeln!(out, "\t\t\treturn true").unwrap();
     writeln!(out, "\t\t}}").unwrap();
     writeln!(out, "\t}}").unwrap();
     writeln!(out, "\treturn false").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// oneOf lifts a `one` relation into the slice forAll/exists take.").unwrap();
+    writeln!(out, "func oneOf[T any](v T) []T {{").unwrap();
+    writeln!(out, "\treturn []T{{v}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// loneOf lifts a `lone` relation; a nil optional is the empty relation.").unwrap();
+    writeln!(out, "func loneOf[T any](p *T) []T {{").unwrap();
+    writeln!(out, "\tif p == nil {{").unwrap();
+    writeln!(out, "\t\treturn nil").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn []T{{*p}}").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -1278,7 +1300,14 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        // A fieldless sig still needs a factory: any field targeting it emits
+        // `DefaultX()`, which would otherwise be an undefined reference.
+        if s.fields.is_empty() {
+            writeln!(out, "// Default{} creates a default valid {}.", s.name, s.name).unwrap();
+            writeln!(out, "func Default{}() {} {{ return {}{{}} }}", s.name, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "// Default{} creates a default valid {}.", s.name, s.name).unwrap();
         writeln!(out, "func Default{}() {} {{", s.name, s.name).unwrap();
@@ -1417,6 +1446,7 @@ fn go_return_type(type_name: &str, mult: &Multiplicity) -> String {
 fn go_default_value(target: &str, mult: &Multiplicity) -> String {
     go_default_value_inner(target, mult, &HashSet::new())
 }
+
 
 fn go_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     match mult {

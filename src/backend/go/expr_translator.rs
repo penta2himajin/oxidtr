@@ -1,7 +1,7 @@
 use crate::parser::ast::*;
-use crate::ir::nodes::OxidtrIR;
+use crate::ir::nodes::{OxidtrIR, IRField};
 use crate::backend::{TargetLang, resolve_type, is_native_type_alias};
-use std::collections::{HashSet, BTreeSet};
+use std::collections::{HashSet, BTreeSet, HashMap};
 
 /// TC field info.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -115,19 +115,42 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir)
+    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
 }
 
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
-            }
+/// Maps a quantifier-bound variable to the sig it ranges over.
+///
+/// Resolving a field through the *binding* is the only sound way to type an
+/// expression: looking a field up by name across every sig silently picks the
+/// wrong one whenever two sigs share a field name, which produced both
+/// non-compiling closures and vet-clean-but-always-false membership tests.
+type TypeEnv = HashMap<String, String>;
+
+/// The sig name an expression denotes, or `None` if it is not a sig-valued
+/// expression (a literal, a native scalar, an unresolvable domain).
+fn expr_sig(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv) -> Option<String> {
+    match expr {
+        Expr::VarRef(name) => env.get(name).cloned()
+            .or_else(|| sig_names.contains(name).then(|| name.clone())),
+        Expr::FieldAccess { base, field } => {
+            resolve_field(base, field, sig_names, ir, env).map(|f| f.target.clone())
         }
+        _ => None,
     }
-    None
+}
+
+/// Resolve `base.field` to the actual field declaration, via `base`'s sig.
+fn resolve_field<'a>(
+    base: &Expr,
+    field: &str,
+    sig_names: &HashSet<String>,
+    ir: &'a OxidtrIR,
+    env: &TypeEnv,
+) -> Option<&'a IRField> {
+    let sig = expr_sig(base, sig_names, ir, env)?;
+    ir.structures.iter()
+        .find(|s| s.name == sig)
+        .and_then(|s| s.fields.iter().find(|f| f.name == field))
 }
 
 fn translate_inner(
@@ -135,8 +158,9 @@ fn translate_inner(
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -165,7 +189,7 @@ fn translate_inner(
                 // `equal` helper, which is correct for every type.
                 CompareOp::Eq => {
                     let (l, r) = (ti(left, false), ti(right, false));
-                    if is_primitive_operand(left, ir) && is_primitive_operand(right, ir) {
+                    if is_primitive_operand(left, sig_names, ir, env) && is_primitive_operand(right, sig_names, ir, env) {
                         format!("{l} == {r}")
                     } else {
                         format!("equal({l}, {r})")
@@ -173,7 +197,7 @@ fn translate_inner(
                 }
                 CompareOp::NotEq => {
                     let (l, r) = (ti(left, false), ti(right, false));
-                    if is_primitive_operand(left, ir) && is_primitive_operand(right, ir) {
+                    if is_primitive_operand(left, sig_names, ir, env) && is_primitive_operand(right, sig_names, ir, env) {
                         format!("{l} != {r}")
                     } else {
                         format!("!equal({l}, {r})")
@@ -186,11 +210,16 @@ fn translate_inner(
                 CompareOp::In => {
                     let l = ti(left, false);
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
-                        let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
-                            // `lone` lowers to *T, so `==` against the bare value
-                            // is a type error; equal() derefs before comparing.
-                            return format!("equal({r_base}.{}, {l})", capitalize(field));
+                        // Resolve through the base's own sig: picking the first
+                        // same-named field would treat a `set` as `lone` and
+                        // silently emit an always-false equality check.
+                        if let Some(f) = resolve_field(base, field, sig_names, ir, env) {
+                            if f.mult == Multiplicity::Lone {
+                                // `lone` lowers to *T, so `==` against the bare
+                                // value is a type error; equal() derefs first.
+                                let r_base = ti(base, false);
+                                return format!("equal({r_base}.{}, {l})", capitalize(field));
+                            }
                         }
                     }
                     let r = ti(right, false);
@@ -209,8 +238,14 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            let b = ti(body, false);
-            build_nested_quantifier(kind, bindings, &b, sig_names, ir)
+            let mut inner = env.clone();
+            for bd in bindings {
+                if let Some(sig) = expr_sig(&bd.domain, sig_names, ir, env) {
+                    for v in &bd.vars { inner.insert(v.clone(), sig.clone()); }
+                }
+            }
+            let b = translate_inner(body, false, sig_names, ir, &inner);
+            build_nested_quantifier(kind, bindings, &b, sig_names, ir, env)
         }
 
         Expr::SetOp { op, left, right } => {
@@ -281,42 +316,44 @@ fn translate_inner(
 /// True when the operand's static Go type is a primitive, so `==` is legal.
 /// A sig lowers to a struct that may contain slice fields, and Go rejects `==`
 /// on those outright ("struct containing []T cannot be compared").
-fn is_primitive_operand(expr: &Expr, ir: &OxidtrIR) -> bool {
+fn is_primitive_operand(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv) -> bool {
     match expr {
         Expr::IntLiteral(_) | Expr::Cardinality(_) => true,
-        Expr::FieldAccess { field, .. } => {
-            let resolved: BTreeSet<(&str, bool)> = ir.structures.iter()
-                .flat_map(|s| s.fields.iter())
-                .filter(|f| f.name == *field)
-                .map(|f| (f.target.as_str(), f.mult == Multiplicity::One))
-                .collect();
-            match resolved.iter().next() {
-                Some((target, is_one)) if resolved.len() == 1 => {
-                    *is_one && is_native_type_alias(target)
-                }
-                _ => false,
+        Expr::FieldAccess { base, field } => {
+            match resolve_field(base, field, sig_names, ir, env) {
+                // A map field's `target` names only its KEY type — the Go type
+                // is a map, which Go can compare to nothing but nil.
+                Some(f) => f.value_type.is_none()
+                    && f.mult == Multiplicity::One
+                    && is_native_type_alias(&f.target),
+                None => false,
             }
         }
         _ => false,
     }
 }
 
-fn domain_element_type(domain: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Option<String> {
+fn domain_element_type(
+    domain: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> Option<String> {
+    expr_sig(domain, sig_names, ir, env).map(|s| resolve_type(TargetLang::Go, &s))
+}
+
+/// The multiplicity of a field-access domain, so a singleton relation can be
+/// lifted into the slice `forAll`/`exists` require. A bare sig domain is the
+/// generated collection parameter and is already a slice.
+fn domain_multiplicity(
+    domain: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> Option<Multiplicity> {
     match domain {
-        Expr::VarRef(name) if sig_names.contains(name) => {
-            Some(resolve_type(TargetLang::Go, name))
-        }
-        Expr::FieldAccess { field, .. } => {
-            let targets: BTreeSet<&str> = ir.structures.iter()
-                .flat_map(|s| s.fields.iter())
-                .filter(|f| f.name == *field)
-                .map(|f| f.target.as_str())
-                .collect();
-            if targets.len() == 1 {
-                Some(resolve_type(TargetLang::Go, targets.iter().next().unwrap()))
-            } else {
-                None
-            }
+        Expr::FieldAccess { base, field } => {
+            resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone())
         }
         _ => None,
     }
@@ -328,18 +365,26 @@ fn build_nested_quantifier(
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
     let mut vars: Vec<(String, String, bool, String)> = Vec::new();
     for b in bindings {
-        let d = if let Expr::VarRef(name) = &b.domain {
+        let raw = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
             else { name.clone() }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir)
+            translate_inner(&b.domain, false, sig_names, ir, env)
+        };
+        // forAll/exists take a slice, but Alloy also quantifies over singleton
+        // relations — lift `one`/`lone` domains rather than emit a type error.
+        let d = match domain_multiplicity(&b.domain, sig_names, ir, env) {
+            Some(Multiplicity::One) => format!("oneOf({raw})"),
+            Some(Multiplicity::Lone) => format!("loneOf({raw})"),
+            _ => raw,
         };
         // `any` is Go's empty interface: a domain we cannot resolve still
         // parses, instead of emitting an outright syntax error.
-        let elem_ty = domain_element_type(&b.domain, sig_names, ir)
+        let elem_ty = domain_element_type(&b.domain, sig_names, ir, env)
             .unwrap_or_else(|| "any".to_string());
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj, elem_ty.clone()));
@@ -356,7 +401,7 @@ fn build_nested_quantifier(
             while i < vars.len() && vars[i].2 && vars[i].1 == *domain { i += 1; }
             for a in start..i {
                 for b_idx in (a+1)..i {
-                    disj_checks.push(format!("{} != {}", vars[a].0, vars[b_idx].0));
+                    disj_checks.push(format!("!equal({}, {})", vars[a].0, vars[b_idx].0));
                 }
             }
         } else { i += 1; }
@@ -367,8 +412,11 @@ fn build_nested_quantifier(
     } else {
         let guard = disj_checks.join(" && ");
         match kind {
-            QuantKind::All | QuantKind::No => format!("if ({guard}) {{ {body_str} }} else {{ true }}"),
-            QuantKind::Some => format!("{guard} && {body_str}"),
+            // A non-distinct tuple must not falsify a universal, so it yields
+            // true. For `no`/`some` the tuple must instead simply not count,
+            // and those are wrapped in exists(..) — so it yields false.
+            QuantKind::All => format!("!({guard}) || ({body_str})"),
+            QuantKind::Some | QuantKind::No => format!("({guard}) && ({body_str})"),
         }
     };
 

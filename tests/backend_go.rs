@@ -325,3 +325,150 @@ fn go_fixture_factory_exists_for_interface_style_abstract_sig() {
         "expected the fieldless variant as the default:\n{fixtures}"
     );
 }
+
+// ── Adversarial compile correctness (#89 peer review) ───────────────────────
+// Each of these produced non-compiling or silently-wrong Go. Root cause for
+// most: the translator resolved field types by NAME across all sigs instead of
+// through the bound variable's actual type.
+
+/// Two sigs may share a field name with different targets. Resolving `a.items`
+/// by name alone is ambiguous, and falling back to `any` makes the closure
+/// incompatible with `forAll`'s `func(T) bool`.
+#[test]
+fn go_same_named_fields_on_different_sigs_resolve_per_binding() {
+    let files = generate_go(r#"
+        sig Item {}
+        sig Other {}
+        sig A { items: set Item }
+        sig B { items: set Other }
+        assert ReflexiveItems { all a: A | all i: a.items | i = i }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("func(i Item) bool"),
+        "the domain must resolve through the binding `a: A`, not by field name:\n{tests}"
+    );
+    assert!(
+        !tests.contains("func(i any) bool"),
+        "must not degrade to `any` — forAll requires an exact func(T) bool:\n{tests}"
+    );
+}
+
+/// A map field's `target` is only its KEY type; the Go type is a map, and Go
+/// rejects `==` on maps.
+#[test]
+fn go_map_field_comparison_does_not_use_equality_operator() {
+    let files = generate_go(r#"
+        sig Value {}
+        sig Config { settings: one Int -> Value }
+        assert ReflexiveSettings { all c: Config | c.settings = c.settings }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        !tests.contains("c.Settings == c.Settings"),
+        "maps can only be compared to nil in Go:\n{tests}"
+    );
+    assert!(
+        tests.contains("equal(c.Settings, c.Settings)"),
+        "map comparison must route through the DeepEqual helper:\n{tests}"
+    );
+}
+
+/// `x in setField` must become a membership test. Picking the first same-named
+/// field's multiplicity turned this into an equality check that is always
+/// false — vet-clean but silently wrong, the worst failure mode.
+#[test]
+fn go_membership_uses_binding_type_not_first_same_named_field() {
+    let files = generate_go(r#"
+        sig Item {}
+        sig OptionalBox { item: lone Item }
+        sig SetBox { item: set Item }
+        assert SetMembership { all b: SetBox | all i: Item | i in b.item }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("contains(b.Item, i)"),
+        "`in` over a set field must be a membership test:\n{tests}"
+    );
+    assert!(
+        !tests.contains("equal(b.Item, i)"),
+        "must not treat SetBox.item as lone just because OptionalBox.item is:\n{tests}"
+    );
+}
+
+/// A concrete variant is assignable to its abstract interface, but a generic
+/// `contains[T]` forces both arguments to the same static type.
+#[test]
+fn go_contains_helper_accepts_variant_against_interface_slice() {
+    let files = generate_go(r#"
+        sig Marker {}
+        abstract sig Shape {}
+        sig Circle extends Shape { marker: lone Marker }
+        sig Square extends Shape {}
+        sig Drawing { shapes: set Shape }
+        assert CircleMembership { all d: Drawing | all c: Circle | c in d.shapes }
+    "#);
+    let helpers = find_file(&files, "helpers.go");
+    assert!(
+        !helpers.contains("func contains[T"),
+        "a generic contains rejects Circle against []Shape:\n{helpers}"
+    );
+    assert!(
+        helpers.contains("func contains(xs any, v any) bool"),
+        "contains must accept a variant against its interface slice:\n{helpers}"
+    );
+}
+
+/// Alloy permits quantifying over a singleton relation. `forAll` takes `[]T`,
+/// so a `one`/`lone` domain must be lifted into a slice first.
+#[test]
+fn go_quantification_over_singleton_field_is_lifted_to_slice() {
+    let files = generate_go(r#"
+        sig Item { marker: lone Int }
+        sig A { item: one Item }
+        assert ReflexiveItem { all a: A | all i: a.item | i = i }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("oneOf(a.Item)"),
+        "a `one` domain must be lifted into a slice for forAll:\n{tests}"
+    );
+}
+
+/// A field targeting a fieldless sig emits `DefaultX()`, so that factory must
+/// exist — previously fieldless sigs were skipped, leaving it undefined.
+#[test]
+fn go_default_value_for_fieldless_target_constructs_directly() {
+    let files = generate_go(r#"
+        sig Leaf {}
+        abstract sig Shape {}
+        sig Circle extends Shape { leaf: one Leaf }
+        sig Square extends Shape { leaf: one Leaf }
+        sig Drawing { shape: one Shape }
+    "#);
+    let fixtures = find_file(&files, "fixtures.go");
+    assert!(
+        fixtures.contains("func DefaultLeaf() Leaf { return Leaf{} }"),
+        "a fieldless sig still needs a factory — fields targeting it emit DefaultLeaf():\n{fixtures}"
+    );
+}
+
+/// `disj` guards were emitted as an `if` statement in expression position,
+/// which does not parse as Go.
+#[test]
+fn go_disjoint_quantifier_emits_boolean_expression_not_if_statement() {
+    let files = generate_go(r#"
+        sig Tag {}
+        sig Person { tags: set Tag }
+        assert DistinctPeople { all disj a, b: Person | a != b }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        !tests.contains("if ("),
+        "Go's `if` is a statement and cannot be a return expression:\n{tests}"
+    );
+    assert!(
+        !tests.contains("a != b"),
+        "Person contains a slice, so `!=` is illegal:\n{tests}"
+    );
+}
