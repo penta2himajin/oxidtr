@@ -621,12 +621,15 @@ pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
     }
 }
 
-/// Does this expression call an operation whose body quantifies over a sig
-/// universe that is not one of its parameters? The generated function has no
-/// way to see that collection, so the call does not compile — and the caller
-/// has no way to pass it.
-pub fn calls_op_with_free_universe(expr: &Expr, ir: &OxidtrIR) -> bool {
-    fn body_has_free_universe(op: &OperationNode, ir: &OxidtrIR) -> bool {
+/// Does this expression call a `pred`/`fun` whose body iterates over *all*
+/// instances of a sig that it never received as a parameter?
+///
+/// `pred Pos { all p: P | p.x >= 0 }` takes no arguments but walks every `P`,
+/// so it compiles to `fn pos() -> bool { ps.iter().all(..) }` with `ps`
+/// undefined. The call site `Pos[]` has no argument to pass it through either,
+/// so there is nothing a generated test could hand it.
+pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
+    fn body_scans_an_unpassed_sig(op: &OperationNode, ir: &OxidtrIR) -> bool {
         let param_types: std::collections::HashSet<&str> =
             op.params.iter().map(|p| p.type_name.as_str()).collect();
         let sig_names: std::collections::HashSet<&str> =
@@ -667,7 +670,7 @@ pub fn calls_op_with_free_universe(expr: &Expr, ir: &OxidtrIR) -> bool {
                 if seen.iter().any(|n| n == name) { return false; }
                 seen.push(name.clone());
                 let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
-                    .any(|op| body_has_free_universe(op, ir)
+                    .any(|op| body_scans_an_unpassed_sig(op, ir)
                         || op.body.iter().any(|b| walk(b, ir, seen)));
                 seen.pop();
                 hit

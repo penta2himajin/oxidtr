@@ -1282,12 +1282,12 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // strictly different property that compiles and passes green.
         // A formula whose only temporal operator is inside a called pred has
         // no surface kind, so classification alone never reaches the gate.
-        // A callee that quantifies over a sig universe it was not passed also
-        // cannot be called from a trace checker.
+        // A pred that walks every instance of a sig it was not handed cannot
+        // be called from a trace checker either — the collection is undefined.
         if (!analyze::snapshot_is_sound(&prop.expr, ir)
             && !analyze::temporal_is_outermost(&prop.expr, ir))
             || (analyze::contains_temporal(&prop.expr, ir)
-                && analyze::calls_op_with_free_universe(&prop.expr, ir))
+                && analyze::calls_op_scanning_an_unpassed_sig(&prop.expr, ir))
         {
             writeln!(out, "// oxidtr: skipped {} — temporal content the snapshot path", prop.name).unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
@@ -1437,7 +1437,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if (!analyze::snapshot_is_sound(&constraint.expr, ir)
             && !analyze::temporal_is_outermost(&constraint.expr, ir))
             || (analyze::contains_temporal(&constraint.expr, ir)
-                && analyze::calls_op_with_free_universe(&constraint.expr, ir))
+                && analyze::calls_op_scanning_an_unpassed_sig(&constraint.expr, ir))
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
