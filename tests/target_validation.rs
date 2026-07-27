@@ -14,6 +14,7 @@ use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::backend::go;
 use oxidtr::backend::swift;
+use oxidtr::backend::csharp;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -751,4 +752,55 @@ fn swift_adversarial_models_compile() {
             "{name}: expected {expected:?} in generated Swift, got:\n{all}"
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// C# — dotnet build
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// C# has never been compile-verified; it was *assumed* to work because it
+/// PascalCases enum members (dodging reserved words) and its classes are
+/// reference types (dodging recursive value types). Go and Swift were assumed
+/// to work too. See #84.
+#[test]
+#[ignore]
+fn cs_self_hosted_compiles() {
+    let ir = parse_and_lower();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    for file in &csharp::generate(&ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+    std::fs::write(
+        dir.join("generated.csproj"),
+        r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>OxidtrGenerated</AssemblyName>
+    <RootNamespace>OxidtrGenerated</RootNamespace>
+    <NoWarn>CS8618;CS8625;CS8600;CS8602;CS8603</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+  </ItemGroup>
+</Project>
+"#,
+    )
+    .unwrap();
+
+    let out = std::process::Command::new("dotnet")
+        .args(["build", "--nologo", "-v", "q"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run dotnet build (is the .NET SDK installed?)");
+    assert!(
+        out.status.success(),
+        "dotnet build on generated C# failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
