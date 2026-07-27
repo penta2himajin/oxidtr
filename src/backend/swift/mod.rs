@@ -74,8 +74,11 @@ impl SwiftContext {
         }
         let enum_parents: HashSet<String> = ir.structures.iter()
             .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
+        // A child that is itself an enum still needs its own declaration — it is
+        // a nested type, not a case whose payload got inlined into the parent.
         let variant_names: HashSet<String> = ir.structures.iter()
-            .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
+            .filter(|s| !s.is_enum
+                && s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
             .map(|s| s.name.clone()).collect();
         let struct_map: HashMap<String, StructureNode> = ir.structures.iter()
             .map(|s| (s.name.clone(), s.clone()))
@@ -656,11 +659,11 @@ fn variant_domain<'a>(params: &'a [(String, String)], ctx: &SwiftContext) -> Opt
 fn unrenderable_case_ref(body: &str, refs: &[String]) -> Option<String> {
     // Match on an identifier boundary: `Expr.lit` is a prefix of the perfectly
     // valid `Expr.literal`.
-    let ends_identifier = |hay: &str, at: usize| {
-        hay[at..].chars().next().is_none_or(|c| !c.is_alphanumeric() && c != '_')
-    };
+    let boundary = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '.');
     refs.iter().find(|r| {
-        body.match_indices(r.as_str()).any(|(i, m)| ends_identifier(body, i + m.len()))
+        body.match_indices(r.as_str()).any(|(i, m)| {
+            boundary(body[..i].chars().next_back()) && boundary(body[i + m.len()..].chars().next())
+        })
     }).cloned()
 }
 
@@ -1224,7 +1227,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             let val = if f.value_type.is_some() {
                 "[:]".to_string()
             } else if matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
-                && super::is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
+                && super::is_safe_set_population(&s.name, &f.target, ir, &fixture_types)
+                && ctx.terminating.contains(&f.target) {
                 let safe = HashSet::from([f.target.clone()]);
                 swift_default_value_inner(&f.target, &f.mult, &safe)
             } else {

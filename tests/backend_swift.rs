@@ -15,6 +15,16 @@ fn find_file<'a>(files: &'a [GeneratedFile], path: &str) -> &'a str {
         .unwrap_or_else(|| panic!("file {path} not found"))
 }
 
+/// Slice one generated function out of a file. Asserting against a whole file
+/// lets a claim about `defaultX` be satisfied by `anomalyEmptyX` instead.
+fn func_body<'a>(src: &'a str, header: &str) -> &'a str {
+    let start = src.find(header)
+        .unwrap_or_else(|| panic!("no `{header}` in:\n{src}"));
+    let rest = &src[start + header.len()..];
+    let end = rest.find("\nfunc ").unwrap_or(rest.len());
+    &rest[..end]
+}
+
 // ── Models.swift ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -558,7 +568,8 @@ fn swift_anomaly_fixture_escapes_reserved_argument_labels() {
          assert Reflexive { all n: Node | n = n }",
     );
     let f = find_file(&files, "Fixtures.swift");
-    assert!(f.contains("`inout`: defaultVal()"), "got:\n{f}");
+    let anomaly = func_body(f, "func anomalyEmptyNode() -> Node {");
+    assert!(anomaly.contains("`inout`: defaultVal()"), "got:\n{anomaly}");
 }
 
 #[test]
@@ -617,4 +628,37 @@ fn swift_mutually_recursive_sets_are_still_constructible() {
     let f = find_file(&files, "Fixtures.swift");
     assert!(f.contains("func defaultA() -> A {"), "got:\n{f}");
     assert!(!f.contains("func defaultA() -> A { fatalError"), "A is constructible:\n{f}");
+}
+
+#[test]
+fn swift_nested_enum_gets_its_own_declaration() {
+    // An abstract child of an abstract sig is itself an enum, so suppressing it
+    // as a "variant" leaves `defaultInner() -> Inner` with no `Inner` type.
+    let files = generate_swift("abstract sig Outer {}\nabstract sig Inner extends Outer {}\nsig Leaf extends Inner {}");
+    let m = find_file(&files, "Models.swift");
+    assert!(m.contains("enum Inner:"), "nested enum must be declared:\n{m}");
+    assert!(m.contains("case leaf"), "got:\n{m}");
+}
+
+#[test]
+fn swift_set_is_not_seeded_with_a_trapping_factory() {
+    // defaultNode() is a fatalError, so seeding Box.nodes with it would trap.
+    let files = generate_swift(
+        "abstract sig Expr {}\nsig ViaBox extends Expr { box: one Box }\n\
+         sig Box { nodes: set Node }\nsig Node { next: one Node }",
+    );
+    let f = find_file(&files, "Fixtures.swift");
+    let boxed = func_body(f, "func defaultBox() -> Box {");
+    assert!(boxed.contains("nodes: Set()"), "got:\n{boxed}");
+}
+
+#[test]
+fn swift_native_defaults_are_in_the_default_fixture_itself() {
+    // Not merely somewhere in the file — `anomalyEmptyNode` has the same shape.
+    let files = generate_swift("sig Node { tag: one Int, name: one Str, ok: one Bool, marks: set Int }");
+    let f = find_file(&files, "Fixtures.swift");
+    let default_node = func_body(f, "func defaultNode() -> Node {");
+    assert!(default_node.contains("tag: 0"), "got:\n{default_node}");
+    assert!(default_node.contains("name: \"\""), "got:\n{default_node}");
+    assert!(default_node.contains("ok: false"), "got:\n{default_node}");
 }

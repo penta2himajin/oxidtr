@@ -631,7 +631,7 @@ fn swift_adversarial_models_compile() {
          "let settings: [Int: Value]"),
         ("native_scalar_fields",
          "sig Node { tag: one Int, name: one Str, ok: one Bool, marks: set Int }",
-         "name: \"\","),
+         "func defaultNode() -> Node {\n    Node(\n        tag: 0,\n        name: \"\","),
         ("variant_with_inherited_fields",
          "sig Leaf {}\nabstract sig Shape { leaf: one Leaf }\nsig Circle extends Shape {}\n\
           sig Square extends Shape {}\nsig Drawing { shape: one Shape }",
@@ -688,10 +688,22 @@ fn swift_adversarial_models_compile() {
         ("reserved_argument_label",
          "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
           assert Reflexive { all n: Node | n = n }",
-         "`inout`: defaultVal()"),
+         "func anomalyEmptyNode() -> Node {\n    Node(\n        `inout`: defaultVal(),"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
          "marks: Set([0, 1])"),
+        ("nested_enum_is_declared",
+         "abstract sig Outer {}\nabstract sig Inner extends Outer {}\nsig Leaf extends Inner {}",
+         "enum Inner:"),
+        ("set_not_seeded_with_trapping_factory",
+         "abstract sig Expr {}\nsig ViaBox extends Expr { box: one Box }\n\
+          sig Box { nodes: set Node }\nsig Node { next: one Node }",
+         "func defaultBox() -> Box {\n    Box(\n        nodes: Set()"),
+        ("case_ref_guard_respects_left_boundary",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Value { lit: one Int }\nsig Holder { myExpr: one Value }\n\
+          assert A { all h: Holder | h.myExpr.lit = h.myExpr.lit }",
+         "h.myExpr.lit == h.myExpr.lit"),
         ("recursive_class_identity_equality",
          "sig Node { var parent: lone Node }",
          "        lhs === rhs"),
