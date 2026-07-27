@@ -6,3 +6,6 @@
 /generated-swift
 /generated-go
 /local_docs
+
+# Peer-review scratch (askcodex writes repro crates here)
+.round*-review/
