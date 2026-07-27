@@ -511,3 +511,123 @@ fn go_transitive_closure_domain_resolves_element_type() {
     );
     assert!(!tests.contains("func(p any) bool"), "must not degrade to any:\n{tests}");
 }
+
+// ── Second review round (#89) ───────────────────────────────────────────────
+
+/// A variant with no fields of its own still inherits its abstract parent's,
+/// so it is a struct — `return Circle` (a bare type name) is not an expression.
+#[test]
+fn go_variant_default_accounts_for_inherited_parent_fields() {
+    let files = generate_go(r#"
+        sig Leaf {}
+        abstract sig Shape { leaf: one Leaf }
+        sig Circle extends Shape {}
+        sig Square extends Shape {}
+        sig Drawing { shape: one Shape }
+    "#);
+    let fixtures = find_file(&files, "fixtures.go");
+    assert!(
+        !fixtures.contains("return Circle }") && !fixtures.contains("return Circle\n"),
+        "Circle inherits `leaf`, so it must be constructed, not named:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("Circle{"),
+        "expected a constructed variant:\n{fixtures}"
+    );
+}
+
+/// Bindings in one quantifier are sequential: `all b: Box, x: b.items | ...`
+/// binds `b` before `x`'s domain is resolved.
+#[test]
+fn go_dependent_bindings_in_one_quantifier_resolve_sequentially() {
+    let files = generate_go(r#"
+        sig Item {}
+        sig Box { items: set Item }
+        assert R { all b: Box, x: b.items | x = x }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("func(x Item) bool"),
+        "`x: b.items` must resolve through the earlier binding `b: Box`:\n{tests}"
+    );
+}
+
+/// A field declared on an abstract parent is reachable through the child.
+#[test]
+fn go_inherited_field_resolves_through_child_sig() {
+    let files = generate_go(r#"
+        sig Item {}
+        abstract sig Parent { items: set Item }
+        sig Child extends Parent { marker: lone Item }
+        assert R { all c: Child | all i: c.items | i = i }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("func(i Item) bool"),
+        "`items` is inherited from Parent and must still resolve:\n{tests}"
+    );
+}
+
+/// `disj` applies within each declaration group, not across groups: in
+/// `all disj a,b: S, disj c,d: S | ...`, `a` and `c` may be equal.
+#[test]
+fn go_disjoint_groups_do_not_impose_cross_group_distinctness() {
+    let files = generate_go(r#"
+        sig S { id: one Int }
+        assert R { all disj a, b: S, disj c, d: S | a = c }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("!equal(a, b)") && tests.contains("!equal(c, d)"),
+        "each group must be pairwise distinct:\n{tests}"
+    );
+    assert!(
+        !tests.contains("!equal(a, c)") && !tests.contains("!equal(b, d)"),
+        "distinctness must not be imposed across separate disj groups:\n{tests}"
+    );
+}
+
+/// `x in oneField` is membership in a singleton relation — true iff equal.
+/// Routing it through the slice-only `contains` made it always false.
+#[test]
+fn go_membership_in_one_relation_is_equality_not_slice_contains() {
+    let files = generate_go(r#"
+        sig Item {}
+        sig Box { item: one Item }
+        assert R { all b: Box | b.item in b.item }
+    "#);
+    let tests = find_file(&files, "models_test.go");
+    assert!(
+        tests.contains("equal(b.Item, b.Item)"),
+        "a `one` relation's membership is equality:\n{tests}"
+    );
+    assert!(
+        !tests.contains("contains(b.Item"),
+        "contains() takes a slice; b.Item is a single value:\n{tests}"
+    );
+}
+
+/// Transitive closure must terminate on a cyclic graph. All three
+/// multiplicities were unsafe: `lone` looped forever on a self-reference,
+/// `set` keyed its visited map on `len(result)` (always new), and `one`
+/// simply emitted a hardcoded 1000 iterations.
+#[test]
+fn go_transitive_closure_is_cycle_safe() {
+    let files = generate_go(r#"
+        sig Node { parent: lone Node }
+        assert R { all n: Node | all x: n.^parent | x = x }
+    "#);
+    let helpers = find_file(&files, "helpers.go");
+    assert!(
+        !helpers.contains("i < 1000"),
+        "a hardcoded iteration cap is not a closure:\n{helpers}"
+    );
+    assert!(
+        !helpers.contains("idx := len(result)"),
+        "keying `seen` on len(result) never repeats and never terminates a cycle:\n{helpers}"
+    );
+    assert!(
+        helpers.contains("seen[") || helpers.contains("contains(result"),
+        "closure must track visited nodes to terminate on a cycle:\n{helpers}"
+    );
+}

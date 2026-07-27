@@ -150,10 +150,16 @@ fn resolve_field<'a>(
     ir: &'a OxidtrIR,
     env: &TypeEnv,
 ) -> Option<&'a IRField> {
-    let sig = expr_sig(base, sig_names, ir, env)?;
-    ir.structures.iter()
-        .find(|s| s.name == sig)
-        .and_then(|s| s.fields.iter().find(|f| f.name == field))
+    let mut sig = expr_sig(base, sig_names, ir, env)?;
+    // Walk the inheritance chain: a field declared on an abstract parent is
+    // reachable through the child.
+    loop {
+        let st = ir.structures.iter().find(|s| s.name == sig)?;
+        if let Some(f) = st.fields.iter().find(|f| f.name == field) {
+            return Some(f);
+        }
+        sig = st.parent.clone()?;
+    }
 }
 
 fn translate_inner(
@@ -217,7 +223,10 @@ fn translate_inner(
                         // same-named field would treat a `set` as `lone` and
                         // silently emit an always-false equality check.
                         if let Some(f) = resolve_field(base, field, sig_names, ir, env) {
-                            if f.mult == Multiplicity::Lone {
+                            // A singleton relation contains exactly its own
+                            // value; contains() takes a slice and would be
+                            // vet-clean but always false here.
+                            if matches!(f.mult, Multiplicity::Lone | Multiplicity::One) {
                                 // `lone` lowers to *T, so `==` against the bare
                                 // value is a type error; equal() derefs first.
                                 let r_base = ti(base, false);
@@ -241,9 +250,11 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
+            // Bindings are sequential: `all b: Box, x: b.items | ..` binds `b`
+            // before `x`'s domain is resolved, so extend as we go.
             let mut inner = env.clone();
             for bd in bindings {
-                if let Some(sig) = expr_sig(&bd.domain, sig_names, ir, env) {
+                if let Some(sig) = expr_sig(&bd.domain, sig_names, ir, &inner) {
                     for v in &bd.vars { inner.insert(v.clone(), sig.clone()); }
                 }
             }
@@ -371,43 +382,44 @@ fn build_nested_quantifier(
     env: &TypeEnv,
 ) -> String {
     let mut vars: Vec<(String, String, bool, String)> = Vec::new();
+    let mut scope = env.clone();
     for b in bindings {
         let raw = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
             else { name.clone() }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir, env)
+            translate_inner(&b.domain, false, sig_names, ir, &scope)
         };
         // forAll/exists take a slice, but Alloy also quantifies over singleton
         // relations — lift `one`/`lone` domains rather than emit a type error.
-        let d = match domain_multiplicity(&b.domain, sig_names, ir, env) {
+        let d = match domain_multiplicity(&b.domain, sig_names, ir, &scope) {
             Some(Multiplicity::One) => format!("oneOf({raw})"),
             Some(Multiplicity::Lone) => format!("loneOf({raw})"),
             _ => raw,
         };
         // `any` is Go's empty interface: a domain we cannot resolve still
         // parses, instead of emitting an outright syntax error.
-        let elem_ty = domain_element_type(&b.domain, sig_names, ir, env)
+        let elem_ty = domain_element_type(&b.domain, sig_names, ir, &scope)
             .unwrap_or_else(|| "any".to_string());
+        if let Some(sig) = expr_sig(&b.domain, sig_names, ir, &scope) {
+            for v in &b.vars { scope.insert(v.clone(), sig.clone()); }
+        }
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj, elem_ty.clone()));
         }
     }
 
-    // Build disj checks
+    // `disj` scopes to its own declaration: in `all disj a,b: S, disj c,d: S`
+    // only (a,b) and (c,d) must differ — a and c may be equal. Grouping by
+    // rendered domain instead merged adjacent declarations and over-constrained.
     let mut disj_checks = Vec::new();
-    let mut i = 0;
-    while i < vars.len() {
-        if vars[i].2 {
-            let domain = &vars[i].1;
-            let start = i;
-            while i < vars.len() && vars[i].2 && vars[i].1 == *domain { i += 1; }
-            for a in start..i {
-                for b_idx in (a+1)..i {
-                    disj_checks.push(format!("!equal({}, {})", vars[a].0, vars[b_idx].0));
-                }
+    for b in bindings {
+        if !b.disj { continue; }
+        for a in 0..b.vars.len() {
+            for c in (a + 1)..b.vars.len() {
+                disj_checks.push(format!("!equal({}, {})", b.vars[a], b.vars[c]));
             }
-        } else { i += 1; }
+        }
     }
 
     let guarded_body = if disj_checks.is_empty() {

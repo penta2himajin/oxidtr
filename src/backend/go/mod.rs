@@ -577,13 +577,18 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
     let sig = &tc.sig_name;
     let field = expr_translator::capitalize(&tc.field_name);
 
+    // Every variant must terminate on a cyclic graph. Previously: `lone` looped
+    // forever on a self-reference, `set` keyed its visited map on len(result)
+    // (which never repeats), and `one` just ran a hardcoded 1000 iterations.
     writeln!(out, "// {fn_name} computes the transitive closure for {sig}.{field}.").unwrap();
     match tc.mult {
         Multiplicity::Lone => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
+            writeln!(out, "\tseen := make(map[*{sig}]bool)").unwrap();
             writeln!(out, "\tcurrent := start.{field}").unwrap();
-            writeln!(out, "\tfor current != nil {{").unwrap();
+            writeln!(out, "\tfor current != nil && !seen[current] {{").unwrap();
+            writeln!(out, "\t\tseen[current] = true").unwrap();
             writeln!(out, "\t\tresult = append(result, *current)").unwrap();
             writeln!(out, "\t\tcurrent = current.{field}").unwrap();
             writeln!(out, "\t}}").unwrap();
@@ -593,18 +598,15 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
         Multiplicity::Set | Multiplicity::Seq => {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
-            writeln!(out, "\tqueue := make([]{sig}, len(start.{field}))").unwrap();
-            writeln!(out, "\tcopy(queue, start.{field})").unwrap();
-            writeln!(out, "\tseen := make(map[int]bool)").unwrap();
+            writeln!(out, "\tqueue := append([]{sig}{{}}, start.{field}...)").unwrap();
             writeln!(out, "\tfor len(queue) > 0 {{").unwrap();
             writeln!(out, "\t\tnext := queue[0]").unwrap();
             writeln!(out, "\t\tqueue = queue[1:]").unwrap();
-            writeln!(out, "\t\tidx := len(result)").unwrap();
-            writeln!(out, "\t\tif !seen[idx] {{").unwrap();
-            writeln!(out, "\t\t\tseen[idx] = true").unwrap();
-            writeln!(out, "\t\t\tresult = append(result, next)").unwrap();
-            writeln!(out, "\t\t\tqueue = append(queue, next.{field}...)").unwrap();
+            writeln!(out, "\t\tif contains(result, next) {{").unwrap();
+            writeln!(out, "\t\t\tcontinue").unwrap();
             writeln!(out, "\t\t}}").unwrap();
+            writeln!(out, "\t\tresult = append(result, next)").unwrap();
+            writeln!(out, "\t\tqueue = append(queue, next.{field}...)").unwrap();
             writeln!(out, "\t}}").unwrap();
             writeln!(out, "\treturn result").unwrap();
             writeln!(out, "}}").unwrap();
@@ -613,7 +615,7 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
             writeln!(out, "\tvar result []{sig}").unwrap();
             writeln!(out, "\tcurrent := start.{field}").unwrap();
-            writeln!(out, "\tfor i := 0; i < 1000; i++ {{").unwrap();
+            writeln!(out, "\tfor !contains(result, current) {{").unwrap();
             writeln!(out, "\t\tresult = append(result, current)").unwrap();
             writeln!(out, "\t\tcurrent = current.{field}").unwrap();
             writeln!(out, "\t}}").unwrap();
@@ -1254,9 +1256,12 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                 Some(v) if !v.is_empty() => v,
                 _ => continue,
             };
-            let all_unit = variants.iter().all(|v| {
-                ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
+            // A variant with no fields of its OWN still inherits its abstract
+            // parent's, so it lowers to a struct, not an iota constant.
+            let effective_fields = |v: &str| -> usize {
+                ctx.struct_map.get(v).map_or(0, |st| st.fields.len()) + s.fields.len()
+            };
+            let all_unit = variants.iter().all(|v| effective_fields(v) == 0);
             // All-unit hierarchies lower to `type X int` + iota constants, so the
             // default is the bare constant. A hierarchy with any data-carrying
             // variant lowers to an interface whose variants are structs, so the
@@ -1267,9 +1272,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
             let default_expr = if all_unit {
                 variants[0].clone()
             } else {
-                match variants.iter().find(|v| {
-                    ctx.struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-                }) {
+                match variants.iter().find(|v| effective_fields(v) == 0) {
                     Some(unit) => format!("{unit}{{}}"),
                     // No fieldless variant: construct the first one inline with
                     // defaulted fields, matching what the Rust backend emits.
@@ -1277,17 +1280,18 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                     // below skips them), so this must not call one.
                     None => {
                         let v = &variants[0];
-                        let fields = ctx.struct_map.get(v.as_str())
-                            .map(|st| st.fields.iter()
-                                .map(|f| format!(
-                                    "{}: {}",
-                                    expr_translator::capitalize(&f.name),
-                                    if f.value_type.is_some() { "nil".to_string() }
-                                    else { go_default_value(&f.target, &f.mult) },
-                                ))
-                                .collect::<Vec<_>>()
-                                .join(", "))
-                            .unwrap_or_default();
+                        let own = ctx.struct_map.get(v.as_str())
+                            .map(|st| st.fields.as_slice())
+                            .unwrap_or(&[]);
+                        let fields = own.iter().chain(s.fields.iter())
+                            .map(|f| format!(
+                                "{}: {}",
+                                expr_translator::capitalize(&f.name),
+                                if f.value_type.is_some() { "nil".to_string() }
+                                else { go_default_value(&f.target, &f.mult) },
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ");
                         format!("{v}{{{fields}}}")
                     }
                 }

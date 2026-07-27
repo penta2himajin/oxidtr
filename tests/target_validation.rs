@@ -464,6 +464,23 @@ fn go_adversarial_models_compile() {
          "sig Node { parent: lone Node, tag: one Int }\n\
           assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
          "func(p Node) bool"),
+        ("variant_with_inherited_fields",
+         "sig Leaf {}\nabstract sig Shape { leaf: one Leaf }\nsig Circle extends Shape {}\n\
+          sig Square extends Shape {}\nsig Drawing { shape: one Shape }",
+         "Circle{"),
+        ("dependent_bindings",
+         "sig Item {}\nsig Box { items: set Item }\n\
+          assert R { all b: Box, x: b.items | x = x }",
+         "func(x Item) bool"),
+        ("inherited_field_through_child",
+         "sig Item {}\nabstract sig Parent { items: set Item }\n\
+          sig Child extends Parent { marker: lone Item }\n\
+          assert R { all c: Child | all i: c.items | i = i }",
+         "func(i Item) bool"),
+        ("membership_in_one_relation",
+         "sig Item {}\nsig Box { item: one Item }\n\
+          assert R { all b: Box | b.item in b.item }",
+         "equal(b.Item, b.Item)"),
         ("disjoint_quantifier",
          "sig Tag {}\nsig Person { tags: set Tag }\n\
           assert R { all disj a, b: Person | a != b }",
