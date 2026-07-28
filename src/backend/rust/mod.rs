@@ -1993,10 +1993,12 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             for conj in &sound {
                 if !expr_has_comparison(conj) { continue; }
                 let params = expr_translator::extract_params(conj, &sig_names);
-                // A wrapper wraps *one* value, so it can only check a conjunct
-                // that needs one sig. A conjunct spanning two would be
-                // evaluated with the other universe empty.
+                // A wrapper substitutes one value for the whole sig universe,
+                // so the conjunct must say the same thing about each atom
+                // independently. A conjunct spanning two sigs, a global
+                // existential, or a cross-atom comparison must not become one.
                 if params.len() != 1 { continue; }
+                if !analyze::elementwise_over(conj, &params[0].1, ir) { continue; }
                 newtype_pairs.push((fact_name.clone(), params[0].1.clone()));
             }
             continue;
@@ -2086,6 +2088,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 .filter(|e| {
                     let params = expr_translator::extract_params(e, &sig_names);
                     params.len() == 1 && params[0].1 == *sig_name
+                        && analyze::elementwise_over(e, sig_name, ir)
                 })
                 .collect();
             if mine.is_empty() { return None; }

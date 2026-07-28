@@ -333,14 +333,17 @@ fn rust_generates_tryfrom_for_newtype() {
 fn rust_newtype_calling_fun_imports_operations() {
     // Regression #61: newtype TryFrom bodies that call a fun (lowered into
     // operations.rs) must import `super::operations::*` or they don't compile.
+    // The fact must be elementwise or no wrapper is generated at all (a
+    // wrapper substitutes one value for the whole universe, so a cross-atom
+    // fact like associativity cannot be checked from one Money).
     let files = generate_from(r#"
         sig Money { amount: one Int }
-        fun add[a, b: Money]: Money { a }
-        fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+        fun doubled[m: Money]: Int { m.amount }
+        fact NonNegative { all m: Money | doubled[m] >= 0 }
     "#);
     let newtypes = find_file(&files, "newtypes.rs");
-    assert!(newtypes.contains("add("),
-        "precondition: newtype body should call add:\n{newtypes}");
+    assert!(newtypes.contains("doubled("),
+        "precondition: newtype body should call the fun:\n{newtypes}");
     assert!(newtypes.contains("use super::operations::*;"),
         "newtypes.rs calling a fun must import operations:\n{newtypes}");
 }
@@ -1866,7 +1869,10 @@ fn rust_validator_only_checks_conjuncts_its_own_sig_can_evaluate() {
     let p_body = &rest[..rest[1..].find("pub struct Validated").map(|i| i + 1).unwrap_or(rest.len() - 1)];
     assert!(!p_body.contains("qs.iter()"), "P's validator evaluates a Q conjunct:\n{p_body}");
     assert!(p_body.contains("p.x >= 0"), "P's own conjunct lost:\n{p_body}");
-    assert!(nt.contains("qs.iter().any("), "Q's own conjunct lost:\n{nt}");
+    // `some q: Q | ..` is a claim about the collection, not about each atom, so
+    // it must not become a per-value wrapper at all — that would reject a `Q`
+    // a valid collection may legitimately contain.
+    assert!(!nt.contains("struct ValidatedQ"), "global existential became per-value:\n{nt}");
 }
 
 #[test]
@@ -1879,4 +1885,37 @@ fn rust_cross_signature_conjunct_creates_no_validator() {
     );
     let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
     assert!(!nt.contains("struct Validated"), "vacuous cross-sig wrapper:\n{nt}");
+}
+
+#[test]
+fn rust_validator_requires_an_elementwise_constraint() {
+    // A wrapper substitutes `vec![value]` for the whole sig universe, so it can
+    // only enforce a claim about each atom independently.
+    let cases: &[(&str, &str, bool)] = &[
+        // (name, model, wrapper expected)
+        ("elementwise", "sig P { x: one Int }\nfact Simple { all p: P | p.x >= 0 }", true),
+        // `no x | B` is `all x | not B`, still elementwise — and this is the
+        // acyclicity validator, a flagship feature.
+        ("no_quantifier", "sig Node { next: lone Node }\nfact Acyclic { no n: Node | n in n.^next }", true),
+        // Cross-atom: every singleton passes, a two-element collection may not.
+        ("cross_atom", "sig P { x: one Int }\nfact CrossAtom { all p: P | all q: P | p.x >= q.x }", false),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_global_existential_does_not_become_a_per_value_wrapper() {
+    // `some q: Q | q.y >= 0` is satisfied by the collection, so a wrapper would
+    // reject `Q { y: -1 }` even though a valid collection may contain it.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { var y: one Int }\n\
+         fact Split { (all p: P | p.x >= 0) and (some q: Q | q.y >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("struct ValidatedP"), "elementwise conjunct lost its wrapper:\n{nt}");
+    assert!(!nt.contains("struct ValidatedQ"), "existential became per-value:\n{nt}");
 }

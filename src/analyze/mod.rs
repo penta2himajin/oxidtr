@@ -787,6 +787,59 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
     walk(expr, ir, &mut Vec::new())
 }
 
+/// May a constraint be enforced by a wrapper around a *single* value of
+/// `sig`?
+///
+/// A `Validated<Sig>` substitutes `vec![value.clone()]` for the entire sig
+/// universe, which is only faithful when the constraint says the same thing
+/// about each atom independently: `all p: P | <predicate on p>`. It is wrong
+/// for a global existential — `some q: Q | ..` becomes a per-value
+/// requirement, rejecting an atom a valid collection may contain — and for a
+/// cross-atom comparison such as `all p: P | all q: P | p.x >= q.x`, where
+/// every singleton trivially passes while a two-element collection may not.
+pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
+    let sig_names: std::collections::HashSet<&str> =
+        ir.structures.iter().map(|s| s.name.as_str()).collect();
+
+    // No further quantifier may range over a whole sig; a domain derived from
+    // the bound atom (`all f: p.fields | ..`) is relative to it and fine.
+    fn no_global_quantifier(e: &Expr, sigs: &std::collections::HashSet<&str>) -> bool {
+        match e {
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| !matches!(&b.domain, Expr::VarRef(d) if sigs.contains(d.as_str())))
+                    && bindings.iter().all(|b| no_global_quantifier(&b.domain, sigs))
+                    && no_global_quantifier(body, sigs)
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                no_global_quantifier(left, sigs) && no_global_quantifier(right, sigs)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => no_global_quantifier(i, sigs),
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().is_none_or(|r| no_global_quantifier(r, sigs))
+                    && args.iter().all(|a| no_global_quantifier(a, sigs))
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+        }
+    }
+
+    match expr {
+        // `no x: S | B` is `all x: S | not B` — a claim about each atom.
+        // `some x: S | B` is a claim about the collection and must not become
+        // a per-value requirement.
+        Expr::Quantifier { kind: QuantKind::All | QuantKind::No, bindings, body } => {
+            bindings.len() == 1
+                && bindings[0].vars.len() == 1
+                && matches!(&bindings[0].domain, Expr::VarRef(d) if d == sig)
+                && no_global_quantifier(body, &sig_names)
+        }
+        _ => false,
+    }
+}
+
 /// Is at least one top-level conjunct of this fact snapshot-checkable? A fact
 /// where none is has no faithful single-state validator at all.
 pub fn has_snapshot_sound_conjunct(expr: &Expr, ir: &OxidtrIR) -> bool {
