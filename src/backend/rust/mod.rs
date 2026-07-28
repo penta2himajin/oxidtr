@@ -2018,17 +2018,15 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 }
             }
         }
-        // Check if this constraint contains an Exhaustive pattern
-        for c in &all_constraints {
-            if let analyze::ConstraintInfo::Exhaustive { sig_name, .. } = c {
-                if !sig_name.is_empty() {
-                    newtype_pairs.push((fact_name.clone(), sig_name.clone()));
-                }
-            }
-        }
+        // An Exhaustive constraint needs the *other* sigs' collections, so it
+        // cannot be checked from one wrapped value. It gets a standalone
+        // `validate_exhaustive_*` helper below; adding it here only produced a
+        // wrapper whose body was `if true`.
     }
 
-    if newtype_pairs.is_empty() {
+    let has_exhaustive = analyze::analyze(ir).iter()
+        .any(|c| matches!(c, analyze::ConstraintInfo::Exhaustive { sig_name, .. } if !sig_name.is_empty()));
+    if newtype_pairs.is_empty() && !has_exhaustive {
         return String::new();
     }
 

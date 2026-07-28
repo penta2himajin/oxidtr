@@ -797,38 +797,78 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// requirement, rejecting an atom a valid collection may contain — and for a
 /// cross-atom comparison such as `all p: P | all q: P | p.x >= q.x`, where
 /// every singleton trivially passes while a two-element collection may not.
+fn mentions_any_sig_in(e: &Expr, all: &std::collections::HashSet<&str>) -> bool {
+    match e {
+        Expr::VarRef(d) => all.contains(d.as_str()),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            mentions_any_sig_in(left, all) || mentions_any_sig_in(right, all)
+        }
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+        | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => mentions_any_sig_in(i, all),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| mentions_any_sig_in(&b.domain, all)) || mentions_any_sig_in(body, all)
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(|r| mentions_any_sig_in(r, all))
+                || args.iter().any(|a| mentions_any_sig_in(a, all))
+        }
+        Expr::IntLiteral(_) => false,
+    }
+}
+
 pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
-    // Only sigs with more than one atom form a "universe" a singleton wrapper
-    // cannot stand in for. A `one sig` name denotes one atom — `p.level = High`
-    // is perfectly atom-local.
+    // Every sig name in a body is a dependency on that sig, *except* a `one
+    // sig` the Rust translator can render as a plain value — a field-less
+    // variant of a field-less enum parent, e.g. `L::Low`. A singleton struct
+    // (`n.c == Config`), a payload-carrying variant (`L::Low` needing
+    // arguments) and any cardinality use (`#P` → `P.len()`) all emit a type
+    // name where a value belongs and do not compile.
+    let atom_valued = |name: &str| ir.structures.iter().any(|s| {
+        s.name == name
+            && s.sig_multiplicity == SigMultiplicity::One
+            && s.fields.is_empty()
+            && s.parent.as_ref().is_some_and(|p| ir.structures.iter()
+                .any(|par| &par.name == p && par.is_enum && par.fields.is_empty()))
+    });
     let sig_names: std::collections::HashSet<&str> = ir.structures.iter()
-        .filter(|s| s.sig_multiplicity != SigMultiplicity::One)
+        .filter(|s| !atom_valued(&s.name))
         .map(|s| s.name.as_str()).collect();
+    let all_sigs: std::collections::HashSet<&str> =
+        ir.structures.iter().map(|s| s.name.as_str()).collect();
+
 
     // Nothing in the body may depend on the whole sig: not a quantifier over
     // it, not a bare reference to it (`#P`), and not a call whose body does
     // either. A domain derived from the bound atom (`all f: p.fields | ..`) is
     // relative to it and fine, and a `one sig` name is a single atom, not a
     // universe.
-    fn no_global_quantifier(e: &Expr, sigs: &std::collections::HashSet<&str>) -> bool {
+    fn no_global_quantifier(
+        e: &Expr, sigs: &std::collections::HashSet<&str>, all: &std::collections::HashSet<&str>,
+    ) -> bool {
         match e {
             Expr::VarRef(d) => !sigs.contains(d.as_str()),
             Expr::Quantifier { bindings, body, .. } => {
                 bindings.iter().all(|b| !matches!(&b.domain, Expr::VarRef(d) if sigs.contains(d.as_str())))
-                    && bindings.iter().all(|b| no_global_quantifier(&b.domain, sigs))
-                    && no_global_quantifier(body, sigs)
+                    && bindings.iter().all(|b| no_global_quantifier(&b.domain, sigs, all))
+                    && no_global_quantifier(body, sigs, all)
             }
             Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
             | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
             | Expr::TemporalBinary { left, right, .. } => {
-                no_global_quantifier(left, sigs) && no_global_quantifier(right, sigs)
+                no_global_quantifier(left, sigs, all) && no_global_quantifier(right, sigs, all)
             }
-            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            // `#X` reads a collection whatever X is, so a singleton name is
+            // no longer a plain value there.
+            Expr::Cardinality(i) => !mentions_any_sig_in(i, all),
+            Expr::Not(i) | Expr::TransitiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
-            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => no_global_quantifier(i, sigs),
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => no_global_quantifier(i, sigs, all),
             Expr::FunApp { receiver, args, .. } => {
-                receiver.as_deref().is_none_or(|r| no_global_quantifier(r, sigs))
-                    && args.iter().all(|a| no_global_quantifier(a, sigs))
+                receiver.as_deref().is_none_or(|r| no_global_quantifier(r, sigs, all))
+                    && args.iter().all(|a| no_global_quantifier(a, sigs, all))
             }
             Expr::IntLiteral(_) => true,
         }
@@ -836,43 +876,44 @@ pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
 
     // A call hides its body from the scan above.
     fn callee_is_atom_local(
-        e: &Expr, ir: &OxidtrIR, sigs: &std::collections::HashSet<&str>, seen: &mut Vec<String>,
+        e: &Expr, ir: &OxidtrIR, sigs: &std::collections::HashSet<&str>,
+        all: &std::collections::HashSet<&str>, seen: &mut Vec<String>,
     ) -> bool {
         match e {
             Expr::FunApp { name, receiver, args } => {
-                if receiver.as_deref().is_some_and(|r| !callee_is_atom_local(r, ir, sigs, seen)) {
+                if receiver.as_deref().is_some_and(|r| !callee_is_atom_local(r, ir, sigs, all, seen)) {
                     return false;
                 }
-                if args.iter().any(|a| !callee_is_atom_local(a, ir, sigs, seen)) { return false; }
+                if args.iter().any(|a| !callee_is_atom_local(a, ir, sigs, all, seen)) { return false; }
                 if seen.iter().any(|n| n == name) { return true; }
                 seen.push(name.clone());
                 let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
-                    .all(|op| op.body.iter().all(|b| no_global_quantifier(b, sigs)
-                        && callee_is_atom_local(b, ir, sigs, seen)));
+                    .all(|op| op.body.iter().all(|b| no_global_quantifier(b, sigs, all)
+                        && callee_is_atom_local(b, ir, sigs, all, seen)));
                 seen.pop();
                 ok
             }
             Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
             | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
             | Expr::TemporalBinary { left, right, .. } => {
-                callee_is_atom_local(left, ir, sigs, seen) && callee_is_atom_local(right, ir, sigs, seen)
+                callee_is_atom_local(left, ir, sigs, all, seen) && callee_is_atom_local(right, ir, sigs, all, seen)
             }
             Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => {
-                callee_is_atom_local(i, ir, sigs, seen)
+                callee_is_atom_local(i, ir, sigs, all, seen)
             }
             Expr::Quantifier { bindings, body, .. } => {
-                bindings.iter().all(|b| callee_is_atom_local(&b.domain, ir, sigs, seen))
-                    && callee_is_atom_local(body, ir, sigs, seen)
+                bindings.iter().all(|b| callee_is_atom_local(&b.domain, ir, sigs, all, seen))
+                    && callee_is_atom_local(body, ir, sigs, all, seen)
             }
             Expr::VarRef(_) | Expr::IntLiteral(_) => true,
         }
     }
 
     let atom_local = |body: &Expr| {
-        no_global_quantifier(body, &sig_names)
-            && callee_is_atom_local(body, ir, &sig_names, &mut Vec::new())
+        no_global_quantifier(body, &sig_names, &all_sigs)
+            && callee_is_atom_local(body, ir, &sig_names, &all_sigs, &mut Vec::new())
     };
     let singleton = |d: &str| ir.structures.iter()
         .any(|s| s.name == d && s.sig_multiplicity == SigMultiplicity::One);

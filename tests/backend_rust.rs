@@ -1960,3 +1960,45 @@ fn rust_non_elementwise_comparison_does_not_suppress_the_exhaustive_check() {
     let nt = find_file(&files, "newtypes.rs");
     assert!(nt.contains("must belong to"), "exhaustive check lost:\n{nt}");
 }
+
+#[test]
+fn rust_one_sig_is_atom_local_only_when_it_renders_as_a_value() {
+    // A `one sig` name is admissible in a validator body only where the Rust
+    // translator can put a value. A field-less variant of a field-less enum
+    // parent becomes `L::Low`; the rest emit a *type* name where a value
+    // belongs and do not compile.
+    let cases: &[(&str, &str, bool)] = &[
+        ("fieldless_variant",
+         "abstract sig L {}\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", true),
+        ("singleton_struct_with_fields",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }", false),
+        ("cardinality_of_one_sig",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }", false),
+        ("variant_carrying_inherited_fields",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", false),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_exhaustive_gets_a_helper_and_not_a_vacuous_wrapper() {
+    // The check needs the *other* sigs' collections, so it cannot be performed
+    // from one wrapped value. It used to produce both the standalone helper and
+    // a `ValidatedItem` whose whole body was `if true`.
+    let files = generate_from(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\n\
+         sig Premium extends Category {}\nsig Budget extends Category {}\n\
+         fact Cover { all i: Item | i in Premium.items or i in Budget.items }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("fn validate_exhaustive_item"), "standalone helper lost:\n{nt}");
+    assert!(!nt.contains("struct ValidatedItem"), "vacuous wrapper certifying nothing:\n{nt}");
+    assert!(!nt.contains("if true"), "vacuous validator body:\n{nt}");
+}
