@@ -1993,9 +1993,11 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             for conj in &sound {
                 if !expr_has_comparison(conj) { continue; }
                 let params = expr_translator::extract_params(conj, &sig_names);
-                for (_pname, tname) in &params {
-                    newtype_pairs.push((fact_name.clone(), tname.clone()));
-                }
+                // A wrapper wraps *one* value, so it can only check a conjunct
+                // that needs one sig. A conjunct spanning two would be
+                // evaluated with the other universe empty.
+                if params.len() != 1 { continue; }
+                newtype_pairs.push((fact_name.clone(), params[0].1.clone()));
             }
             continue;
         }
@@ -2076,13 +2078,22 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         // fact: refusing everything because one conjunct is temporal is what
         // left the wrapper enforcing `if true`.
         let inlined_info = constraint.and_then(|c| {
-            let sound = analyze::sound_conjuncts(&c.expr, ir);
-            if sound.is_empty() { return None; }
-            let body = sound.iter()
+            // Only the conjuncts this wrapper's own sig can evaluate. A sibling
+            // conjunct about another sig would be checked against an empty
+            // universe — vacuously true for `all`, and false for `some`, which
+            // made `ValidatedP` reject every P.
+            let mine: Vec<&Expr> = analyze::sound_conjuncts(&c.expr, ir).into_iter()
+                .filter(|e| {
+                    let params = expr_translator::extract_params(e, &sig_names);
+                    params.len() == 1 && params[0].1 == *sig_name
+                })
+                .collect();
+            if mine.is_empty() { return None; }
+            let body = mine.iter()
                 .map(|e| format!("({})", expr_translator::translate_with_ir(e, ir)))
                 .collect::<Vec<_>>().join(" && ");
             let mut params = Vec::new();
-            for e in &sound {
+            for e in &mine {
                 for p in expr_translator::extract_params(e, &sig_names) {
                     if !params.contains(&p) { params.push(p); }
                 }

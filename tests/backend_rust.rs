@@ -1848,3 +1848,35 @@ fn rust_transition_test_only_covers_what_a_cloned_post_state_can_satisfy() {
     let t2 = find_file(&stutter, "tests.rs");
     assert!(t2.contains("transition_mono"), "the stutter case must survive:\n{t2}");
 }
+
+#[test]
+fn rust_validator_only_checks_conjuncts_its_own_sig_can_evaluate() {
+    // Every wrapper used to inline *all* sound conjuncts, so `ValidatedP`
+    // evaluated `some q: Q | ..` with `qs` empty — false — and rejected every
+    // P, including a perfectly valid one.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Split { (all p: P | p.x >= 0) and (some q: Q | q.y >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    // Slice to the next wrapper — `fn_body` keys on a top-level `fn`, and these
+    // are `impl` blocks.
+    let start = nt.find("pub struct ValidatedP").expect("no ValidatedP");
+    let rest = &nt[start..];
+    let p_body = &rest[..rest[1..].find("pub struct Validated").map(|i| i + 1).unwrap_or(rest.len() - 1)];
+    assert!(!p_body.contains("qs.iter()"), "P's validator evaluates a Q conjunct:\n{p_body}");
+    assert!(p_body.contains("p.x >= 0"), "P's own conjunct lost:\n{p_body}");
+    assert!(nt.contains("qs.iter().any("), "Q's own conjunct lost:\n{nt}");
+}
+
+#[test]
+fn rust_cross_signature_conjunct_creates_no_validator() {
+    // A conjunct needing two universes cannot be checked from one wrapped
+    // value; with the other universe empty it is vacuously true.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Cross { (all p: P | all q: Q | p.x >= q.y) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("struct Validated"), "vacuous cross-sig wrapper:\n{nt}");
+}
