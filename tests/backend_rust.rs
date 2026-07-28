@@ -8,6 +8,15 @@ fn generate_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
     rust::generate(&ir)
 }
 
+/// Slice one generated item out of a file. Asserting against a whole file lets
+/// a claim about `fn foo` be satisfied by a neighbouring function.
+fn fn_body<'a>(src: &'a str, header: &str) -> &'a str {
+    let start = src.find(header).unwrap_or_else(|| panic!("no `{header}` in:\n{src}"));
+    let rest = &src[start + header.len()..];
+    let end = rest.find("\nfn ").unwrap_or(rest.len());
+    &rest[..end]
+}
+
 fn find_file<'a>(files: &'a [oxidtr::backend::GeneratedFile], path: &str) -> &'a str {
     files
         .iter()
@@ -324,14 +333,17 @@ fn rust_generates_tryfrom_for_newtype() {
 fn rust_newtype_calling_fun_imports_operations() {
     // Regression #61: newtype TryFrom bodies that call a fun (lowered into
     // operations.rs) must import `super::operations::*` or they don't compile.
+    // The fact must be elementwise or no wrapper is generated at all (a
+    // wrapper substitutes one value for the whole universe, so a cross-atom
+    // fact like associativity cannot be checked from one Money).
     let files = generate_from(r#"
         sig Money { amount: one Int }
-        fun add[a, b: Money]: Money { a }
-        fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
+        fun doubled[m: Money]: Int { m.amount }
+        fact NonNegative { all m: Money | doubled[m] >= 0 }
     "#);
     let newtypes = find_file(&files, "newtypes.rs");
-    assert!(newtypes.contains("add("),
-        "precondition: newtype body should call add:\n{newtypes}");
+    assert!(newtypes.contains("doubled("),
+        "precondition: newtype body should call the fun:\n{newtypes}");
     assert!(newtypes.contains("use super::operations::*;"),
         "newtypes.rs calling a fun must import operations:\n{newtypes}");
 }
@@ -1368,4 +1380,625 @@ fn single_var_fact_referencing_nullary_fun_of_same_sig_is_diversified() {
         ident_test.contains("let a = a.clone();"),
         "combos-destructured var must be cloned to owned before a direct comparison:\n{tests}"
     );
+}
+
+// ── #78: temporal operators must not be erased on the assert path ───────────
+
+#[test]
+fn rust_assert_liveness_emits_a_trace_checker() {
+    // `eventually P` demands P in *some* future state. A snapshot assertion
+    // demands it now — a strictly different, strictly stronger property that
+    // compiles and passes green.
+    let files = generate_from(
+        "sig Person { age: one Int }\nassert EventuallyOk { eventually all p: Person | p.age > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn eventually_ok() {");
+    assert!(test.contains("check_liveness_eventually_ok(&trace)"),
+        "the test must call its checker, not merely coexist with it:\n{test}");
+    let checker = fn_body(t, "fn check_liveness_eventually_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace.iter().any("), "liveness is existential over states:\n{checker}");
+    assert!(t.contains("@temporal"), "the test must be labelled temporal:\n{t}");
+    assert!(!t.contains("assert!(persons.iter().all(|p| { let p = p.clone(); p.age > 0 }));"),
+        "`eventually` was erased into a snapshot assertion:\n{t}");
+}
+
+#[test]
+fn rust_assert_until_emits_a_trace_checker() {
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert UntilOk { (all p: Person | p.age >= 0) until (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn until_ok() {");
+    assert!(test.contains("check_until_until_ok(&trace)"), "the test must call its checker:\n{test}");
+    let checker = fn_body(t, "fn check_until_until_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace.iter().position("), "until is position-based:\n{checker}");
+    assert!(!t.contains("}) && persons.iter().all("), "`until` was flattened to `&&`:\n{t}");
+}
+
+#[test]
+fn rust_assert_invariant_still_uses_a_snapshot() {
+    // `always P` is soundly approximated by asserting P on one state; only
+    // liveness and the binary operators need a trace.
+    let files = generate_from(
+        "sig Person { age: one Int }\nassert AlwaysOk { always all p: Person | p.age > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn always_ok() {");
+    assert!(test.contains("assert!(persons.iter().all("), "invariant should stay a snapshot:\n{test}");
+    assert!(!t.contains("fn check_liveness_always_ok"), "no trace checker needed:\n{t}");
+}
+
+#[test]
+fn rust_nested_temporal_is_skipped_not_mistranslated() {
+    // Wrapping the whole body in `any(..)` would assert `exists s. A(s) && B(s)`
+    // instead of `A(now) && exists s. B(s)` — a different formula.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert Nested { (all p: Person | p.age >= 0) and eventually (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Nested"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_liveness_nested"), "a wrong checker was emitted:\n{t}");
+}
+
+#[test]
+fn rust_nested_binary_temporal_does_not_drop_context() {
+    // `find_temporal_binary` returns only the binary node, so emitting a
+    // checker here would silently discard the surrounding conjunct.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert NestedUntil { (all p: Person | p.age >= 0) and ((all p: Person | p.age > 0) until (all p: Person | p.age > 1)) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NestedUntil"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_until_nested_until"), "a context-dropping checker was emitted:\n{t}");
+}
+
+#[test]
+fn rust_prime_on_the_assert_path_is_skipped() {
+    // Only the fact path has transition handling; without it a prime becomes
+    // `next_age`, a field that does not exist.
+    let files = generate_from(
+        "sig Person { var age: one Int }\nassert PrimeOnly { all p: Person | p.age' > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped PrimeOnly"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("next_age"), "prime leaked into a snapshot assertion:\n{t}");
+}
+
+#[test]
+fn rust_parameterless_temporal_assert_still_calls_its_checker() {
+    // With no quantified params the trace is a sequence of unit states; a
+    // `None` trace type emitted a test that asserted nothing at all.
+    let files = generate_from("sig S { x: one Int }\nassert NoParamEventually { eventually 1 = 2 }");
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn no_param_eventually() {");
+    assert!(test.contains("check_liveness_no_param_eventually(&trace)"),
+        "the test must call its checker:\n{test}");
+    assert!(t.contains("trace: &[()]"), "unit trace state expected:\n{t}");
+}
+
+#[test]
+fn rust_since_requires_left_strictly_after_the_witness() {
+    // `F since G` does not require F at the state where G holds.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert SinceOk { (all p: Person | p.age >= 0) since (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let checker = fn_body(t, "fn check_since_since_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace[pos + 1..]"), "since must exclude the witness state:\n{checker}");
+}
+
+#[test]
+fn rust_triggered_is_the_past_dual_of_release() {
+    // !( !F since !G ): at every state, G holds there or F holds strictly after.
+    let files = generate_from(
+        "sig Person { age: one Int }\n\
+         assert TrigOk { (all p: Person | p.age >= 0) triggered (all p: Person | p.age > 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    let checker = fn_body(t, "fn check_triggered_trig_ok(trace: &[Vec<Person>]) -> bool {");
+    assert!(checker.contains("trace[i + 1..]"), "triggered looks strictly forward:\n{checker}");
+    assert!(!checker.contains("trace[..=i]"), "old at-or-before reading:\n{checker}");
+}
+
+#[test]
+fn rust_pred_free_model_does_not_import_a_missing_module() {
+    // operations.rs is only emitted when the model has preds or funs, so an
+    // unconditional `use super::operations::*` broke every pred-free model.
+    let files = generate_from("sig P { x: one Int }\nassert Ok { all p: P | p.x = p.x }");
+    assert!(!files.iter().any(|f| f.path == "operations.rs"), "no preds, no module");
+    let t = find_file(&files, "tests.rs");
+    assert!(!t.contains("use super::operations"), "imports a module that was not emitted:\n{t}");
+}
+
+#[test]
+fn rust_after_is_not_approximated_by_a_snapshot() {
+    // `after P` names the next state; asserting P now is simply a different claim.
+    let files = generate_from("sig P { x: one Int }\nassert AfterOk { after all p: P | p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped AfterOk"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_always_keeps_its_snapshot_even_when_nested() {
+    // `always` includes the current state, so a snapshot is a weaker but
+    // never-wrong check — skipping it would lose coverage main had.
+    let files = generate_from("sig P { x: one Int }\nfact AlwaysNested { all p: P | always p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    let test = fn_body(t, "fn invariant_always_nested() {");
+    assert!(test.contains("assert!(ps.iter().all("), "sound snapshot was dropped:\n{test}");
+}
+
+#[test]
+fn rust_temporal_hidden_in_a_pred_body_is_still_caught() {
+    // A purely syntactic scan sees no operator in `LaterPositive[p]`.
+    let files = generate_from(
+        "sig P { x: one Int }\npred LaterPositive[p: one P] { eventually p.x > 0 }\n\
+         assert Outer { eventually all p: P | LaterPositive[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Outer"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("fn check_liveness_outer"), "checker wraps an erasing pred call:\n{t}");
+}
+
+#[test]
+fn rust_temporal_fact_is_not_inlined_into_a_validator() {
+    // A skipped fact must not reappear as a single-state newtype validator.
+    let files = generate_from(
+        "sig P { x: one Int }\n\
+         fact ConjoinedEventually { (all p: P | p.x >= 0) and eventually (all p: P | p.x > 0) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("p.x > 0"), "temporal fact inlined into a validator:\n{nt}");
+}
+
+#[test]
+fn rust_always_under_negation_is_not_snapshot_approximated() {
+    // `always P => P now` runs the wrong way under a negation: a trace where P
+    // holds now and fails later satisfies `not always P`, but the snapshot
+    // assertion `!P(now)` is false.
+    let files = generate_from("sig P { x: one Int }\nassert NegAlways { not always all p: P | p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NegAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_always_in_an_implication_antecedent_is_not_approximated() {
+    let files = generate_from(
+        "sig P { x: one Int }\n\
+         assert AntAlways { (always all p: P | p.x > 0) implies (all p: P | p.x >= 0) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped AntAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_call_only_temporal_reaches_the_gate() {
+    // The surface expression has no operator, so classification alone never
+    // consults the call-aware check.
+    let files = generate_from(
+        "sig P { x: one Int }\npred Later[p: one P] { eventually p.x > 0 }\n\
+         assert HiddenOnly { all p: P | Later[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped HiddenOnly"), "expected a diagnostic:\n{t}");
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("todo!(\"oxidtr: Later is temporal"), "erased pred body exported:\n{ops}");
+}
+
+#[test]
+fn rust_temporal_fact_does_not_leak_through_analyzer_derived_checks() {
+    // `analyze_expr` unwraps temporal operators, so the cardinality bound of
+    // `eventually #p.items <= 1` became a current-state validator.
+    let files = generate_from(
+        "sig Item {}\nsig P { items: set Item }\n\
+         fact LaterSmall { eventually all p: P | #p.items <= 1 }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("items.len() > 1"), "temporal bound enforced in one state:\n{nt}");
+}
+
+#[test]
+fn rust_builtin_arithmetic_is_not_confused_with_a_same_named_pred() {
+    // `p.x.plus[1]` is Alloy integer arithmetic, not a call to `pred plus`.
+    let files = generate_from(
+        "sig P { x: one Int }\npred plus[p: one P] { eventually p.x > 0 }\n\
+         assert ArithmeticOnly { eventually all p: P | p.x.plus[1] > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("fn check_liveness_arithmetic_only"), "falsely skipped:\n{t}");
+}
+
+#[test]
+fn rust_no_quantifier_flips_polarity() {
+    // `no p | always P` is antitone in its body, so the snapshot reading of
+    // `always` runs the wrong way.
+    let files = generate_from("sig P { x: one Int }\nassert NoAlways { no p: P | always p.x > 0 }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped NoAlways"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_eventually_with_prime_is_not_a_plain_transition() {
+    // The prime branch runs before the temporal gate; `eventually p.x' > 0`
+    // does not imply next-positive now.
+    let files = generate_from(
+        "sig P { var x: one Int }\nfact LaterNext { eventually all p: P | p.x' > 0 }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterNext"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("next_p.x > 0"), "emitted a single-step check:\n{t}");
+}
+
+#[test]
+fn rust_always_with_prime_still_gets_its_transition_test() {
+    // The idiomatic Alloy transition fact: one step is a sound necessary check.
+    let files = generate_from(
+        "sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_mono"), "sound transition test was dropped:\n{t}");
+}
+
+#[test]
+fn rust_temporal_pred_export_is_annotated_as_weakened() {
+    // `always P` in a positive position can be weakened to a current-state
+    // necessary condition — but the export must not read as faithful.
+    let files = generate_from("sig P { x: one Int }\npred Stable[p: one P] { always p.x > 0 }\nfact Use { all p: P | Stable[p] }");
+    let ops = find_file(&files, "operations.rs");
+    assert!(ops.contains("NOTE: weakened"), "silent weakening:\n{ops}");
+}
+
+#[test]
+fn rust_mixed_fact_keeps_its_sound_conjunct() {
+    // Discarding the whole constraint loses the current-state `max 1` bound.
+    let files = generate_from(
+        "sig Item {}\nsig P { items: set Item }\n\
+         fact Mixed { (all p: P | #p.items <= 1) and (eventually all p: P | #p.items >= 1) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(nt.contains("items.len() > 1"), "sound conjunct was discarded:\n{nt}");
+}
+
+#[test]
+fn rust_skipped_fact_leaves_no_dangling_doc_comment() {
+    // The gate used to run after the `/// @temporal` annotation, so a skipped
+    // fact at end of file produced `expected item after doc comment`.
+    let files = generate_from(
+        "sig P { x: one Int }\nfact Mixed { (all p: P | p.x = 0) and eventually (all p: P | p.x = 1) }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(!t.contains("/// @temporal"), "annotation emitted for a skipped fact:\n{t}");
+    assert!(t.trim_end().ends_with("See #104."), "dangling annotation at EOF:\n{t}");
+}
+
+#[test]
+fn rust_prime_hidden_in_a_pred_reaches_the_prime_gate() {
+    // `expr_contains_prime` only scans a call's receiver and arguments.
+    let files = generate_from(
+        "sig P { var x: one Int }\npred Step[p: one P] { p.x' = p.x }\n\
+         assert CalledPrime { always all p: P | Step[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped CalledPrime"), "expected a diagnostic:\n{t}");
+    assert!(!t.contains("step(p)"), "calls a stubbed pred:\n{t}");
+}
+
+#[test]
+fn rust_eventually_some_does_not_seed_a_current_state_fixture() {
+    // `strip_outer_quantifier` also strips `eventually`, so this fact used to
+    // build an `all_ps()` containing `P { x: 1 }` that broke `NowZero`.
+    let files = generate_from(
+        "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+         fact NowZero { all q: Q | all p: P | p.x = 0 }\n\
+         fact LaterOne { eventually some p: P | p.x = 1 }",
+    );
+    let f = find_file(&files, "fixtures.rs");
+    assert!(!f.contains("x: 1i64"), "temporal existential leaked into a fixture:\n{f}");
+}
+
+#[test]
+fn rust_disjunction_does_not_pin_one_alternative() {
+    // `A.rank = 0 or always A.rank = 2` entails neither operand; mining the
+    // first silently deleted the second.
+    let files = generate_from(
+        "abstract sig Kind { rank: one Int }\none sig A extends Kind {}\none sig B extends Kind {}\n\
+         fact MaybeA { A.rank = 0 or always A.rank = 2 }",
+    );
+    let m = find_file(&files, "models.rs");
+    assert!(m.contains("rank: i64"), "field eliminated in favour of one branch:\n{m}");
+}
+
+#[test]
+fn rust_transition_emitter_declines_shapes_it_cannot_rewrite() {
+    // The rewriter zips a pre- and post-state collection, so it handles exactly
+    // one universally quantified variable over a plain sig. Each of these used
+    // to be emitted anyway: a `todo!()` call that panicked at runtime, a green
+    // `some` silently rendered as `all`, unbound `next_*` references, and a
+    // primed domain that panicked the generator itself.
+    let cases: &[(&str, &str)] = &[
+        ("CalledPrime",
+         "some sig P { var x: one Int }\npred Step[p: one P] { p.x' = p.x }\n\
+          fact CalledPrime { always all p: P | Step[p] }"),
+        ("SomeStutters",
+         "some sig P { var x: one Int }\nfact SomeStutters { always some p: P | p.x' = p.x }"),
+        ("MultiStep",
+         "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+          fact MultiStep { always all p: P, q: Q | p.x' = q.y }"),
+        ("NextZero",
+         "some sig P { var x: one Int }\nfact NextZero { always all p: P' | p.x = 0 }"),
+    ];
+    for (name, model) in cases {
+        let files = generate_from(model);
+        let t = find_file(&files, "tests.rs");
+        assert!(t.contains(&format!("skipped {name}")), "{name} was emitted:\n{t}");
+    }
+}
+
+#[test]
+fn rust_supported_transition_shape_is_still_emitted() {
+    let files = generate_from("sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_mono"), "the one supported shape was lost:\n{t}");
+}
+
+#[test]
+fn rust_temporal_call_needing_an_unpassed_universe_is_skipped() {
+    // `pos()` quantifies over P but takes no parameter, so a trace checker has
+    // no way to give it that collection — the call does not compile.
+    let files = generate_from(
+        "some sig P { x: one Int }\npred Pos { all p: P | p.x >= 0 }\n\
+         assert LaterPos { eventually Pos[] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_transition_gate_checks_every_prime_not_just_the_quantifier() {
+    // The rewriter turns `v'` into a `next_v` bound by zipping pre/post
+    // collections. It only reaches a prime on the bound variable itself, so:
+    // a chained `c.d.v'` was silently dropped (green `assert!(x == x)`), and a
+    // prime under a nested quantifier emitted an unbound `next_d`.
+    let cases: &[(&str, &str)] = &[
+        ("Chained",
+         "sig D { var v: one Int }\nsig C { d: one D, var v: one Int }\n\
+          fact Chained { always all c: C | c.d.v' = c.d.v }"),
+        ("Nested",
+         "sig D { var v: one Int }\nsig C { ds: set D, var v: one Int }\n\
+          fact Nested { always all c: C | all d: c.ds | d.v' = d.v }"),
+    ];
+    for (name, model) in cases {
+        let files = generate_from(model);
+        let t = find_file(&files, "tests.rs");
+        assert!(t.contains(&format!("skipped {name}")), "{name} was emitted:\n{t}");
+    }
+}
+
+#[test]
+fn rust_atom_parameter_does_not_stand_in_for_the_whole_collection() {
+    // `p: one P` is one atom; `all q: P` inside the body still needs every P,
+    // which the generated `pos(p: &P)` has no way to see.
+    let files = generate_from(
+        "some sig P { x: one Int }\npred Pos[p: one P] { all q: P | q.x >= 0 }\n\
+         assert LaterPos { eventually all p: P | Pos[p] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_singleton_existential_transition_is_still_emitted() {
+    // `some c: C` over a `one sig` binds exactly one atom, so the emitted loop
+    // is `all` and `some` at once — the one existential the rewriter gets right.
+    let files = generate_from("one sig C { var v: one Int }\nfact SingleStut { always some c: C | c.v' = c.v }");
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("transition_single_stut"), "conservatively lost:\n{t}");
+}
+
+#[test]
+fn rust_wholly_temporal_fact_creates_no_validator_wrapper() {
+    // The body was suppressed but the wrapper remained, claiming
+    // "validated by X" while accepting everything.
+    let files = generate_from("sig C { var v: one Int }\nfact NestedStep { always all c: C | c.v' = c.v }");
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("NestedStep"), "vacuous validator wrapper:\n{nt}");
+}
+
+#[test]
+fn rust_no_parameter_can_supply_a_sig_universe() {
+    // The callee body translates to `ps.iter()` — the sig's collection name —
+    // whatever the parameter is called, so `pool: set P` does not even compile;
+    // naming it `ps` would silently quantify over the subset passed instead of
+    // over every P.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig H { ps: set P }\npred Pos[pool: set P] { all q: P | q.x >= 0 }\n\
+         assert LaterPos { eventually all h: H | Pos[h.ps] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_mixed_fact_validator_covers_only_its_sound_conjunct() {
+    // Admitting the whole fact picked up Q, mentioned only by the temporal
+    // conjunct, and then inlined nothing — leaving `ValidatedQ { if true }`.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Mixed { (all p: P | p.x >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("struct ValidatedP"), "sound conjunct lost its wrapper:\n{nt}");
+    assert!(!nt.contains("struct ValidatedQ"), "wrapper for a rejected conjunct:\n{nt}");
+    assert!(!nt.contains("if true"), "vacuous validator:\n{nt}");
+    assert!(nt.contains("p.x >= 0"), "wrapper does not enforce its conjunct:\n{nt}");
+}
+
+#[test]
+fn rust_transition_test_only_covers_what_a_cloned_post_state_can_satisfy() {
+    // The generated test clones the pre-state as the post-state, so an update
+    // like `c.v' = c.v.plus[1]` compiles and then asserts `v == v + 1`.
+    let files = generate_from(
+        "one sig C { var v: one Int }\nfact Increment { always all c: C | c.v' = c.v.plus[1] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Increment"), "expected a diagnostic:\n{t}");
+    let stutter = generate_from("sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }");
+    let t2 = find_file(&stutter, "tests.rs");
+    assert!(t2.contains("transition_mono"), "the stutter case must survive:\n{t2}");
+}
+
+#[test]
+fn rust_validator_only_checks_conjuncts_its_own_sig_can_evaluate() {
+    // Every wrapper used to inline *all* sound conjuncts, so `ValidatedP`
+    // evaluated `some q: Q | ..` with `qs` empty — false — and rejected every
+    // P, including a perfectly valid one.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Split { (all p: P | p.x >= 0) and (some q: Q | q.y >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    // Slice to the next wrapper — `fn_body` keys on a top-level `fn`, and these
+    // are `impl` blocks.
+    let start = nt.find("pub struct ValidatedP").expect("no ValidatedP");
+    let rest = &nt[start..];
+    let p_body = &rest[..rest[1..].find("pub struct Validated").map(|i| i + 1).unwrap_or(rest.len() - 1)];
+    assert!(!p_body.contains("qs.iter()"), "P's validator evaluates a Q conjunct:\n{p_body}");
+    assert!(p_body.contains("p.x >= 0"), "P's own conjunct lost:\n{p_body}");
+    // `some q: Q | ..` is a claim about the collection, not about each atom, so
+    // it must not become a per-value wrapper at all — that would reject a `Q`
+    // a valid collection may legitimately contain.
+    assert!(!nt.contains("struct ValidatedQ"), "global existential became per-value:\n{nt}");
+}
+
+#[test]
+fn rust_cross_signature_conjunct_creates_no_validator() {
+    // A conjunct needing two universes cannot be checked from one wrapped
+    // value; with the other universe empty it is vacuously true.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Cross { (all p: P | all q: Q | p.x >= q.y) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+    assert!(!nt.contains("struct Validated"), "vacuous cross-sig wrapper:\n{nt}");
+}
+
+#[test]
+fn rust_validator_requires_an_elementwise_constraint() {
+    // A wrapper substitutes `vec![value]` for the whole sig universe, so it can
+    // only enforce a claim about each atom independently.
+    let cases: &[(&str, &str, bool)] = &[
+        // (name, model, wrapper expected)
+        ("elementwise", "sig P { x: one Int }\nfact Simple { all p: P | p.x >= 0 }", true),
+        // `no x | B` is `all x | not B`, still elementwise — and this is the
+        // acyclicity validator, a flagship feature.
+        ("no_quantifier", "sig Node { next: lone Node }\nfact Acyclic { no n: Node | n in n.^next }", true),
+        // Cross-atom: every singleton passes, a two-element collection may not.
+        ("cross_atom", "sig P { x: one Int }\nfact CrossAtom { all p: P | all q: P | p.x >= q.x }", false),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_global_existential_does_not_become_a_per_value_wrapper() {
+    // `some q: Q | q.y >= 0` is satisfied by the collection, so a wrapper would
+    // reject `Q { y: -1 }` even though a valid collection may contain it.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { var y: one Int }\n\
+         fact Split { (all p: P | p.x >= 0) and (some q: Q | q.y >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("struct ValidatedP"), "elementwise conjunct lost its wrapper:\n{nt}");
+    assert!(!nt.contains("struct ValidatedQ"), "existential became per-value:\n{nt}");
+}
+
+#[test]
+fn rust_validator_rejects_whole_universe_dependencies() {
+    // A singleton wrapper cannot stand in for the whole sig, so a body that
+    // reads the universe — directly or through a call — is not elementwise.
+    let cases: &[(&str, &str, bool)] = &[
+        ("cardinality_of_sig",
+         "sig P { x: one Int }\nfact CountSensitive { all p: P | p.x = #P }", false),
+        ("callee_reads_universe",
+         "sig P { x: one Int }\npred DominatesAll[p: one P] { all q: P | p.x >= q.x }\n\
+          fact Hidden { all p: P | p.x >= 0 and DominatesAll[p] }", false),
+        // `not some x | B` is `no x | B`, which main wrapped correctly.
+        ("not_some_is_no",
+         "sig P { x: one Int }\nfact NonNegative { not some p: P | p.x < 0 }", true),
+        // Over a `one sig` the collection is a single atom, so `some` is `all`.
+        ("some_over_one_sig",
+         "one sig P { x: one Int }\nfact SomeSingleton { some p: P | p.x >= 0 }", true),
+        // A `one sig` name is one atom, not a universe.
+        ("one_sig_reference_is_atom_local",
+         "abstract sig L {}\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", true),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_non_elementwise_comparison_does_not_suppress_the_exhaustive_check() {
+    // `i in Premium.items` reads a whole set, so it is not elementwise — but
+    // the exhaustive check derived from the same fact still belongs.
+    let files = generate_from(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\n\
+         sig Premium extends Category {}\nsig Budget extends Category {}\n\
+         fact Cover { all i: Item | i in Premium.items or i in Budget.items }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("must belong to"), "exhaustive check lost:\n{nt}");
+}
+
+#[test]
+fn rust_one_sig_is_atom_local_only_when_it_renders_as_a_value() {
+    // A `one sig` name is admissible in a validator body only where the Rust
+    // translator can put a value. A field-less variant of a field-less enum
+    // parent becomes `L::Low`; the rest emit a *type* name where a value
+    // belongs and do not compile.
+    let cases: &[(&str, &str, bool)] = &[
+        ("fieldless_variant",
+         "abstract sig L {}\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", true),
+        ("singleton_struct_with_fields",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }", false),
+        ("cardinality_of_one_sig",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }", false),
+        ("variant_carrying_inherited_fields",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", false),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_exhaustive_gets_a_helper_and_not_a_vacuous_wrapper() {
+    // The check needs the *other* sigs' collections, so it cannot be performed
+    // from one wrapped value. It used to produce both the standalone helper and
+    // a `ValidatedItem` whose whole body was `if true`.
+    let files = generate_from(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\n\
+         sig Premium extends Category {}\nsig Budget extends Category {}\n\
+         fact Cover { all i: Item | i in Premium.items or i in Budget.items }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("fn validate_exhaustive_item"), "standalone helper lost:\n{nt}");
+    assert!(!nt.contains("struct ValidatedItem"), "vacuous wrapper certifying nothing:\n{nt}");
+    assert!(!nt.contains("if true"), "vacuous validator body:\n{nt}");
 }

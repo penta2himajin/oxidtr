@@ -311,10 +311,12 @@ sig ValueBound {
 -------------------------------------------------------------------------------
 
 sig ValidatedSigDecl       { vSigDecl:       one SigDecl }
+-- ValidatedFactDecl / ValidatedAssertDecl removed: their only facts quantify
+-- over another whole sig (`all f: FactDecl | all ir: OxidtrIR | ...`), so a
+-- wrapper around one value would check them against an empty universe and
+-- certify nothing. See #78.
 sig ValidatedFieldDecl     { vFieldDecl:     one FieldDecl }
 sig ValidatedAlloyModel    { vAlloyModel:    one AlloyModel }
-sig ValidatedFactDecl      { vFactDecl:      one FactDecl }
-sig ValidatedAssertDecl    { vAssertDecl:    one AssertDecl }
 sig ValidatedPredDecl      { vPredDecl:      one PredDecl }
 sig ValidatedFunDecl       { vFunDecl:       one FunDecl }
 sig ValidatedIRField       { vIRField:       one IRField }

@@ -752,3 +752,197 @@ fn swift_adversarial_models_compile() {
         );
     }
 }
+
+/// A model mixing a temporal fact with an ordinary one must still produce
+/// generated tests that *pass*. `eventually some p | p.x = 1` used to seed a
+/// current-state fixture that made the unrelated `NowZero` fact fail.
+#[test]
+#[ignore]
+fn rust_mixed_temporal_model_tests_pass() {
+    const MODEL: &str = "some sig P { var x: one Int }\nsome sig Q { y: one Int }\n\
+        fact NowZero { all q: Q | all p: P | p.x = 0 }\n\
+        fact LaterOne { eventually some p: P | p.x = 1 }";
+    let model = parser::parse(MODEL).expect("parse");
+    let lowered = ir::lower(&model).expect("lower");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("mixed_crate");
+    write_rust_crate(&lowered, crate_dir.to_str().unwrap());
+
+    let out = std::process::Command::new("cargo")
+        .arg("test")
+        .current_dir(&crate_dir)
+        .output()
+        .expect("failed to run cargo test");
+    assert!(
+        out.status.success(),
+        "generated tests for a mixed temporal model failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// Compile and *run* the generated temporal trace checkers against every trace
+/// of length 1–3, comparing them to the operator definitions computed
+/// independently. String assertions cannot catch a checker that is semantically
+/// right but does not compile, nor one that compiles and is subtly wrong —
+/// both happened during review of #78.
+#[test]
+#[ignore]
+fn rust_temporal_checkers_match_their_definitions() {
+    // Covers the one-param checker shape *and* the zero-param `()` shape, and
+    // the traces below use empty and multi-atom states so a quantifier
+    // translation error cannot hide behind exactly-one-atom states.
+    const MODEL: &str = "sig P { f: one Int, g: one Int }\n\
+        assert UntilOk { (all p: P | p.f = 1) until (all p: P | p.g = 1) }\n\
+        assert SinceOk { (all p: P | p.f = 1) since (all p: P | p.g = 1) }\n\
+        assert ReleaseOk { (all p: P | p.f = 1) release (all p: P | p.g = 1) }\n\
+        assert TriggeredOk { (all p: P | p.f = 1) triggered (all p: P | p.g = 1) }\n\
+        assert NoParamUntil { 1 = 1 until 1 = 2 }\n\
+        assert NoParamEventually { eventually 1 = 2 }\n\
+        assert EventuallyOk { eventually all p: P | p.g = 1 }\n\
+        assert OnceOk { once all p: P | p.g = 1 }\n\
+        sig Q { h: one Int }\n\
+        assert TupleUntil { (all p: P | p.f = 1) until (all q: Q | q.h = 1) }";
+
+    let model = parser::parse(MODEL).expect("parse");
+    let ir = ir::lower(&model).expect("lower");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("temporal_crate");
+    write_rust_crate(&ir, crate_dir.to_str().unwrap());
+
+    // Appended to tests.rs so the private `check_*` fns are in scope.
+    let harness = r#"
+
+#[cfg(test)]
+mod semantics {
+    use super::*;
+
+    /// One state per (F, G) truth combination. `shape` varies how the state
+    /// realises that combination: 0 = one atom, 1 = two atoms, 2 = an empty
+    /// collection (where both `all` quantifiers are vacuously true).
+    fn state(f: bool, g: bool, shape: usize) -> Vec<P> {
+        let atom = |f: bool, g: bool| P { f: if f { 1 } else { 0 }, g: if g { 1 } else { 0 } };
+        match shape {
+            1 => vec![atom(true, true), atom(f, g)],
+            2 if f && g => Vec::new(),
+            _ => vec![atom(f, g)],
+        }
+    }
+
+    fn f_of(s: &Vec<P>) -> bool { s.iter().all(|p| p.f == 1) }
+    fn g_of(s: &Vec<P>) -> bool { s.iter().all(|p| p.g == 1) }
+
+    // `F until G`     : ∃j. G(j) ∧ ∀k<j. F(k)
+    fn until_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).any(|j| g_of(&t[j]) && t[..j].iter().all(f_of))
+    }
+    // `F since G`     : ∃j. G(j) ∧ ∀k>j. F(k)
+    fn since_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).any(|j| g_of(&t[j]) && t[j + 1..].iter().all(f_of))
+    }
+    // `F release G`   : ¬(¬F until ¬G) = ∀j. G(j) ∨ ∃k<j. F(k)
+    fn release_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).all(|j| g_of(&t[j]) || t[..j].iter().any(f_of))
+    }
+    // `F triggered G` : ¬(¬F since ¬G) = ∀j. G(j) ∨ ∃k>j. F(k)
+    fn triggered_def(t: &[Vec<P>]) -> bool {
+        (0..t.len()).all(|j| g_of(&t[j]) || t[j + 1..].iter().any(f_of))
+    }
+
+    fn traces() -> Vec<Vec<Vec<P>>> {
+        let combos = [(false, false), (false, true), (true, false), (true, true)];
+        let mut out = Vec::new();
+        for shape in 0..3usize {
+            for len in 1..=3usize {
+                for mut n in 0..4usize.pow(len as u32) {
+                    let mut trace = Vec::new();
+                    for _ in 0..len {
+                        let (f, g) = combos[n % 4];
+                        trace.push(state(f, g, shape));
+                        n /= 4;
+                    }
+                    out.push(trace);
+                }
+            }
+        }
+        out
+    }
+
+    /// The zero-parameter shape: a trace of unit states. `1 = 1 until 1 = 2`
+    /// can never be satisfied, and `eventually 1 = 2` likewise.
+    fn unit_traces() -> Vec<Vec<()>> {
+        (0..=3usize).map(|n| vec![(); n]).collect()
+    }
+
+    /// The heterogeneous tuple branch: two quantified params of different
+    /// sigs, so the checker takes `&[(Vec<P>, Vec<Q>)]` rather than `&[Vec<P>]`.
+    #[test]
+    fn tuple_checker_matches_its_definition() {
+        let p = |f: bool| vec![P { f: if f { 1 } else { 0 }, g: 0 }];
+        let q = |h: bool| vec![Q { h: if h { 1 } else { 0 } }];
+        let combos = [(false, false), (false, true), (true, false), (true, true)];
+        for len in 1..=3usize {
+            for mut n in 0..4usize.pow(len as u32) {
+                let mut t: Vec<(Vec<P>, Vec<Q>)> = Vec::new();
+                for _ in 0..len {
+                    let (f, h) = combos[n % 4];
+                    t.push((p(f), q(h)));
+                    n /= 4;
+                }
+                let f_of = |s: &(Vec<P>, Vec<Q>)| s.0.iter().all(|x| x.f == 1);
+                let g_of = |s: &(Vec<P>, Vec<Q>)| s.1.iter().all(|x| x.h == 1);
+                let expected = (0..t.len()).any(|j| g_of(&t[j]) && t[..j].iter().all(&f_of));
+                assert_eq!(check_until_tuple_until(&t), expected, "tuple until mismatch on {t:?}");
+            }
+        }
+    }
+
+    /// Liveness on non-empty traces, satisfying and not — the empty-trace test
+    /// the generator emits only pins the false case.
+    #[test]
+    fn unary_checkers_on_non_empty_traces() {
+        let g = |ok: bool| vec![P { f: 1, g: if ok { 1 } else { 0 } }];
+        assert!(check_liveness_eventually_ok(&[g(false), g(true)]), "eventually should find the later state");
+        assert!(!check_liveness_eventually_ok(&[g(false), g(false)]), "no satisfying state");
+        assert!(check_past_liveness_once_ok(&[g(true), g(false)]), "once should find the earlier state");
+        assert!(!check_past_liveness_once_ok(&[g(false), g(false)]), "no satisfying state");
+    }
+
+    #[test]
+    fn parameterless_checkers_are_callable_and_correct() {
+        for t in unit_traces() {
+            assert!(!check_until_no_param_until(&t), "1=1 until 1=2 can never hold: {t:?}");
+            assert!(!check_liveness_no_param_eventually(&t), "eventually 1=2 can never hold: {t:?}");
+        }
+    }
+
+    #[test]
+    fn checkers_match_definitions() {
+        for t in traces() {
+            assert_eq!(check_until_until_ok(&t), until_def(&t), "until mismatch on {t:?}");
+            assert_eq!(check_since_since_ok(&t), since_def(&t), "since mismatch on {t:?}");
+            assert_eq!(check_release_release_ok(&t), release_def(&t), "release mismatch on {t:?}");
+            assert_eq!(check_triggered_triggered_ok(&t), triggered_def(&t), "triggered mismatch on {t:?}");
+        }
+    }
+}
+"#;
+    let tests_path = crate_dir.join("src/tests.rs");
+    let mut content = std::fs::read_to_string(&tests_path).unwrap();
+    content.push_str(harness);
+    std::fs::write(&tests_path, content).unwrap();
+
+    let out = std::process::Command::new("cargo")
+        .args(["test", "semantics"])
+        .current_dir(&crate_dir)
+        .output()
+        .expect("failed to run cargo test");
+    assert!(
+        out.status.success(),
+        "generated temporal checkers disagree with their definitions!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

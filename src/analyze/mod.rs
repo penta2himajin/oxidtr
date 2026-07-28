@@ -301,6 +301,170 @@ pub fn expr_temporal_kind(expr: &Expr) -> Option<TemporalKind> {
     scan_temporal_kind(expr)
 }
 
+/// Alloy's built-in integer methods, which the translators turn into
+/// operators. A user `pred` sharing one of these names is never what a
+/// `receiver.plus[n]` call refers to.
+const BUILTIN_RECEIVER_FUNS: &[&str] = &["plus", "add", "minus", "sub", "mul", "div", "rem"];
+
+/// Does this `FunApp` resolve to a user-declared operation, rather than a
+/// built-in? Matching on the bare name skipped `ArithmeticOnly` merely because
+/// some unrelated pred happened to be called `plus`.
+fn resolved_callees<'a>(
+    name: &str, receiver: Option<&Expr>, args: &[Expr], ir: &'a OxidtrIR,
+) -> Vec<&'a OperationNode> {
+    if receiver.is_some() && BUILTIN_RECEIVER_FUNS.contains(&name) {
+        return Vec::new();
+    }
+    ir.operations.iter()
+        .filter(|op| op.name == name)
+        .filter(|op| op.receiver_sig.is_some() == receiver.is_some())
+        .filter(|op| op.params.len() == args.len())
+        .collect()
+}
+
+/// May a single-state (snapshot) assertion stand in for this expression?
+///
+/// `always P` and `historically P` both include the *current* state, so
+/// asserting `P` now is a sound necessary condition — but **only in a positive
+/// position**. Under a negation, in an implication antecedent, or either side
+/// of an `iff`, the implication `always P => P now` runs the wrong way and the
+/// snapshot becomes a different claim. `eventually`, `once`, `after`, `before`,
+/// the binary operators and prime refer to states a snapshot cannot see at all.
+///
+/// Call-aware: a `pred` body can hide an operator from a syntactic scan.
+pub fn snapshot_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
+    snapshot_sound_inner(expr, ir, true, false, &mut Vec::new())
+}
+
+/// As `snapshot_is_sound`, but a prime is acceptable: the transition path
+/// exists precisely to handle it. `always <transition>` is therefore fine —
+/// one step is a sound necessary check — while `eventually p.x' > 0` is not.
+pub fn transition_is_sound(expr: &Expr, ir: &OxidtrIR) -> bool {
+    snapshot_sound_inner(expr, ir, true, true, &mut Vec::new())
+}
+
+fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, positive: bool, allow_prime: bool, seen: &mut Vec<String>) -> bool {
+    match expr {
+        Expr::TemporalUnary { op, expr: inner } => match op {
+            TemporalUnaryOp::Always | TemporalUnaryOp::Historically => {
+                positive && snapshot_sound_inner(inner, ir, positive, allow_prime, seen)
+            }
+            _ => false,
+        },
+        Expr::TemporalBinary { .. } => false,
+        Expr::Prime(inner) => allow_prime && snapshot_sound_inner(inner, ir, positive, allow_prime, seen),
+        Expr::Not(inner) => snapshot_sound_inner(inner, ir, !positive, allow_prime, seen),
+        Expr::BinaryLogic { op, left, right } => match op {
+            LogicOp::Implies => {
+                snapshot_sound_inner(left, ir, !positive, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
+            }
+            // Neither side of `iff` is monotone.
+            LogicOp::Iff => {
+                snapshot_sound_inner(left, ir, true, allow_prime, seen) && snapshot_sound_inner(left, ir, false, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, true, allow_prime, seen) && snapshot_sound_inner(right, ir, false, allow_prime, seen)
+            }
+            _ => {
+                snapshot_sound_inner(left, ir, positive, allow_prime, seen)
+                    && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
+            }
+        },
+        Expr::Comparison { left, right, .. } | Expr::SetOp { left, right, .. }
+        | Expr::Product { left, right } => {
+            snapshot_sound_inner(left, ir, positive, allow_prime, seen)
+                && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
+        }
+        Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
+            snapshot_sound_inner(inner, ir, positive, allow_prime, seen)
+        }
+        // `all` is antitone in its domain and monotone in its body; `some` is
+        // monotone in both; `no` is antitone in both.
+        Expr::Quantifier { kind, bindings, body, .. } => {
+            let (dom, bod) = match kind {
+                QuantKind::All => (!positive, positive),
+                QuantKind::No => (!positive, !positive),
+                _ => (positive, positive),
+            };
+            bindings.iter().all(|b| snapshot_sound_inner(&b.domain, ir, dom, allow_prime, seen))
+                && snapshot_sound_inner(body, ir, bod, allow_prime, seen)
+        }
+        Expr::FunApp { name, receiver, args } => {
+            if receiver.as_deref().is_some_and(|r| !snapshot_sound_inner(r, ir, positive, allow_prime, seen)) {
+                return false;
+            }
+            if args.iter().any(|a| !snapshot_sound_inner(a, ir, positive, allow_prime, seen)) { return false; }
+            if seen.iter().any(|n| n == name) { return true; }
+            seen.push(name.clone());
+            let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                .all(|op| op.body.iter().all(|b| snapshot_sound_inner(b, ir, positive, allow_prime, seen)));
+            seen.pop();
+            ok
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+    }
+}
+
+/// Is the temporal operator the *root* of this expression, with no further
+/// temporal operator underneath it?
+///
+/// The trace-checker templates wrap the generic (temporal-erasing) translation
+/// of the whole body in one quantifier over states, which is only faithful when
+/// the operator is outermost. `A and eventually B` would become
+/// `any(|s| A(s) && B(s))` instead of `A(now) && exists s. B(s)`, and
+/// `all p | eventually P` would swap the quantifiers. Those are different
+/// formulas, so the caller must decline to emit rather than emit a wrong check.
+pub fn temporal_is_outermost(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        // `after`/`before` name an adjacent state; there is no trace-checker
+        // template for them yet and a snapshot is not a sound stand-in.
+        Expr::TemporalUnary { op: TemporalUnaryOp::After | TemporalUnaryOp::Before, .. } => false,
+        Expr::TemporalUnary { expr: inner, .. } => !contains_temporal(inner, ir),
+        Expr::TemporalBinary { left, right, .. } => {
+            !contains_temporal(left, ir) && !contains_temporal(right, ir)
+        }
+        _ => false,
+    }
+}
+
+/// Any temporal operator or prime anywhere beneath `expr`, following `pred`
+/// calls — a purely syntactic scan misses `pred P[x] { eventually … }`, whose
+/// body the generic translator erases just the same.
+pub fn contains_temporal(expr: &Expr, ir: &OxidtrIR) -> bool {
+    scan_temporal_kind(expr).is_some() || calls_temporal_pred(expr, ir, &mut Vec::new())
+}
+
+fn calls_temporal_pred(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+    match expr {
+        Expr::FunApp { name, receiver, args } => {
+            if receiver.as_deref().is_some_and(|r| calls_temporal_pred(r, ir, seen)) { return true; }
+            if args.iter().any(|a| calls_temporal_pred(a, ir, seen)) { return true; }
+            if seen.iter().any(|n| n == name) { return false; }
+            seen.push(name.clone());
+            let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter().any(|op| {
+                op.body.iter().any(|b| scan_temporal_kind(b).is_some() || calls_temporal_pred(b, ir, seen))
+            });
+            seen.pop();
+            hit
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            calls_temporal_pred(left, ir, seen) || calls_temporal_pred(right, ir, seen)
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. }
+        | Expr::TemporalUnary { expr: inner, .. } | Expr::Prime(inner) => {
+            calls_temporal_pred(inner, ir, seen)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| calls_temporal_pred(&b.domain, ir, seen))
+                || calls_temporal_pred(body, ir, seen)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
 /// Find the first `TemporalBinary` node nested inside an expression tree,
 /// walking through quantifiers and logical connectives.
 /// Returns the operator, left, and right sub-expressions.
@@ -375,10 +539,433 @@ pub fn strip_outer_quantifier(expr: &Expr) -> Option<(&QuantKind, &[QuantBinding
 pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
     let mut results = Vec::new();
     for c in &ir.constraints {
+        // `analyze_expr` unwraps temporal operators, so a constraint derived
+        // from `eventually all p | #p.items <= 1` becomes a plain cardinality
+        // bound and every validator built from it enforces the wrong thing in
+        // the current state. Every analyzer-derived consumer routes through
+        // here, so this is the one place the gate has to hold.
         let name = c.name.clone().unwrap_or_default();
-        results.extend(analyze_expr(&c.expr, &name, ir));
+        if snapshot_is_sound(&c.expr, ir) {
+            results.extend(analyze_expr(&c.expr, &name, ir));
+            continue;
+        }
+        // Mixed fact: keep whatever conjuncts *are* snapshot-sound rather than
+        // discarding the whole thing. `Named` is documentation, so it survives
+        // either way; the rest are enforced and must not.
+        results.extend(analyze_expr(&c.expr, &name, ir).into_iter()
+            .filter(|i| matches!(i, ConstraintInfo::Named { .. })));
+        for conj in conjuncts(&c.expr) {
+            if snapshot_is_sound(conj, ir) {
+                results.extend(analyze_expr(conj, &name, ir).into_iter()
+                    .filter(|i| !matches!(i, ConstraintInfo::Named { .. })));
+            }
+        }
     }
     results
+}
+
+/// `expr_contains_prime` only scans a call's receiver and arguments, so a
+/// prime inside the called `pred`'s body slips past every prime gate.
+pub fn contains_prime_through_calls(expr: &Expr, ir: &OxidtrIR) -> bool {
+    fn scan(e: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+        match e {
+            Expr::Prime(_) => true,
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => scan(left, ir, seen) || scan(right, ir, seen),
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } => scan(i, ir, seen),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().any(|b| scan(&b.domain, ir, seen)) || scan(body, ir, seen)
+            }
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| scan(r, ir, seen)) { return true; }
+                if args.iter().any(|a| scan(a, ir, seen)) { return true; }
+                if seen.iter().any(|n| n == name) { return false; }
+                seen.push(name.clone());
+                let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .any(|op| op.body.iter().any(|b| scan(b, ir, seen)));
+                seen.pop();
+                hit
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+        }
+    }
+    scan(expr, ir, &mut Vec::new())
+}
+
+/// Can the transition rewriter actually handle this shape?
+///
+/// It rewrites `x'` to a `next_x` binding produced by zipping a pre-state and
+/// post-state collection, which only works for one universally quantified
+/// variable ranging over a plain sig. Everything else — an existential (which
+/// it silently emits as a `for` loop, i.e. `all`), several bindings (unbound
+/// `next_*` references), a primed domain (no parameter at all, which panics
+/// the generator), or a prime that is only reachable through a callee body it
+/// cannot rewrite — must be declined rather than emitted.
+pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
+    // A prime the rewriter cannot see is a prime it cannot rewrite — and one
+    // it can see is not enough if another hides in a callee.
+    if !expr_contains_prime(expr) { return false; }
+    if contains_prime_through_calls(expr, ir) && calls_any_op(expr, ir) { return false; }
+
+    let sig_names: std::collections::HashSet<&str> =
+        ir.structures.iter().map(|s| s.name.as_str()).collect();
+    // `some x: S | ..` over a `one sig` binds exactly one atom, so the emitted
+    // `for` loop is `all` and `some` at once — the only existential the
+    // rewriter gets right.
+    let singleton_domain = |b: &QuantBinding| matches!(&b.domain, Expr::VarRef(d)
+        if ir.structures.iter().any(|s| &s.name == d && s.sig_multiplicity == SigMultiplicity::One));
+    let (var, body) = match strip_outer_quantifier(expr) {
+        Some((QuantKind::Some, bindings, body)) if bindings.len() == 1
+            && bindings[0].vars.len() == 1 && singleton_domain(&bindings[0]) => {
+            if expr_contains_prime(&bindings[0].domain) { return false; }
+            (bindings[0].vars[0].clone(), body)
+        }
+        Some((QuantKind::All, bindings, body)) => {
+            let vars: usize = bindings.iter().map(|b| b.vars.len()).sum();
+            if vars != 1 || bindings.len() != 1 { return false; }
+            if expr_contains_prime(&bindings[0].domain) { return false; }
+            match &bindings[0].domain {
+                Expr::VarRef(d) if sig_names.contains(d.as_str()) => {}
+                _ => return false,
+            }
+            (bindings[0].vars[0].clone(), body)
+        }
+        _ => return false,
+    };
+
+    // Every prime in the body must be exactly `v` or `v.field` for the bound
+    // variable: those are what `rewrite_prime_as_post_state` turns into
+    // `next_v`. A chained `c.d.v'` is silently dropped by the rewriter, and a
+    // prime under a nested quantifier refers to a variable that has no
+    // post-state binding at all.
+    fn primes_ok(e: &Expr, var: &str, in_nested_quant: bool) -> bool {
+        match e {
+            Expr::Prime(inner) => {
+                if in_nested_quant { return false; }
+                match inner.as_ref() {
+                    Expr::VarRef(v) => v == var,
+                    Expr::FieldAccess { base, .. } => matches!(base.as_ref(), Expr::VarRef(v) if v == var),
+                    _ => false,
+                }
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                primes_ok(left, var, in_nested_quant) && primes_ok(right, var, in_nested_quant)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } => primes_ok(i, var, in_nested_quant),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| primes_ok(&b.domain, var, true))
+                    && primes_ok(body, var, true)
+            }
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().is_none_or(|r| primes_ok(r, var, in_nested_quant))
+                    && args.iter().all(|a| primes_ok(a, var, in_nested_quant))
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+        }
+    }
+    if !primes_ok(body, &var, false) { return false; }
+
+    // The generated test uses a *clone* of the pre-state as the post-state, so
+    // the only transition it can actually satisfy is a stutter: each primed
+    // term equated to the identical unprimed term. `c.v' = c.v.plus[1]`
+    // compiles and then fails, asserting `v == v + 1`. Synthesizing a
+    // satisfying post-state is #104 work.
+    fn is_stutter(e: &Expr) -> bool {
+        match e {
+            Expr::Comparison { op: CompareOp::Eq, left, right } => {
+                match (left.as_ref(), right.as_ref()) {
+                    (Expr::Prime(a), b) | (b, Expr::Prime(a)) => a.as_ref() == b,
+                    _ => false,
+                }
+            }
+            Expr::BinaryLogic { op: LogicOp::And, left, right } => is_stutter(left) && is_stutter(right),
+            _ => false,
+        }
+    }
+    is_stutter(body)
+}
+
+/// Does the expression call any user-declared operation at all?
+fn calls_any_op(expr: &Expr, ir: &OxidtrIR) -> bool {
+    match expr {
+        Expr::FunApp { name, receiver, args } => {
+            !resolved_callees(name, receiver.as_deref(), args, ir).is_empty()
+                || receiver.as_deref().is_some_and(|r| calls_any_op(r, ir))
+                || args.iter().any(|a| calls_any_op(a, ir))
+        }
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => calls_any_op(left, ir) || calls_any_op(right, ir),
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+        | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => calls_any_op(i, ir),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| calls_any_op(&b.domain, ir)) || calls_any_op(body, ir)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// Does this expression call a `pred`/`fun` whose body iterates over *all*
+/// instances of a sig that it never received as a parameter?
+///
+/// `pred Pos { all p: P | p.x >= 0 }` takes no arguments but walks every `P`,
+/// so it compiles to `fn pos() -> bool { ps.iter().all(..) }` with `ps`
+/// undefined. The call site `Pos[]` has no argument to pass it through either,
+/// so there is nothing a generated test could hand it.
+pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
+    fn body_scans_an_unpassed_sig(op: &OperationNode, ir: &OxidtrIR) -> bool {
+        // No parameter supplies the universe. The body is translated to
+        // `ps.iter()` — the *sig's* collection name — regardless of what the
+        // parameter is called, so a `pool: set P` parameter does not even
+        // produce compiling code; and naming it `ps` would silently quantify
+        // over whatever subset was passed rather than over every P.
+        let param_types: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let sig_names: std::collections::HashSet<&str> =
+            ir.structures.iter().map(|s| s.name.as_str()).collect();
+        fn scan(
+            e: &Expr, sigs: &std::collections::HashSet<&str>,
+            params: &std::collections::HashSet<&str>,
+        ) -> bool {
+            match e {
+                // A bare sig name means "every instance of it" wherever it
+                // appears — a quantifier domain, or a set as in `some P`.
+                Expr::VarRef(d) => sigs.contains(d.as_str()) && !params.contains(d.as_str()),
+                Expr::Quantifier { bindings, body, .. } => {
+                    bindings.iter().any(|b| scan(&b.domain, sigs, params)) || scan(body, sigs, params)
+                }
+                Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+                | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+                | Expr::TemporalBinary { left, right, .. } => {
+                    scan(left, sigs, params) || scan(right, sigs, params)
+                }
+                Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+                | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+                | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => scan(i, sigs, params),
+                Expr::FunApp { receiver, args, .. } => {
+                    receiver.as_deref().is_some_and(|r| scan(r, sigs, params))
+                        || args.iter().any(|a| scan(a, sigs, params))
+                }
+                Expr::IntLiteral(_) => false,
+            }
+        }
+        op.body.iter().any(|b| scan(b, &sig_names, &param_types))
+    }
+
+    fn walk(e: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bool {
+        match e {
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| walk(r, ir, seen)) { return true; }
+                if args.iter().any(|a| walk(a, ir, seen)) { return true; }
+                if seen.iter().any(|n| n == name) { return false; }
+                seen.push(name.clone());
+                let hit = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .any(|op| body_scans_an_unpassed_sig(op, ir)
+                        || op.body.iter().any(|b| walk(b, ir, seen)));
+                seen.pop();
+                hit
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => walk(left, ir, seen) || walk(right, ir, seen),
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => walk(i, ir, seen),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().any(|b| walk(&b.domain, ir, seen)) || walk(body, ir, seen)
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+        }
+    }
+    walk(expr, ir, &mut Vec::new())
+}
+
+/// May a constraint be enforced by a wrapper around a *single* value of
+/// `sig`?
+///
+/// A `Validated<Sig>` substitutes `vec![value.clone()]` for the entire sig
+/// universe, which is only faithful when the constraint says the same thing
+/// about each atom independently: `all p: P | <predicate on p>`. It is wrong
+/// for a global existential — `some q: Q | ..` becomes a per-value
+/// requirement, rejecting an atom a valid collection may contain — and for a
+/// cross-atom comparison such as `all p: P | all q: P | p.x >= q.x`, where
+/// every singleton trivially passes while a two-element collection may not.
+fn mentions_any_sig_in(e: &Expr, all: &std::collections::HashSet<&str>) -> bool {
+    match e {
+        Expr::VarRef(d) => all.contains(d.as_str()),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            mentions_any_sig_in(left, all) || mentions_any_sig_in(right, all)
+        }
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+        | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => mentions_any_sig_in(i, all),
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| mentions_any_sig_in(&b.domain, all)) || mentions_any_sig_in(body, all)
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(|r| mentions_any_sig_in(r, all))
+                || args.iter().any(|a| mentions_any_sig_in(a, all))
+        }
+        Expr::IntLiteral(_) => false,
+    }
+}
+
+pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
+    // Every sig name in a body is a dependency on that sig, *except* a `one
+    // sig` the Rust translator can render as a plain value — a field-less
+    // variant of a field-less enum parent, e.g. `L::Low`. A singleton struct
+    // (`n.c == Config`), a payload-carrying variant (`L::Low` needing
+    // arguments) and any cardinality use (`#P` → `P.len()`) all emit a type
+    // name where a value belongs and do not compile.
+    let atom_valued = |name: &str| ir.structures.iter().any(|s| {
+        s.name == name
+            && s.sig_multiplicity == SigMultiplicity::One
+            && s.fields.is_empty()
+            && s.parent.as_ref().is_some_and(|p| ir.structures.iter()
+                .any(|par| &par.name == p && par.is_enum && par.fields.is_empty()))
+    });
+    let sig_names: std::collections::HashSet<&str> = ir.structures.iter()
+        .filter(|s| !atom_valued(&s.name))
+        .map(|s| s.name.as_str()).collect();
+    let all_sigs: std::collections::HashSet<&str> =
+        ir.structures.iter().map(|s| s.name.as_str()).collect();
+
+
+    // Nothing in the body may depend on the whole sig: not a quantifier over
+    // it, not a bare reference to it (`#P`), and not a call whose body does
+    // either. A domain derived from the bound atom (`all f: p.fields | ..`) is
+    // relative to it and fine, and a `one sig` name is a single atom, not a
+    // universe.
+    fn no_global_quantifier(
+        e: &Expr, sigs: &std::collections::HashSet<&str>, all: &std::collections::HashSet<&str>,
+    ) -> bool {
+        match e {
+            Expr::VarRef(d) => !sigs.contains(d.as_str()),
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| !matches!(&b.domain, Expr::VarRef(d) if sigs.contains(d.as_str())))
+                    && bindings.iter().all(|b| no_global_quantifier(&b.domain, sigs, all))
+                    && no_global_quantifier(body, sigs, all)
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                no_global_quantifier(left, sigs, all) && no_global_quantifier(right, sigs, all)
+            }
+            // `#X` reads a collection whatever X is, so a singleton name is
+            // no longer a plain value there.
+            Expr::Cardinality(i) => !mentions_any_sig_in(i, all),
+            Expr::Not(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => no_global_quantifier(i, sigs, all),
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().is_none_or(|r| no_global_quantifier(r, sigs, all))
+                    && args.iter().all(|a| no_global_quantifier(a, sigs, all))
+            }
+            Expr::IntLiteral(_) => true,
+        }
+    }
+
+    // A call hides its body from the scan above.
+    fn callee_is_atom_local(
+        e: &Expr, ir: &OxidtrIR, sigs: &std::collections::HashSet<&str>,
+        all: &std::collections::HashSet<&str>, seen: &mut Vec<String>,
+    ) -> bool {
+        match e {
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| !callee_is_atom_local(r, ir, sigs, all, seen)) {
+                    return false;
+                }
+                if args.iter().any(|a| !callee_is_atom_local(a, ir, sigs, all, seen)) { return false; }
+                if seen.iter().any(|n| n == name) { return true; }
+                seen.push(name.clone());
+                let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .all(|op| op.body.iter().all(|b| no_global_quantifier(b, sigs, all)
+                        && callee_is_atom_local(b, ir, sigs, all, seen)));
+                seen.pop();
+                ok
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                callee_is_atom_local(left, ir, sigs, all, seen) && callee_is_atom_local(right, ir, sigs, all, seen)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => {
+                callee_is_atom_local(i, ir, sigs, all, seen)
+            }
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| callee_is_atom_local(&b.domain, ir, sigs, all, seen))
+                    && callee_is_atom_local(body, ir, sigs, all, seen)
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => true,
+        }
+    }
+
+    let atom_local = |body: &Expr| {
+        no_global_quantifier(body, &sig_names, &all_sigs)
+            && callee_is_atom_local(body, ir, &sig_names, &all_sigs, &mut Vec::new())
+    };
+    let singleton = |d: &str| ir.structures.iter()
+        .any(|s| s.name == d && s.sig_multiplicity == SigMultiplicity::One);
+    let binder_ok = |bindings: &[QuantBinding], body: &Expr, allow_some: bool| {
+        bindings.len() == 1
+            && bindings[0].vars.len() == 1
+            && matches!(&bindings[0].domain, Expr::VarRef(d) if d == sig && (!allow_some || singleton(d)))
+            && atom_local(body)
+    };
+
+    match expr {
+        // `no x: S | B` is `all x: S | not B` — a claim about each atom.
+        Expr::Quantifier { kind: QuantKind::All | QuantKind::No, bindings, body } => {
+            binder_ok(bindings, body, false)
+        }
+        // `some x: S | B` is a claim about the collection, except over a
+        // `one sig`, where the collection is one atom.
+        Expr::Quantifier { kind: QuantKind::Some, bindings, body } => {
+            binder_ok(bindings, body, true)
+        }
+        // `not some x: S | B` is the same claim as `no x: S | B`.
+        Expr::Not(inner) => match inner.as_ref() {
+            Expr::Quantifier { kind: QuantKind::Some, bindings, body } => {
+                binder_ok(bindings, body, false)
+            }
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Is at least one top-level conjunct of this fact snapshot-checkable? A fact
+/// where none is has no faithful single-state validator at all.
+pub fn has_snapshot_sound_conjunct(expr: &Expr, ir: &OxidtrIR) -> bool {
+    !sound_conjuncts(expr, ir).is_empty()
+}
+
+/// The top-level conjuncts a single-state check may legitimately enforce.
+pub fn sound_conjuncts<'a>(expr: &'a Expr, ir: &OxidtrIR) -> Vec<&'a Expr> {
+    conjuncts(expr).into_iter().filter(|c| snapshot_is_sound(c, ir)).collect()
+}
+
+/// Split a top-level conjunction into its conjuncts.
+fn conjuncts(expr: &Expr) -> Vec<&Expr> {
+    match expr {
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
+            let mut out = conjuncts(left);
+            out.extend(conjuncts(right));
+            out
+        }
+        _ => vec![expr],
+    }
 }
 
 /// Get constraints relevant to a specific sig.
@@ -1044,6 +1631,9 @@ pub fn bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -> Opti
 pub fn fixed_value_fields(ir: &OxidtrIR) -> std::collections::HashMap<(String, String), i64> {
     let mut result = std::collections::HashMap::new();
     for c in &ir.constraints {
+        // This controls enum representation and fixtures, so it must only ever
+        // record values the fact actually entails.
+        if !snapshot_is_sound(&c.expr, ir) { continue; }
         collect_fixed_values(&c.expr, &mut result);
     }
     result
@@ -1060,7 +1650,9 @@ fn collect_fixed_values(expr: &Expr, result: &mut std::collections::HashMap<(Str
                 }
             }
         }
-        Expr::BinaryLogic { left, right, .. } => {
+        // Only a conjunction entails its operands. Mining an `or` branch pins
+        // one alternative and silently deletes the others.
+        Expr::BinaryLogic { op: LogicOp::And, left, right } => {
             collect_fixed_values(left, result);
             collect_fixed_values(right, result);
         }
@@ -1084,8 +1676,12 @@ pub fn value_bounds_for_field(ir: &OxidtrIR, sig_name: &str, field_name: &str) -
 /// Check if a quantifier expression uses `disj` on a binding that iterates a specific sig's field.
 /// Returns a list of (sig_name, field_name) pairs where `disj` implies uniqueness.
 pub fn disj_fields(ir: &OxidtrIR) -> Vec<(String, String)> {
+    // Enforced directly by the TS/Kotlin validators, so it needs the same
+    // eligibility filter as everything routed through `analyze()`.
+
     let mut results = Vec::new();
     for c in &ir.constraints {
+        if !snapshot_is_sound(&c.expr, ir) { continue; }
         collect_disj_fields(&c.expr, &mut results);
     }
     results.sort();
