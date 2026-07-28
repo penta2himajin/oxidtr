@@ -1919,3 +1919,44 @@ fn rust_global_existential_does_not_become_a_per_value_wrapper() {
     assert!(nt.contains("struct ValidatedP"), "elementwise conjunct lost its wrapper:\n{nt}");
     assert!(!nt.contains("struct ValidatedQ"), "existential became per-value:\n{nt}");
 }
+
+#[test]
+fn rust_validator_rejects_whole_universe_dependencies() {
+    // A singleton wrapper cannot stand in for the whole sig, so a body that
+    // reads the universe — directly or through a call — is not elementwise.
+    let cases: &[(&str, &str, bool)] = &[
+        ("cardinality_of_sig",
+         "sig P { x: one Int }\nfact CountSensitive { all p: P | p.x = #P }", false),
+        ("callee_reads_universe",
+         "sig P { x: one Int }\npred DominatesAll[p: one P] { all q: P | p.x >= q.x }\n\
+          fact Hidden { all p: P | p.x >= 0 and DominatesAll[p] }", false),
+        // `not some x | B` is `no x | B`, which main wrapped correctly.
+        ("not_some_is_no",
+         "sig P { x: one Int }\nfact NonNegative { not some p: P | p.x < 0 }", true),
+        // Over a `one sig` the collection is a single atom, so `some` is `all`.
+        ("some_over_one_sig",
+         "one sig P { x: one Int }\nfact SomeSingleton { some p: P | p.x >= 0 }", true),
+        // A `one sig` name is one atom, not a universe.
+        ("one_sig_reference_is_atom_local",
+         "abstract sig L {}\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", true),
+    ];
+    for (name, model, expected) in cases {
+        let files = generate_from(model);
+        let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
+        assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
+    }
+}
+
+#[test]
+fn rust_non_elementwise_comparison_does_not_suppress_the_exhaustive_check() {
+    // `i in Premium.items` reads a whole set, so it is not elementwise — but
+    // the exhaustive check derived from the same fact still belongs.
+    let files = generate_from(
+        "sig Category { items: set Item }\nsig Item { name: one Category }\n\
+         sig Premium extends Category {}\nsig Budget extends Category {}\n\
+         fact Cover { all i: Item | i in Premium.items or i in Budget.items }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("must belong to"), "exhaustive check lost:\n{nt}");
+}

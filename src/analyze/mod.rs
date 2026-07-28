@@ -798,13 +798,21 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// cross-atom comparison such as `all p: P | all q: P | p.x >= q.x`, where
 /// every singleton trivially passes while a two-element collection may not.
 pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
-    let sig_names: std::collections::HashSet<&str> =
-        ir.structures.iter().map(|s| s.name.as_str()).collect();
+    // Only sigs with more than one atom form a "universe" a singleton wrapper
+    // cannot stand in for. A `one sig` name denotes one atom — `p.level = High`
+    // is perfectly atom-local.
+    let sig_names: std::collections::HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.sig_multiplicity != SigMultiplicity::One)
+        .map(|s| s.name.as_str()).collect();
 
-    // No further quantifier may range over a whole sig; a domain derived from
-    // the bound atom (`all f: p.fields | ..`) is relative to it and fine.
+    // Nothing in the body may depend on the whole sig: not a quantifier over
+    // it, not a bare reference to it (`#P`), and not a call whose body does
+    // either. A domain derived from the bound atom (`all f: p.fields | ..`) is
+    // relative to it and fine, and a `one sig` name is a single atom, not a
+    // universe.
     fn no_global_quantifier(e: &Expr, sigs: &std::collections::HashSet<&str>) -> bool {
         match e {
+            Expr::VarRef(d) => !sigs.contains(d.as_str()),
             Expr::Quantifier { bindings, body, .. } => {
                 bindings.iter().all(|b| !matches!(&b.domain, Expr::VarRef(d) if sigs.contains(d.as_str())))
                     && bindings.iter().all(|b| no_global_quantifier(&b.domain, sigs))
@@ -822,20 +830,76 @@ pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
                 receiver.as_deref().is_none_or(|r| no_global_quantifier(r, sigs))
                     && args.iter().all(|a| no_global_quantifier(a, sigs))
             }
+            Expr::IntLiteral(_) => true,
+        }
+    }
+
+    // A call hides its body from the scan above.
+    fn callee_is_atom_local(
+        e: &Expr, ir: &OxidtrIR, sigs: &std::collections::HashSet<&str>, seen: &mut Vec<String>,
+    ) -> bool {
+        match e {
+            Expr::FunApp { name, receiver, args } => {
+                if receiver.as_deref().is_some_and(|r| !callee_is_atom_local(r, ir, sigs, seen)) {
+                    return false;
+                }
+                if args.iter().any(|a| !callee_is_atom_local(a, ir, sigs, seen)) { return false; }
+                if seen.iter().any(|n| n == name) { return true; }
+                seen.push(name.clone());
+                let ok = resolved_callees(name, receiver.as_deref(), args, ir).into_iter()
+                    .all(|op| op.body.iter().all(|b| no_global_quantifier(b, sigs)
+                        && callee_is_atom_local(b, ir, sigs, seen)));
+                seen.pop();
+                ok
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                callee_is_atom_local(left, ir, sigs, seen) && callee_is_atom_local(right, ir, sigs, seen)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
+            | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => {
+                callee_is_atom_local(i, ir, sigs, seen)
+            }
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().all(|b| callee_is_atom_local(&b.domain, ir, sigs, seen))
+                    && callee_is_atom_local(body, ir, sigs, seen)
+            }
             Expr::VarRef(_) | Expr::IntLiteral(_) => true,
         }
     }
 
+    let atom_local = |body: &Expr| {
+        no_global_quantifier(body, &sig_names)
+            && callee_is_atom_local(body, ir, &sig_names, &mut Vec::new())
+    };
+    let singleton = |d: &str| ir.structures.iter()
+        .any(|s| s.name == d && s.sig_multiplicity == SigMultiplicity::One);
+    let binder_ok = |bindings: &[QuantBinding], body: &Expr, allow_some: bool| {
+        bindings.len() == 1
+            && bindings[0].vars.len() == 1
+            && matches!(&bindings[0].domain, Expr::VarRef(d) if d == sig && (!allow_some || singleton(d)))
+            && atom_local(body)
+    };
+
     match expr {
         // `no x: S | B` is `all x: S | not B` — a claim about each atom.
-        // `some x: S | B` is a claim about the collection and must not become
-        // a per-value requirement.
         Expr::Quantifier { kind: QuantKind::All | QuantKind::No, bindings, body } => {
-            bindings.len() == 1
-                && bindings[0].vars.len() == 1
-                && matches!(&bindings[0].domain, Expr::VarRef(d) if d == sig)
-                && no_global_quantifier(body, &sig_names)
+            binder_ok(bindings, body, false)
         }
+        // `some x: S | B` is a claim about the collection, except over a
+        // `one sig`, where the collection is one atom.
+        Expr::Quantifier { kind: QuantKind::Some, bindings, body } => {
+            binder_ok(bindings, body, true)
+        }
+        // `not some x: S | B` is the same claim as `no x: S | B`.
+        Expr::Not(inner) => match inner.as_ref() {
+            Expr::Quantifier { kind: QuantKind::Some, bindings, body } => {
+                binder_ok(bindings, body, false)
+            }
+            _ => false,
+        },
         _ => false,
     }
 }

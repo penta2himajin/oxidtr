@@ -1990,6 +1990,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         if sound.is_empty() { continue; }
         // Check if this constraint contains a Comparison
         if sound.iter().any(|c| expr_has_comparison(c)) {
+            let before = newtype_pairs.len();
             for conj in &sound {
                 if !expr_has_comparison(conj) { continue; }
                 let params = expr_translator::extract_params(conj, &sig_names);
@@ -2001,7 +2002,10 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
                 if !analyze::elementwise_over(conj, &params[0].1, ir) { continue; }
                 newtype_pairs.push((fact_name.clone(), params[0].1.clone()));
             }
-            continue;
+            // Only skip the Disjoint/Exhaustive branches below if this one
+            // actually produced a candidate; a non-elementwise comparison must
+            // not suppress an exhaustive check derived from the same fact.
+            if newtype_pairs.len() > before { continue; }
         }
         // Check if this constraint contains a Disjoint pattern (no (A & B))
         if expr_has_disjoint_pattern(&constraint.expr) {
