@@ -1982,12 +1982,20 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         // must not name a `Validated*` wrapper — the body is suppressed later,
         // leaving a type that claims "validated by X" and accepts everything.
         // A *mixed* fact still enforces its snapshot-sound conjuncts.
-        if !analyze::has_snapshot_sound_conjunct(&constraint.expr, ir) { continue; }
+        // Collect per *conjunct*, not per fact: admitting the whole fact
+        // because one conjunct is sound picked up sigs mentioned only by the
+        // rejected conjunct, and inlining then refused everything, leaving
+        // `ValidatedQ { if true }` claiming it enforced something.
+        let sound: Vec<&Expr> = analyze::sound_conjuncts(&constraint.expr, ir);
+        if sound.is_empty() { continue; }
         // Check if this constraint contains a Comparison
-        if expr_has_comparison(&constraint.expr) {
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
-            for (_pname, tname) in &params {
-                newtype_pairs.push((fact_name.clone(), tname.clone()));
+        if sound.iter().any(|c| expr_has_comparison(c)) {
+            for conj in &sound {
+                if !expr_has_comparison(conj) { continue; }
+                let params = expr_translator::extract_params(conj, &sig_names);
+                for (_pname, tname) in &params {
+                    newtype_pairs.push((fact_name.clone(), tname.clone()));
+                }
             }
             continue;
         }
@@ -2064,10 +2072,22 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
         let constraint = ir.constraints.iter()
             .find(|c| c.name.as_deref() == Some(fact_name.as_str()));
         // A temporal fact must not be inlined into a single-state validator.
-        let inlined_info = constraint.filter(|c| analyze::snapshot_is_sound(&c.expr, ir)).map(|c| {
-            let body = expr_translator::translate_with_ir(&c.expr, ir);
-            let params = expr_translator::extract_params(&c.expr, &sig_names);
-            (body, params)
+        // Inline the conjuncts a single state can actually check, not the whole
+        // fact: refusing everything because one conjunct is temporal is what
+        // left the wrapper enforcing `if true`.
+        let inlined_info = constraint.and_then(|c| {
+            let sound = analyze::sound_conjuncts(&c.expr, ir);
+            if sound.is_empty() { return None; }
+            let body = sound.iter()
+                .map(|e| format!("({})", expr_translator::translate_with_ir(e, ir)))
+                .collect::<Vec<_>>().join(" && ");
+            let mut params = Vec::new();
+            for e in &sound {
+                for p in expr_translator::extract_params(e, &sig_names) {
+                    if !params.contains(&p) { params.push(p); }
+                }
+            }
+            Some((body, params))
         });
 
         // Collect field-level cardinality bounds for this sig

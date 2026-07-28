@@ -1805,3 +1805,46 @@ fn rust_wholly_temporal_fact_creates_no_validator_wrapper() {
     let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
     assert!(!nt.contains("NestedStep"), "vacuous validator wrapper:\n{nt}");
 }
+
+#[test]
+fn rust_no_parameter_can_supply_a_sig_universe() {
+    // The callee body translates to `ps.iter()` — the sig's collection name —
+    // whatever the parameter is called, so `pool: set P` does not even compile;
+    // naming it `ps` would silently quantify over the subset passed instead of
+    // over every P.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig H { ps: set P }\npred Pos[pool: set P] { all q: P | q.x >= 0 }\n\
+         assert LaterPos { eventually all h: H | Pos[h.ps] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped LaterPos"), "expected a diagnostic:\n{t}");
+}
+
+#[test]
+fn rust_mixed_fact_validator_covers_only_its_sound_conjunct() {
+    // Admitting the whole fact picked up Q, mentioned only by the temporal
+    // conjunct, and then inlined nothing — leaving `ValidatedQ { if true }`.
+    let files = generate_from(
+        "sig P { x: one Int }\nsig Q { y: one Int }\n\
+         fact Mixed { (all p: P | p.x >= 0) and (eventually all q: Q | q.y >= 0) }",
+    );
+    let nt = find_file(&files, "newtypes.rs");
+    assert!(nt.contains("struct ValidatedP"), "sound conjunct lost its wrapper:\n{nt}");
+    assert!(!nt.contains("struct ValidatedQ"), "wrapper for a rejected conjunct:\n{nt}");
+    assert!(!nt.contains("if true"), "vacuous validator:\n{nt}");
+    assert!(nt.contains("p.x >= 0"), "wrapper does not enforce its conjunct:\n{nt}");
+}
+
+#[test]
+fn rust_transition_test_only_covers_what_a_cloned_post_state_can_satisfy() {
+    // The generated test clones the pre-state as the post-state, so an update
+    // like `c.v' = c.v.plus[1]` compiles and then asserts `v == v + 1`.
+    let files = generate_from(
+        "one sig C { var v: one Int }\nfact Increment { always all c: C | c.v' = c.v.plus[1] }",
+    );
+    let t = find_file(&files, "tests.rs");
+    assert!(t.contains("skipped Increment"), "expected a diagnostic:\n{t}");
+    let stutter = generate_from("sig C { var v: one Int }\nfact Mono { always all c: C | c.v' = c.v }");
+    let t2 = find_file(&stutter, "tests.rs");
+    assert!(t2.contains("transition_mono"), "the stutter case must survive:\n{t2}");
+}

@@ -670,7 +670,26 @@ pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
             Expr::VarRef(_) | Expr::IntLiteral(_) => true,
         }
     }
-    primes_ok(body, &var, false)
+    if !primes_ok(body, &var, false) { return false; }
+
+    // The generated test uses a *clone* of the pre-state as the post-state, so
+    // the only transition it can actually satisfy is a stutter: each primed
+    // term equated to the identical unprimed term. `c.v' = c.v.plus[1]`
+    // compiles and then fails, asserting `v == v + 1`. Synthesizing a
+    // satisfying post-state is #104 work.
+    fn is_stutter(e: &Expr) -> bool {
+        match e {
+            Expr::Comparison { op: CompareOp::Eq, left, right } => {
+                match (left.as_ref(), right.as_ref()) {
+                    (Expr::Prime(a), b) | (b, Expr::Prime(a)) => a.as_ref() == b,
+                    _ => false,
+                }
+            }
+            Expr::BinaryLogic { op: LogicOp::And, left, right } => is_stutter(left) && is_stutter(right),
+            _ => false,
+        }
+    }
+    is_stutter(body)
 }
 
 /// Does the expression call any user-declared operation at all?
@@ -703,12 +722,12 @@ fn calls_any_op(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// so there is nothing a generated test could hand it.
 pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
     fn body_scans_an_unpassed_sig(op: &OperationNode, ir: &OxidtrIR) -> bool {
-        // A `p: one P` parameter is a single atom, not the collection of every
-        // P, so it cannot satisfy an `all q: P | ..` inside the body. Only a
-        // set/seq parameter of that type could.
-        let param_types: std::collections::HashSet<&str> = op.params.iter()
-            .filter(|p| matches!(p.mult, Multiplicity::Set | Multiplicity::Seq))
-            .map(|p| p.type_name.as_str()).collect();
+        // No parameter supplies the universe. The body is translated to
+        // `ps.iter()` — the *sig's* collection name — regardless of what the
+        // parameter is called, so a `pool: set P` parameter does not even
+        // produce compiling code; and naming it `ps` would silently quantify
+        // over whatever subset was passed rather than over every P.
+        let param_types: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let sig_names: std::collections::HashSet<&str> =
             ir.structures.iter().map(|s| s.name.as_str()).collect();
         fn scan(
@@ -771,7 +790,12 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// Is at least one top-level conjunct of this fact snapshot-checkable? A fact
 /// where none is has no faithful single-state validator at all.
 pub fn has_snapshot_sound_conjunct(expr: &Expr, ir: &OxidtrIR) -> bool {
-    conjuncts(expr).into_iter().any(|c| snapshot_is_sound(c, ir))
+    !sound_conjuncts(expr, ir).is_empty()
+}
+
+/// The top-level conjuncts a single-state check may legitimately enforce.
+pub fn sound_conjuncts<'a>(expr: &'a Expr, ir: &OxidtrIR) -> Vec<&'a Expr> {
+    conjuncts(expr).into_iter().filter(|c| snapshot_is_sound(c, ir)).collect()
 }
 
 /// Split a top-level conjunction into its conjuncts.
