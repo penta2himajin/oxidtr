@@ -30,9 +30,14 @@ const LEAN_KEYWORDS: &[&str] = &[
 ];
 
 /// Undoes [`lean_ident`]. Only a wrapper around a token from the list above is
-/// unwrapped — guillemets are legal Lean elsewhere (string literals, and user
-/// identifiers quoted for reasons of their own, `«foo bar»`), and stripping
-/// those would corrupt source `extract` did not generate.
+/// unwrapped, so a user identifier quoted for reasons of its own (`«foo bar»`)
+/// survives intact.
+///
+/// ponytail: still context-blind. A hand-written string literal or comment that
+/// contains exactly `«in»` is rewritten to `in`, because this is a plain
+/// substring pass rather than a lexer. Narrowing it from "strip every
+/// guillemet" to "unwrap known keywords" shrinks the blast radius to that case;
+/// closing it properly means unescaping per-identifier inside the parsers below.
 pub fn unescape_lean_ident(text: &str) -> String {
     let mut out = text.to_string();
     for kw in LEAN_KEYWORDS {

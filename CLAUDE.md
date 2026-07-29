@@ -190,7 +190,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `target_validation::kotlin_self_hosted_tests_pass` | Kotlinテスト実行 | gradle |
 | `target_validation::java_self_hosted_tests_pass` | Javaテスト実行 | gradle |
 | `target_validation::lean_self_hosted_compiles` | Lean型検査 (両モデル) | lean 4.31 |
-| `target_validation::lean_adversarial_models_compile` | Lean型検査 (敵対18形) | lean 4.31 |
+| `target_validation::lean_adversarial_models_compile` | Lean型検査 (敵対テーブル) | lean 4.31 |
 
 ## ロードマップ
 

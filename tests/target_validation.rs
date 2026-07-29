@@ -1304,18 +1304,30 @@ fn lean_typecheck(ir: &ir::nodes::OxidtrIR) -> (bool, String, String) {
     let tmp = tempfile::tempdir().unwrap();
     let dir = tmp.path();
 
+    let files = lean::generate(ir);
     let mut all = String::new();
-    for file in &lean::generate(ir) {
+    for file in &files {
         std::fs::write(dir.join(&file.path), &file.content).unwrap();
         // Separator, so a pinned substring cannot match across a file boundary.
         all.push_str("\n-- <oxidtr file boundary> --\n");
         all.push_str(&file.content);
     }
+    assert!(!files.is_empty(), "lean::generate produced no files — nothing was typechecked");
 
     let mut diagnostics = String::new();
     let mut clean = true;
-    for stem in ["Types", "Constraints", "Operations"] {
-        if !dir.join(format!("{stem}.lean")).exists() { continue; }
+    // Dependency order first, then anything else `generate` emitted — a
+    // hardcoded list would let a future file into `all` (and so into a pin)
+    // while never being typechecked.
+    let mut stems: Vec<String> = ["Types", "Constraints", "Operations"].iter()
+        .map(|s| s.to_string())
+        .filter(|s| files.iter().any(|f| f.path == format!("{s}.lean")))
+        .collect();
+    for f in &files {
+        let stem = f.path.trim_end_matches(".lean").to_string();
+        if !stems.contains(&stem) { stems.push(stem); }
+    }
+    for stem in &stems {
         // Run *inside* the scratch dir with relative names. `lean` takes the
         // working directory as its root and rejects a source outside it with
         // "must be contained in root directory" — a message with no `: error`
@@ -1453,6 +1465,23 @@ fn lean_adversarial_models_compile() {
         ("cardinality_fact_defers_instead_of_simp",
          "sig Item {}\nsig Bag { items: set Item }\nfact Capped { all b: Bag | #b.items <= 3 }",
          "∀ (x : Bag), x.items.length ≤ 3 := by\n  intro x\n  sorry"),
+        // Ordering keys on the *shape* of the call, not the bare name. A free
+        // pred calling `x.g[…]` depends on `S.g` in Types.lean, not on the free
+        // pred that happens to also be called `g` — reading it as a dependency
+        // made the solvable order (`f`, `g`) unsolvable and fell back to model
+        // order, emitting `g` first and dangling the reference to `f`.
+        ("receiver_call_is_not_a_free_op_dependency",
+         "sig S { n: one Int }\nfun S.g[k: Int]: one Int { this.n }\n\
+          pred g[y: S] { f[y] }\npred f[x: S] { x.g[1] > 0 }",
+         "def f (x : S) : Prop :=\n  x.g 1 > 0\n\ndef g (y : S) : Prop :=\n  f y"),
+        // Two sigs may each declare a derived field of the same name. Exempting
+        // a callee by name equality read `A.size`'s call to `B.size` as
+        // self-recursion and emitted them backwards; the exemption is by op
+        // identity.
+        ("same_named_derived_fields_order_by_identity",
+         "sig B { m: one Int }\nsig A { b: one B }\n\
+          fun A.size[u: Int]: one Int { this.b.size[u] }\nfun B.size[u: Int]: one Int { this.m }",
+         "def B.size (self : B) (u : Int) : Int :=\n  self.m\n\ndef A.size (self : A) (u : Int) : Int :="),
         // `x in y.^f` is reachability, not membership: `TransGen` wants the
         // relation and *both* endpoints, so the closure cannot be translated on
         // its own and then tested with `∈`. `b ∈ a.f` is well-typed for `Option`

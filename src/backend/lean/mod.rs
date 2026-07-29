@@ -381,7 +381,7 @@ fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
-    for op in order_callee_first(ir.operations.iter().filter(|op| op.receiver_sig.is_some())) {
+    for op in order_callee_first(ir.operations.iter().filter(|op| op.receiver_sig.is_some()), true) {
         if let Some(ref sig) = op.receiver_sig {
             let fn_name = lean_field(&op.name);
             let params: Vec<String> = op.params.iter().map(|p| {
@@ -658,23 +658,30 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
 /// Names of the preds an expression calls, so `generate_operations` can emit a
 /// callee before its caller — Lean has no forward declaration for `def`.
-fn called_ops(expr: &crate::parser::ast::Expr, out: &mut Vec<String>) {
+fn called_ops(expr: &crate::parser::ast::Expr, want_receiver: bool, out: &mut Vec<String>) {
     use crate::parser::ast::Expr as E;
     match expr {
         E::FunApp { name, receiver, args } => {
-            if !out.contains(name) { out.push(name.clone()); }
-            if let Some(r) = receiver { called_ops(r, out); }
-            for a in args { called_ops(a, out); }
+            // Only calls of the same shape as the ops being ordered create an
+            // in-file dependency: a receiver call lands in Types.lean, a free
+            // call in Operations.lean. Recording both under a bare name made a
+            // receiver call `x.g[..]` look like a dependency on an unrelated
+            // free pred that merely shares the name `g`.
+            if receiver.is_some() == want_receiver && !out.contains(name) {
+                out.push(name.clone());
+            }
+            if let Some(r) = receiver { called_ops(r, want_receiver, out); }
+            for a in args { called_ops(a, want_receiver, out); }
         }
-        E::FieldAccess { base, .. } => called_ops(base, out),
+        E::FieldAccess { base, .. } => called_ops(base, want_receiver, out),
         E::Cardinality(i) | E::TransitiveClosure(i) | E::Not(i) | E::Prime(i)
-            | E::TemporalUnary { expr: i, .. } | E::MultFormula { expr: i, .. } => called_ops(i, out),
+            | E::TemporalUnary { expr: i, .. } | E::MultFormula { expr: i, .. } => called_ops(i, want_receiver, out),
         E::Comparison { left, right, .. } | E::BinaryLogic { left, right, .. }
             | E::SetOp { left, right, .. } | E::Product { left, right }
-            | E::TemporalBinary { left, right, .. } => { called_ops(left, out); called_ops(right, out); }
+            | E::TemporalBinary { left, right, .. } => { called_ops(left, want_receiver, out); called_ops(right, want_receiver, out); }
         E::Quantifier { bindings, body, .. } => {
-            for b in bindings { called_ops(&b.domain, out); }
-            called_ops(body, out);
+            for b in bindings { called_ops(&b.domain, want_receiver, out); }
+            called_ops(body, want_receiver, out);
         }
         E::VarRef(_) | E::IntLiteral(_) => {}
     }
@@ -686,23 +693,25 @@ fn called_ops(expr: &crate::parser::ast::Expr, out: &mut Vec<String>) {
 /// fall back to model order and Lean reports the forward reference. Note the
 /// ordering is per-file: a derived field in Types.lean still cannot call a free
 /// pred, because Operations.lean imports Types.lean and not the other way round.
-fn order_callee_first<'a>(ops: impl Iterator<Item = &'a OperationNode>) -> Vec<&'a OperationNode> {
+fn order_callee_first<'a>(ops: impl Iterator<Item = &'a OperationNode>, want_receiver: bool)
+    -> Vec<&'a OperationNode>
+{
     let mut pending: Vec<&OperationNode> = ops.collect();
     let mut ordered: Vec<&OperationNode> = Vec::with_capacity(pending.len());
-    let mut done: HashSet<String> = HashSet::new();
     while !pending.is_empty() {
         let pick = pending.iter().position(|op| {
             let mut calls = Vec::new();
-            for b in &op.body { called_ops(b, &mut calls); }
-            calls.iter().all(|c| done.contains(c)
-                || *c == op.name
-                // Not something this file will emit later: already done, a
-                // receiver op in another file, or not an op at all.
-                || !pending.iter().any(|p| p.name == *c))
+            for b in &op.body { called_ops(b, want_receiver, &mut calls); }
+            // A callee is satisfied when every op still pending under that name
+            // *is* this op — genuine self-recursion, or nothing left to wait
+            // for. Identity, not name equality: two sigs may each declare a
+            // derived field called `size`, and comparing names would read the
+            // call to the other one as self-recursion and emit them backwards.
+            calls.iter().all(|c| {
+                pending.iter().filter(|p| p.name == *c).all(|p| std::ptr::eq(*p, *op))
+            })
         }).unwrap_or(0);
-        let op = pending.remove(pick);
-        done.insert(op.name.clone());
-        ordered.push(op);
+        ordered.push(pending.remove(pick));
     }
     ordered
 }
@@ -713,7 +722,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
     writeln!(out, "import Types").unwrap();
     writeln!(out).unwrap();
 
-    for op in order_callee_first(ir.operations.iter().filter(|op| op.receiver_sig.is_none())) {
+    for op in order_callee_first(ir.operations.iter().filter(|op| op.receiver_sig.is_none()), false) {
 
         let fn_name = lean_field(&op.name);
         let params: Vec<String> = op.params.iter().map(|p| {
