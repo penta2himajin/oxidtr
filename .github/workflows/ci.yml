@@ -175,6 +175,14 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
+      # `lean_typecheck` shells out to `lean` directly and resolves imports via
+      # LEAN_PATH, so no `lake` project is needed — only the binary on PATH.
+      - name: Install Lean 4
+        run: |
+          curl -sSfL https://github.com/leanprover/elan/releases/latest/download/elan-x86_64-unknown-linux-gnu.tar.gz \
+            | tar xz -C /tmp
+          /tmp/elan-init -y --default-toolchain leanprover/lean4:v4.31.0
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
 
       - name: Run target validation tests
         run: cargo test --test target_validation -- --include-ignored --test-threads=1

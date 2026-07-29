@@ -189,6 +189,8 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `target_validation::ts_self_hosted_tests_pass` | TSテスト実行 | bun |
 | `target_validation::kotlin_self_hosted_tests_pass` | Kotlinテスト実行 | gradle |
 | `target_validation::java_self_hosted_tests_pass` | Javaテスト実行 | gradle |
+| `target_validation::lean_self_hosted_compiles` | Lean型検査 (両モデル) | lean 4.31 |
+| `target_validation::lean_adversarial_models_compile` | Lean型検査 (敵対18形) | lean 4.31 |
 
 ## ロードマップ
 
@@ -203,7 +205,13 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - explore: Alloyインスタンス異常パターン検出 ✅ (完了: detect_anomalies — UnconstrainedField/UnboundedCollection/UnguardedSelfRef、generateパイプラインに統合済み)
 - cover: カバレッジ×fact直交テスト生成 ✅ (完了: fact_coverage — sig_facts/uncovered_fields/pairwise、全7バックエンドでテストスキャフォールド生成)
 - Phase 14: 派生フィールド (fun Sig.name 構文 → computed property生成)
-- Phase 15: テスト実体化・sorry撲滅・enum/module ✅ (完了: C#/Kotlin テスト実体化, Lean sorry自動証明, enum構文, module/open宣言)
+- Phase 15: テスト実体化・enum/module ✅ (完了: C#/Kotlin テスト実体化, enum構文, module/open宣言)
+  - ⚠️ 「Lean sorry自動証明」は誤りだったので撤回した。Alloy の fact は
+    インスタンス universe を制限する**公理**であり、`∀ x : Sig, …` として述べると
+    Lean 型の全住人についての主張になって一般に**偽**。`omega` / `simp` では
+    原理的に閉じられず、タクティク失敗は warning ではなく hard error になる。
+    現在は `sorry`（warning）を出す。fact を goal ではなく仮説として encode
+    する設計変更が本筋 (#79)。
 
 ### fact本体式の活用における伸びしろ
 
@@ -245,7 +253,12 @@ cargo run -- extract generated/ -o /tmp/mined.als
 - Lean extract: structure/inductive/theoremをMinedModelとして抽出
 - Guarantee: TargetLang::Lean追加（Presence→FullyByType、他はRequiresTest）
 - 生成ファイル: Types.lean, Constraints.lean, Operations.lean
-- Tactic自動生成: 制約型に応じた `by` ブロック（intro/constructor/simp/omega等）
+- Tactic: `intro` で束縛を導入し `sorry` で保留。証明可能な形（Iff の `constructor` 等）
+  のみ実タクティクを出す。上記の理由で `omega`/`simp` の自動生成は行わない。
+- 識別子は Lean 予約語を `«…»` でエスケープ（`End` → `«end»`。lowerCamel 化が
+  キーワードを**作る**ので、エスケープは case 変換の後に行う）
+- 型宣言は依存グラフの SCC 順に出力。循環は 1 つの `mutual … end` にまとめ、
+  再帰型（`List T`/`Option T` 経由を含む）からは `deriving DecidableEq` を落とす
 
 **Temporal transition テスト実体化 (実装済み):**
 - `rewrite_prime_as_post_state`: prime参照をpost-state変数アクセスに書き換えるAST変換

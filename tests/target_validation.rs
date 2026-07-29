@@ -15,6 +15,7 @@ use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::backend::go;
 use oxidtr::backend::swift;
 use oxidtr::backend::csharp;
+use oxidtr::backend::lean;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -1285,4 +1286,181 @@ mod semantics {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+// ── Lean 4 ───────────────────────────────────────────────────────────────────
+
+/// Typecheck the generated Lean in a scratch directory. `lean` resolves
+/// `import Types` from `LEAN_PATH`, so compiling the three files in dependency
+/// order with the scratch dir on that path needs no `lake` project scaffolding
+/// — which keeps a full run at roughly two seconds.
+///
+/// Requires `lean` on PATH; `elan` puts it there. Note that PATH does not
+/// propagate through `mise exec rust -- cargo …`, so invoke cargo directly.
+///
+/// Returns (clean, diagnostics, concatenated sources). `sorry` is deliberate in
+/// generated theorems and is only a warning, so the gate is errors alone.
+fn lean_typecheck(ir: &ir::nodes::OxidtrIR) -> (bool, String, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    let mut all = String::new();
+    for file in &lean::generate(ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        all.push_str(&file.content);
+    }
+
+    let mut diagnostics = String::new();
+    let mut clean = true;
+    for stem in ["Types", "Constraints", "Operations"] {
+        let src = dir.join(format!("{stem}.lean"));
+        if !src.exists() { continue; }
+        let out = std::process::Command::new("lean")
+            .arg("-o").arg(dir.join(format!("{stem}.olean")))
+            .arg(&src)
+            .env("LEAN_PATH", dir)
+            .output()
+            .expect("failed to run lean (is the Lean 4 toolchain on PATH?)");
+        let text = format!("{}{}",
+            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        if text.contains(": error") { clean = false; }
+        diagnostics.push_str(&text);
+    }
+    (clean, diagnostics, all)
+}
+
+fn assert_lean_typechecks(ir: &ir::nodes::OxidtrIR, label: &str) {
+    let (clean, diagnostics, all) = lean_typecheck(ir);
+    assert!(clean,
+        "{label}: lean reported errors on generated Lean!\n{diagnostics}\n--- generated ---\n{all}");
+}
+
+/// Lean had never been compile-verified — CI's `self-host` job runs only
+/// `oxidtr check`, a structural diff that never invokes a target compiler, and
+/// that is how the backend shipped 91 errors on its own model. See #79 / #84.
+#[test]
+#[ignore]
+fn lean_self_hosted_compiles() {
+    assert_lean_typechecks(&parse_and_lower(), "models/oxidtr.als");
+
+    let split = parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+        .expect("parse oxidtr-split.als");
+    let split_ir = ir::lower(&split).expect("lower oxidtr-split.als");
+    assert_lean_typechecks(&split_ir, "models/oxidtr-split.als");
+}
+
+/// Shapes the self-hosting model does not exercise, frozen before the fix (see
+/// the recon in #79). Mirrors `go_`/`swift_`/`cs_adversarial_models_compile`:
+/// the third element pins the expected *translation*, so output that is
+/// wrong-but-compiling still fails.
+#[test]
+#[ignore]
+fn lean_adversarial_models_compile() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        // Lean has no forward declaration: a sig used before it is declared gets
+        // auto-bound as an implicit universe variable, which poisons every
+        // `deriving` line after it. `B` must be emitted first. The pin spans
+        // both declarations, so reordering alone regressing still fails.
+        ("forward_reference_is_reordered",
+         "sig A { b: one B }\nsig B { n: one Int }",
+         "structure B where\n  n : Int\n  deriving Repr, BEq, DecidableEq\n\nstructure A where"),
+        // A genuine cycle cannot be reordered away — it needs one `mutual` block.
+        ("mutual_recursion_shares_one_block",
+         "sig A { bs: set B }\nsig B { a: lone A }",
+         "mutual\nstructure A where\n  bs : List B\n  deriving Repr, BEq\n\nstructure B where\n  a : Option A\n  deriving Repr, BEq\n\nend"),
+        // Lean's `DecidableEq` handler has no case for a recursive type, and
+        // `Option T` counts as nested. Deriving it anyway is a hard error.
+        ("self_reference_through_option_drops_decidable_eq",
+         "sig Node { next: lone Node }",
+         "structure Node where\n  next : Option Node\n  deriving Repr, BEq\n"),
+        ("self_reference_through_list_drops_decidable_eq",
+         "sig Node { kids: set Node }",
+         "structure Node where\n  kids : List Node\n  deriving Repr, BEq\n"),
+        // `Type` is a Lean token: `structure Type where` does not even parse.
+        ("keyword_sig_name_is_escaped_at_declaration",
+         "sig Type { n: one Int }\nsig Holder { t: one Type }",
+         "structure «Type» where"),
+        // Escaping the declaration alone leaves every reference dangling, so the
+        // use site is pinned separately.
+        ("keyword_sig_name_is_escaped_at_use_site",
+         "sig Type { n: one Int }\nsig Holder { t: one Type }",
+         "  t : «Type»"),
+        // Lower-camelling *manufactures* the keyword: `End` is a fine Alloy
+        // name, `end` closes a Lean scope. Escaping has to happen after the case
+        // change, not before.
+        ("field_name_lowercamels_into_a_keyword",
+         "sig Span { End: one Int, Where: one Int }",
+         "  «end» : Int\n  «where» : Int"),
+        ("keyword_pred_name_is_escaped",
+         "sig Leaf { n: one Int }\npred Match[x: Leaf] { x.n > 0 }",
+         "def «match» (x : Leaf) : Prop :="),
+        // The parameter binder was emitted verbatim while the body went through
+        // lower-camelling, so a capitalised parameter bound one name and the
+        // body referenced another.
+        ("capitalised_param_binder_matches_its_body",
+         "sig Leaf { n: one Int }\npred atLeast[Limit: Leaf] { Limit.n > 0 }",
+         "def atLeast (limit : Leaf) : Prop :=\n  limit.n > 0"),
+        // An assert name reaches `theorem` verbatim. It has to be the lowercase
+        // `def` to bite: `Def` is a perfectly good Lean identifier, and pinning
+        // that would have passed without the escaping ever running.
+        ("keyword_assert_name_is_escaped",
+         "sig Leaf { n: one Int }\nassert def { all x: Leaf | x.n = x.n }\ncheck def for 3",
+         "theorem «def» :"),
+        // `∀ x : T, y : T,` is not Lean syntax, and `∀ x y ∈ e,` is rejected
+        // too — one quantifier per bound variable is the only form that works
+        // for both a type domain and a set domain.
+        ("multi_binding_quantifier_repeats_the_quantifier",
+         "sig Leaf { n: one Int }\npred bothPos[a: Leaf] { all x, y: Leaf | x.n = y.n implies x = y }",
+         "∀ x : Leaf, ∀ y : Leaf, (x.n = y.n) → x = y"),
+        // Lean has no forward declaration for `def` either — a pred that calls a
+        // pred declared later in the model must be emitted after its callee.
+        ("pred_is_emitted_after_its_callee",
+         "sig Leaf { n: one Int }\npred outer[x: Leaf] { inner[x] }\npred inner[x: Leaf] { x.n > 0 }",
+         "def inner (x : Leaf) : Prop :=\n  x.n > 0\n\ndef outer (x : Leaf) : Prop :=\n  inner x"),
+        // An Alloy pred is a formula. Declared `: Bool`, a quantified body is a
+        // `Prop` and does not coerce.
+        ("quantified_pred_body_is_a_prop",
+         "sig Leaf { n: one Int }\npred allPositive[a: Leaf] { all x: Leaf | x.n > 0 }",
+         "def allPositive (a : Leaf) : Prop :=\n  ∀ x : Leaf, x.n > 0"),
+        // Constraints.lean was gated on facts alone, so a model carrying only
+        // asserts silently produced no theorems at all.
+        ("assert_without_any_fact_still_emits_a_theorem",
+         "sig Leaf { n: one Int }\nassert Trivial { all x: Leaf | x.n = x.n }\ncheck Trivial for 3",
+         "theorem Trivial :"),
+        // Alloy's `this` is the receiver; the emitted binder is `self`.
+        ("derived_field_receiver_is_named_self",
+         "sig Item {}\nsig Bag { items: set Item }\nfun Bag.size: one Int { #this.items }",
+         "def Bag.size (self : Bag) : Int :=\n  self.items.length"),
+        // A fact restricts which instances exist. As `∀ x : Sig, …` it is a
+        // claim about every inhabitant of the type and is generally false, so
+        // `omega` / `simp [List.length]` / `cases x <;> simp` cannot close it —
+        // and a failing tactic is a hard error, not a warning.
+        ("field_ordering_fact_defers_instead_of_omega",
+         "sig Span { lo: one Int, hi: one Int }\nfact Ordered { all s: Span | s.lo < s.hi }",
+         "∀ (x : Span), x.lo < x.hi := by\n  intro x\n  sorry"),
+        ("cardinality_fact_defers_instead_of_simp",
+         "sig Item {}\nsig Bag { items: set Item }\nfact Capped { all b: Bag | #b.items <= 3 }",
+         "∀ (x : Bag), x.items.length ≤ 3 := by\n  intro x\n  sorry"),
+        // `x in Circle` asks which variant an atom is. `Circle` lowers to a Lean
+        // type, so `x ∈ Circle` is a membership test against a `Type`; the
+        // variant test is a pattern match.
+        ("exhaustive_categories_become_pattern_matches",
+         "abstract sig Shape {}\nsig Circle extends Shape {}\nsig Square extends Shape {}\n\
+          fact Covers { all x: Shape | x in Circle or x in Square }",
+         "∀ (x : Shape), x matches .circle .. ∨ x matches .square .."),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let (clean, diagnostics, all) = lean_typecheck(&lowered);
+        assert!(clean, "{name}: lean reported errors!\n{diagnostics}\n--- generated ---\n{all}");
+        assert!(
+            all.contains(expected),
+            "{name}: typechecked, but expected {expected:?} in the generated Lean — \
+             a clean build with a wrong translation:\n{all}"
+        );
+    }
 }

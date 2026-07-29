@@ -5,6 +5,11 @@
 use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
+    // Reserved tokens are emitted wrapped in guillemets (`«end»`, `«in»`). That
+    // is escaping syntax, not part of the name, and it appears nowhere else in
+    // Lean source — strip it before any identifier is read, so every parser
+    // below sees the bare name. Line numbering is unaffected.
+    let source = source.replace(['«', '»'], "");
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
