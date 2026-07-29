@@ -14,6 +14,7 @@ use oxidtr::backend::typescript;
 use oxidtr::backend::jvm::{kotlin, java};
 use oxidtr::backend::go;
 use oxidtr::backend::swift;
+use oxidtr::backend::csharp;
 
 const SELF_MODEL: &str = include_str!("../models/oxidtr.als");
 
@@ -751,6 +752,345 @@ fn swift_adversarial_models_compile() {
             "{name}: expected {expected:?} in generated Swift, got:\n{all}"
         );
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// C# — dotnet build
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// The project file the C# checks below compile against.
+///
+/// `net10.0` must stay in step with `dotnet-version` in the `target-validation`
+/// job of `.github/workflows/ci.yml`; a mismatch means CI has no targeting pack
+/// for the framework and the check fails before it compiles a single line.
+///
+/// The xunit references are not optional: generated `Tests.cs` opens with
+/// `using Xunit;`, so without them every `[Fact]` is a CS0246 and the build
+/// error count says nothing about the backend.
+const CS_PROJECT: &str = r#"<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>OxidtrGenerated</AssemblyName>
+    <RootNamespace>OxidtrGenerated</RootNamespace>
+    <NoWarn>CS8618;CS8625;CS8600;CS8602;CS8603</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+  </ItemGroup>
+</Project>
+"#;
+
+/// Emit the generated C# into a scratch project and run `dotnet build` on it.
+/// Returns the build result together with the concatenated generated sources,
+/// so a caller can both require a clean compile and pin what was compiled.
+fn dotnet_build(ir: &ir::nodes::OxidtrIR) -> (std::process::Output, String) {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+
+    let mut all = String::new();
+    for file in &csharp::generate(ir) {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        all.push_str(&file.content);
+    }
+    std::fs::write(dir.join("generated.csproj"), CS_PROJECT).unwrap();
+
+    let out = std::process::Command::new("dotnet")
+        .args(["build", "--nologo", "-v", "q"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run dotnet build (is the .NET SDK installed?)");
+    (out, all)
+}
+
+fn assert_cs_builds(ir: &ir::nodes::OxidtrIR, label: &str) {
+    let (out, _) = dotnet_build(ir);
+    assert!(
+        out.status.success(),
+        "{label}: dotnet build on generated C# failed!\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// C# has never been compile-verified; it was *assumed* to work because it
+/// PascalCases enum members (dodging reserved words) and its classes are
+/// reference types (dodging recursive value types). Go and Swift were assumed
+/// to work too, and both shipped non-compiling output. See #102 / #84.
+#[test]
+#[ignore]
+fn cs_self_hosted_compiles() {
+    assert_cs_builds(&parse_and_lower(), "models/oxidtr.als");
+
+    let split = parser::parse_from_path(std::path::Path::new("models/oxidtr-split.als"))
+        .expect("parse oxidtr-split.als");
+    let split_ir = ir::lower(&split).expect("lower oxidtr-split.als");
+    assert_cs_builds(&split_ir, "models/oxidtr-split.als");
+}
+
+/// Shapes the self-hosting model never exercises — it has no `one Int` field,
+/// no transitive-closure domain, no two sigs sharing a field name, and no
+/// identifier that collides with a C# keyword. Mirrors
+/// `go_adversarial_models_compile` / `swift_adversarial_models_compile`: the
+/// third element pins the expected *translation*, so a regression to
+/// wrong-but-compiling C# still fails.
+#[test]
+#[ignore]
+fn cs_adversarial_models_compile() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        // An abstract sig lowers to `abstract class`, so fixtures may not say
+        // `new Shape()` — they need a factory returning a concrete child.
+        ("abstract_sig_with_concrete_children",
+         "sig Radius {}\nabstract sig Shape {}\nsig Circle extends Shape { radius: one Radius }\n\
+          sig Square extends Shape {}\nsig Drawing { shape: one Shape }",
+         "public static Shape DefaultShape()"),
+        // `Neg` is self-recursive; seeding the default from it never terminates,
+        // so the factory has to pick `Lit`.
+        //
+        // The pin is the *whole* factory head. The bare substring `new Lit` also
+        // occurs in `DefaultLit()` and `BoundaryLit()`, which every model with a
+        // `Lit` sig emits regardless of what `DefaultExpr` picks — so a
+        // regression to `DefaultExpr() => new Neg { Inner = new Lit { .. } }`
+        // left three `new Lit` occurrences standing and kept this green. See
+        // defect 7 of the #102 round-3 contract.
+        ("abstract_default_picks_terminating_variant",
+         "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
+          sig Neg extends Expr { inner: one Expr }\nsig Holder { expr: one Expr }",
+         "public static Expr DefaultExpr() => new Lit"),
+        // Two sigs with a field of the same name must each resolve to their own.
+        ("shared_field_name_resolves_per_sig",
+         "sig Item {}\nsig Marker {}\nsig Holder { items: set Item }\nsig Other { items: set Marker }\n\
+          assert R { all h: Holder | all i: h.items | i = i }",
+         "h.Items.TrueForAll(i => i == i)"),
+        // `^parent` is called but the closure helper was never emitted.
+        ("recursive_sig_transitive_closure_helper",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "List<Node> TcParent("),
+        // `Int` resolves to `long`, so the fixture value is a literal, not `new Int()`.
+        ("native_int_field_default",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "Tag = 0,"),
+        ("unit_enum_stays_an_enum",
+         "enum Suit { Hearts, Spades }\nsig Card { suit: one Suit }",
+         "public enum Suit"),
+        ("set_multiplicity_is_a_list",
+         "sig Item {}\nsig Box { items: set Item, opt: lone Item, ordered: seq Item }",
+         "public List<Item> Items { get; set; }"),
+        ("lone_multiplicity_is_nullable",
+         "sig Item {}\nsig Box { items: set Item, opt: lone Item, ordered: seq Item }",
+         "public Item? Opt { get; set; }"),
+        ("seq_multiplicity_is_an_annotated_list",
+         "sig Item {}\nsig Box { items: set Item, opt: lone Item, ordered: seq Item }",
+         "// @alloy: seq\n    public List<Item> Ordered { get; set; }"),
+        // A sig named after a C# keyword needs the `@` verbatim escape, the same
+        // way the Swift backend backticks its reserved words.
+        ("csharp_keyword_sig_name",
+         "sig Val {}\nsig lock { v: one Val }",
+         "public class @lock"),
+        // `extract_params` pluralises the sig name into a local; `Param` yields
+        // `params`, which is a keyword.
+        ("csharp_keyword_generated_local",
+         "sig Param { tag: one Int }\nassert R { all p: Param | p.tag = p.tag }",
+         "var @params ="),
+        // Quantifier variables become lambda parameters.
+        ("csharp_keyword_quantifier_var",
+         "sig Item {}\nsig Box { items: set Item }\n\
+          assert R { all params: Box | all event: params.items | event = event }",
+         "@event => @event == @event"),
+        // Predicate parameters become method parameters.
+        ("csharp_keyword_pred_param",
+         "sig Val {}\npred touch[event: Val, lock: Val] { event = lock }",
+         "Val @event"),
+        // A derived field's return type must go through the same native-type
+        // resolution as a stored field, or it emits the Alloy name `Int`.
+        ("derived_field_native_return_type",
+         "sig Item {}\nsig Box { items: set Item }\nfun Box.size: one Int { #items }",
+         "public static long Size"),
+        // The three cases above pick keywords from the 61 the escape list
+        // already covered, so they pass by construction. C# has 77 reserved
+        // words; the 16 primitive-type ones (bool, int, object, string, void,
+        // …) were deliberately excluded, so `sig object` emitted
+        // `public class object` — 16 compile errors. See #102.
+        ("csharp_primitive_keyword_sig_name",
+         "sig Val {}\nsig object { v: one Val }\nsig Holder { string: set Val }",
+         "public class @object"),
+        // Escaping only the declaration is a half-fix: every reference site
+        // would still name System.Object instead of the generated class.
+        ("csharp_primitive_keyword_sig_name_in_reference_position",
+         "sig Val {}\nsig object { v: one Val }\nsig Holder { string: set Val }",
+         "return new @object"),
+        // A field named after a primitive keyword. `capitalize` already lifts
+        // it clear of keyword space, so the pin is that it stays *bare* —
+        // escaping the property to `@String` would be just as wrong.
+        ("csharp_primitive_keyword_field_name",
+         "sig Val {}\nsig object { v: one Val }\nsig Holder { string: set Val }",
+         "public List<Val> String { get; set; }"),
+        // A user sig named after a primitive keyword, used as a field *type*.
+        // Escaping here must key off whether the *original* Alloy target is a
+        // native alias, not off the string `resolve_type` handed back.
+        ("csharp_primitive_keyword_sig_as_field_type",
+         "sig bool {}\nsig double {}\nsig void {}\n\
+          sig Holder { a: one bool, b: one double, c: one void }",
+         "public @double B { get; set; }"),
+        // The other half of that discrimination: an Alloy `Int` field resolves
+        // to the genuine C# keyword `long`, which must stay bare. Appending the
+        // 16 primitives to one shared escape list makes this `@long` — a
+        // verbatim identifier naming a type that does not exist (CS0246).
+        // `native_int_field_default` pins only the fixture *value* (`Tag = 0`);
+        // this pins the declared type.
+        ("native_int_field_type_stays_bare",
+         "sig Node { parent: lone Node, tag: one Int }\n\
+          assert R { all n: Node | all p: n.^parent | p.tag = p.tag }",
+         "public long Tag { get; set; }"),
+
+        // --- #102 round 3: six shapes an external adversarial review
+        // reproduced as non-compiling. Error counts measured at 469f9cb are
+        // quoted per case; they are what these assertions were watched to fail
+        // with before any src/ change.
+
+        // A transition test declares the post-state binding `nextC` and then
+        // references `next_c` (8 errors: CS0103 on `next_c`, CS1061 on `Zip`
+        // for want of `using System.Linq;`, and two CS8130s because an
+        // unresolved `Zip` leaves the deconstruction untypeable).
+        //
+        // This is a `fact`, not an `assert`, so #78 (the assert path) and #104
+        // (compositional temporal translation) do not cover it.
+        //
+        // The pin is the assertion body: it survives whether the post-state is
+        // walked with `Zip` or an index loop, and it fails if the emitter goes
+        // back to naming the binding one way and reading it another.
+        ("temporal_transition_fact_compiles",
+         "sig Counter { var tag: one Int }\nfact R { always all c: Counter | c.tag' = c.tag }",
+         "Assert.True(nextC.Tag == c.Tag);"),
+        // The same transition test over a sig whose plural local is a C#
+        // keyword. `capitalize("@params")` kept the leading `@`, so composing
+        // the post-state name yielded the un-lexable `next@params` (4 errors:
+        // CS1002/CS1003 twice over). Escaping belongs at the point an
+        // identifier is *finalised*, not carried through string composition:
+        // `next` + `Params` is not a keyword, so the composed local must come
+        // out bare even though the local it copies from stays `@params`.
+        ("temporal_transition_keyword_sig_local",
+         "sig Param { var tag: one Int }\nfact R { always all p: Param | p.tag' = p.tag }",
+         "var nextParams = new List<Param>(@params);"),
+        // `Branch.parent : lone Node` is a perfectly good closure field — the
+        // target is the sig's *parent*, not the sig itself — but
+        // `extract_tc_fields` required `f.target == s.name` exactly, so no
+        // helper was emitted and `TcParent(b)` was a CS0103 (2 errors).
+        //
+        // The pin fixes both halves of the helper's typing: it starts from the
+        // sig that *declares* the field (`Branch`) and collects the field's
+        // *target* (`List<Node>`). Getting either wrong does not compile —
+        // `List<Branch>` cannot hold a `Node?`, and a `Node` parameter has no
+        // `.Parent` to chase.
+        ("subtype_field_transitive_closure_helper",
+         "abstract sig Node {}\nsig Branch extends Node { parent: lone Node }\n\
+          assert Reach { all b: Branch | no b.^parent }",
+         "private static List<Node> TcParent(Branch start)"),
+        // An abstract sig with no children lowers to a variantless `enum`. The
+        // enum-default loop skipped it while `one_value_for` still emitted
+        // `DefaultEmpty()` at both use sites (4 errors: CS0103 ×2, reported
+        // twice). Of the contract's two permitted repairs — emit the factory,
+        // or stop referencing it — this pins the factory: it is the smaller
+        // change (the loop already writes exactly this shape for every other
+        // enum) and it keeps `one_value_for` uniform across enum targets.
+        // A variantless C# enum still has a zero value, so `default` is a real
+        // answer rather than a stub.
+        ("empty_abstract_sig_has_a_default_factory",
+         "abstract sig Empty {}\nsig Holder { e: one Empty }",
+         "public static Empty DefaultEmpty() => default;"),
+        // A set union as a quantifier domain (2 errors). `Union` needs
+        // `using System.Linq;`, and adding it alone is not enough: `Union`
+        // returns `IEnumerable<T>`, which has no `TrueForAll` — that is a
+        // `List<T>` method.
+        //
+        // Of the contract's two options, materialising is the one the existing
+        // table already forces: `shared_field_name_resolves_per_sig` and
+        // `csharp_keyword_quantifier_var` pin `TrueForAll`, so switching the
+        // universal quantifier wholesale to LINQ's `All` would break passing
+        // tests. Hence `.ToList()` on the set-op result, applied consistently
+        // to union/intersection/difference.
+        ("set_union_in_quantifier_domain",
+         "sig Item {}\nsig Box { a: set Item, b: set Item }\n\
+          assert R { all x: Box | all i: (x.a + x.b) | i = i }",
+         "x.A.Union(x.B).ToList().TrueForAll(i => i == i)"),
+        // A quantifier over a native domain kept the Alloy name and emitted
+        // `Int.TrueForAll(...)` (2 errors: CS0103 on `Int`, reported twice).
+        //
+        // The contract asks what such a quantifier should *mean*. It means the
+        // same thing every other quantifier in this backend already means: the
+        // generator never enumerates a sig's true extent either — `all c:
+        // Counter` becomes `TrueForAll` over a one-element sample list built
+        // from a fixture. So a native domain gets the same treatment, a sample
+        // list seeded with that type's zero value, and no new concept is
+        // introduced. Emitting nothing was the alternative; this keeps the
+        // assertion exercising the body instead of vacuously passing.
+        ("quantifier_over_native_domain",
+         "assert R { all i: Int | i = i }",
+         "new List<long>{ 0 }.TrueForAll(i => i == i)"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let (out, all) = dotnet_build(&lowered);
+        assert!(
+            out.status.success(),
+            "{name}: dotnet build failed!\nstdout:\n{}\n--- generated ---\n{all}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert!(
+            all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated C# — \
+             a clean build with a wrong translation:\n{all}"
+        );
+    }
+}
+
+/// Two sigs sharing a field name with *differing* multiplicities. `field_mult`
+/// resolves a field by name alone and returns the first sig that declares it,
+/// so `o.items` — a `lone Marker` — is translated as if it were `Holder`'s
+/// `set Item` and emits `.TrueForAll` on a bare `Marker`:
+/// `CS1061: 'Marker' does not contain a definition for 'TrueForAll'`.
+///
+/// This is the tripwire for #95, which spans six backends and is the next
+/// mainline item. It is deliberately NOT fixed here, so the assertion is
+/// inverted: it pins the *known-broken* output. `#[ignore]` alone would not
+/// do — CI runs `--include-ignored`, so a plain failing test turns CI red
+/// (that is why PR #101 was closed unmerged).
+///
+/// **When #95 lands this test starts failing.** That is the point: flip it to
+/// `assert!(out.status.success(), ...)` and rename it to `..._compiles`, then
+/// strengthen the table case `shared_field_name_resolves_per_sig`, which today
+/// passes only because both sigs there declare `items` as `set`.
+#[test]
+#[ignore]
+fn cs_shared_field_name_differing_multiplicity_is_still_broken_pending_95() {
+    const MODEL: &str = "sig Item {}\nsig Marker {}\nsig Holder { items: set Item }\n\
+        sig Other { items: lone Marker }\n\
+        assert R { all o: Other | all i: o.items | i = i }";
+    let parsed = parser::parse(MODEL).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+
+    let (out, all) = dotnet_build(&lowered);
+    let diagnostics = String::from_utf8_lossy(&out.stdout);
+    // `CS1061` alone is too weak a pin: any unrelated missing-member error
+    // anywhere in the generated code would keep this green after #95 lands.
+    // Pin the generated fragment that *causes* it as well — `o.items` is a
+    // `lone Marker`, so `.TrueForAll` on it is the mis-resolution itself.
+    assert!(
+        !out.status.success()
+            && diagnostics.contains("CS1061")
+            && all.contains("o.Items.TrueForAll("),
+        "#95 appears to be FIXED — `field_mult` no longer mis-resolves a shared \
+         field name by multiplicity. Flip this test to assert the build SUCCEEDS \
+         (see the doc comment above).\nstdout:\n{diagnostics}\n--- generated ---\n{all}"
+    );
 }
 
 /// A model mixing a temporal fact with an ordinary one must still produce

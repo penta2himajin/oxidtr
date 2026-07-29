@@ -74,6 +74,7 @@ impl CsContext {
 
 fn generate_models(ir: &OxidtrIR, ctx: &CsContext) -> String {
     let mut out = String::new();
+    writeln!(out, "using System;").unwrap();
     writeln!(out, "using System.Collections.Generic;").unwrap();
     writeln!(out).unwrap();
 
@@ -121,7 +122,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
                     let type_str = mult_to_cs_type(&p.type_name, &p.mult);
                     format!("{type_str} {}", to_camel_case(&p.name))
                 }).collect::<Vec<_>>().join(", ");
-                writeln!(out, "    public static {return_type} {}(this {sig_name} self, {params})", capitalize(&op.name)).unwrap();
+                writeln!(out, "    public static {return_type} {}(this {} self, {params})", capitalize(&op.name), cs_ident(sig_name)).unwrap();
                 writeln!(out, "    {{").unwrap();
                 writeln!(out, "        throw new NotImplementedException(\"oxidtr: implement {}\");", op.name).unwrap();
                 writeln!(out, "    }}").unwrap();
@@ -137,9 +138,9 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         if s.is_var {
             writeln!(out, "// Alloy var sig: instances change across state transitions").unwrap();
         }
-        writeln!(out, "public class {}", s.name).unwrap();
+        writeln!(out, "public class {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "{{").unwrap();
-        writeln!(out, "    public static readonly {} Instance = new {}();", s.name, s.name).unwrap();
+        writeln!(out, "    public static readonly {} Instance = new {}();", cs_ident(&s.name), cs_ident(&s.name)).unwrap();
         writeln!(out, "}}").unwrap();
         return;
     }
@@ -156,14 +157,13 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
         }
     }
 
-    writeln!(out, "public class {}", s.name).unwrap();
+    writeln!(out, "public class {}", cs_ident(&s.name)).unwrap();
     writeln!(out, "{{").unwrap();
     for f in &s.fields {
         if f.mult == Multiplicity::Seq {
             writeln!(out, "    // @alloy: seq").unwrap();
         }
-        let resolved_target = resolve_type(TargetLang::CSharp, &f.target);
-        let type_str = mult_to_cs_type(&resolved_target, &f.mult);
+        let type_str = mult_to_cs_type(&f.target, &f.mult);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
     }
 
@@ -289,16 +289,16 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
     });
 
     if all_unit {
-        writeln!(out, "public enum {}", s.name).unwrap();
+        writeln!(out, "public enum {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "{{").unwrap();
         if let Some(variants) = variants {
             for v in variants {
-                writeln!(out, "    {},", v).unwrap();
+                writeln!(out, "    {},", cs_ident(v)).unwrap();
             }
         }
         writeln!(out, "}}").unwrap();
     } else {
-        writeln!(out, "public abstract class {}", s.name).unwrap();
+        writeln!(out, "public abstract class {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "{{").unwrap();
         for f in parent_fields {
             let type_str = mult_to_cs_type(&f.target, &f.mult);
@@ -310,7 +310,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
                 let child = ctx.struct_map.get(v.as_str());
                 let child_fields: Vec<&IRField> = child.map(|c| c.fields.iter().collect()).unwrap_or_default();
                 writeln!(out).unwrap();
-                writeln!(out, "public class {} : {}", v, s.name).unwrap();
+                writeln!(out, "public class {} : {}", cs_ident(v), cs_ident(&s.name)).unwrap();
                 writeln!(out, "{{").unwrap();
                 for f in &child_fields {
                     if f.mult == Multiplicity::Seq {
@@ -384,13 +384,17 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
 
     let fixture_types = backend::collect_fixture_types(ir);
 
+    // Default/Boundary factories. Variants of an enum hierarchy (e.g. `Quantifier
+    // extends Expr`) get one too whenever they carry fields — a fact can quantify
+    // over the variant directly (`all q: Quantifier | ...`), and the abstract
+    // parent's own default (below) needs *some* concrete factory to pick from.
     for s in &ir.structures {
-        if ctx.is_variant(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
+        if s.is_enum || s.fields.is_empty() { continue; }
 
         // Default factory
-        writeln!(out, "    public static {} Default{}()", s.name, s.name).unwrap();
+        writeln!(out, "    public static {} Default{}()", cs_ident(&s.name), s.name).unwrap();
         writeln!(out, "    {{").unwrap();
-        writeln!(out, "        return new {}", s.name).unwrap();
+        writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
         for f in &s.fields {
             let val = default_value_for(&f.target, &f.mult, &s.name, ir, &fixture_types, ctx);
@@ -401,12 +405,12 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out).unwrap();
 
         // Boundary factory
-        writeln!(out, "    public static {} Boundary{}()", s.name, s.name).unwrap();
+        writeln!(out, "    public static {} Boundary{}()", cs_ident(&s.name), s.name).unwrap();
         writeln!(out, "    {{").unwrap();
-        writeln!(out, "        return new {}", s.name).unwrap();
+        writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
         for f in &s.fields {
-            let val = boundary_value_for(&f.target, &f.mult);
+            let val = boundary_value_for(&f.target, &f.mult, &fixture_types, ctx);
             writeln!(out, "            {} = {},", capitalize(&f.name), val).unwrap();
         }
         writeln!(out, "        }};").unwrap();
@@ -414,22 +418,51 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out).unwrap();
     }
 
-    // Enum defaults
+    // Enum defaults: an abstract sig lowers to `abstract class`, so its default
+    // must construct a concrete variant instead. Prefer a fieldless variant
+    // (`new Unit()`); failing that, prefer one that does not recurse into the
+    // enum type itself (a self-referential pick, e.g. `Neg { inner: Expr }`,
+    // would build forever); failing that, fall back to the first declared.
     for s in &ir.structures {
         if !s.is_enum { continue; }
-        let variants = ctx.children.get(&s.name);
-        let all_unit = s.fields.is_empty() && variants.map_or(true, |vs| {
-            vs.iter().all(|v| ctx.struct_map.get(v).map_or(true, |st| st.fields.is_empty()))
-        });
-        if all_unit {
-            if let Some(vs) = variants {
-                if let Some(first) = vs.first() {
-                    writeln!(out, "    public static {} Default{}() => {}.{};",
-                        s.name, s.name, s.name, first).unwrap();
-                    writeln!(out).unwrap();
-                }
+        let variants = match ctx.children.get(&s.name) {
+            Some(vs) if !vs.is_empty() => vs,
+            // No children: the enum lowers to a variantless `public enum X {}`
+            // (see `generate_enum`'s `all_unit` branch). `one_value_for` does
+            // not know that — it treats any enum sig as needing a `Default*`
+            // factory — so one must exist even though there is nothing to
+            // pick. A variantless C# enum still has an implicit zero value,
+            // so `default` is a real answer. See #102 round 3 defect 4.
+            _ => {
+                writeln!(out, "    public static {} Default{}() => default;", cs_ident(&s.name), s.name).unwrap();
+                writeln!(out).unwrap();
+                continue;
             }
-        }
+        };
+        let effective_fields = |v: &str| -> usize {
+            ctx.struct_map.get(v).map_or(0, |st| st.fields.len()) + s.fields.len()
+        };
+        let all_unit = variants.iter().all(|v| effective_fields(v) == 0);
+        let default_expr = if all_unit {
+            format!("{}.{}", cs_ident(&s.name), cs_ident(&variants[0]))
+        } else if let Some(unit) = variants.iter().find(|v| effective_fields(v) == 0) {
+            format!("new {}()", cs_ident(unit))
+        } else {
+            let terminates = |v: &str| -> bool {
+                let own = ctx.struct_map.get(v).map(|st| st.fields.as_slice()).unwrap_or(&[]);
+                own.iter().chain(s.fields.iter()).all(|f| f.target != s.name)
+            };
+            let chosen = variants.iter().find(|v| terminates(v)).unwrap_or(&variants[0]);
+            let own_fields: Vec<IRField> = ctx.struct_map.get(chosen.as_str())
+                .map(|st| st.fields.clone()).unwrap_or_default();
+            let fields_str = own_fields.iter().chain(s.fields.iter())
+                .map(|f| format!("{} = {}", capitalize(&f.name),
+                    default_value_for(&f.target, &f.mult, chosen, ir, &fixture_types, ctx)))
+                .collect::<Vec<_>>().join(", ");
+            format!("new {} {{ {fields_str} }}", cs_ident(chosen))
+        };
+        writeln!(out, "    public static {} Default{}() => {};", cs_ident(&s.name), s.name, default_expr).unwrap();
+        writeln!(out).unwrap();
     }
 
     // Anomaly fixtures
@@ -445,19 +478,23 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
             if ctx.variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
             anomaly_sigs_done.insert(sig_name.clone());
 
+            // Object-initializer syntax, matching the settable-property shape
+            // every generated type actually has (see Models.cs) — not the
+            // positional-constructor shape these types don't have.
             writeln!(out, "    /// <summary>Anomaly fixture: all collections empty</summary>").unwrap();
-            writeln!(out, "    public static {sig_name} AnomalyEmpty{sig_name}() => new(").unwrap();
-            for (i, f) in s.fields.iter().enumerate() {
-                let comma = if i < s.fields.len() - 1 { "," } else { "" };
+            writeln!(out, "    public static {} AnomalyEmpty{sig_name}() => new {}", cs_ident(sig_name), cs_ident(sig_name)).unwrap();
+            writeln!(out, "    {{").unwrap();
+            for f in &s.fields {
                 let upper = capitalize(&f.name);
                 let val = match &f.mult {
-                    Multiplicity::Set => format!("new HashSet<{}>(){}", f.target, comma),
-                    Multiplicity::Seq => format!("new List<{}>(){}", f.target, comma),
-                    _ => format!("{}{}", cs_default_value(&f.target, &f.mult), comma),
+                    // Properties are always `List<T>` (see `mult_to_cs_type`), even
+                    // for a `set` field — `HashSet<T>` here would be a type mismatch.
+                    Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(&f.target)),
+                    _ => cs_default_value(&f.target, &f.mult, &fixture_types, ctx),
                 };
-                writeln!(out, "        {upper}: {val}").unwrap();
+                writeln!(out, "        {upper} = {val},").unwrap();
             }
-            writeln!(out, "    );").unwrap();
+            writeln!(out, "    }};").unwrap();
             writeln!(out).unwrap();
         }
     }
@@ -466,42 +503,119 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
     out
 }
 
+/// A `One`-multiplicity value for `target`: a native zero value for a
+/// resolved Alloy alias, a `Default*()` factory call for anything that needs
+/// one (abstract sigs, enum variants, other fixture-bearing sigs — none of
+/// which have a usable parameterless `new` since they're either `abstract` or
+/// need their own fields populated), else a bare constructor call.
+fn one_value_for(target: &str, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
+    if is_native_type_alias(target) {
+        return cs_zero_value(&resolve_type(TargetLang::CSharp, target)).to_string();
+    }
+    if ctx.variant_names.contains(target)
+        || ctx.struct_map.get(target).map_or(false, |s| s.is_enum)
+        || fixture_types.contains(target)
+    {
+        format!("Default{}()", target)
+    } else {
+        format!("new {}()", cs_type_name(target))
+    }
+}
+
+/// C#'s zero value for a resolved native type.
+fn cs_zero_value(cs_ty: &str) -> &'static str {
+    match cs_ty {
+        "string" => "\"\"",
+        "bool" => "false",
+        "double" => "0.0",
+        _ => "0",
+    }
+}
+
 fn default_value_for(target: &str, mult: &Multiplicity, owner: &str, ir: &OxidtrIR, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
     match mult {
-        Multiplicity::One => {
-            if ctx.variant_names.contains(target) || ctx.struct_map.get(target).map_or(false, |s| s.is_enum) {
-                format!("Default{}()", target)
-            } else if fixture_types.contains(target) {
-                format!("Default{}()", target)
-            } else {
-                format!("new {}()", target)
-            }
-        }
+        Multiplicity::One => one_value_for(target, fixture_types, ctx),
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {
             if backend::is_safe_set_population(owner, target, ir, fixture_types) {
-                format!("new List<{}>() {{ Default{}() }}", target, target)
+                format!("new List<{}>() {{ Default{}() }}", cs_type_name(target), target)
             } else {
-                format!("new List<{}>()", target)
+                format!("new List<{}>()", cs_type_name(target))
             }
         }
     }
 }
 
-fn boundary_value_for(target: &str, mult: &Multiplicity) -> String {
+fn boundary_value_for(target: &str, mult: &Multiplicity, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
     match mult {
-        Multiplicity::One => format!("new {}()", target),
+        Multiplicity::One => one_value_for(target, fixture_types, ctx),
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", target),
+        Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(target)),
     }
 }
 
 // ── Tests.cs ─────────────────────────────────────────────────────────────────
 
+/// A `^field` closure over a self-referential field, chasing `Lone`/`One` as a
+/// single pointer and `Set`/`Seq` as a worklist — every variant must terminate
+/// even on a cyclic graph.
+fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
+    let fn_name = format!("Tc{}", capitalize(&tc.field_name));
+    // `sig` is the type that *declares* the field (the `start` parameter);
+    // `target` is the field's own target type (what gets collected). These
+    // coincide for a self-referential field (`Node.parent: lone Node`) but
+    // differ for a subtype-to-supertype closure (`Branch.parent: lone Node`,
+    // where `Branch extends Node`) — chasing a `Node` past the first hop
+    // needs a downcast back to `Branch` since `Node` itself carries no
+    // `Parent` property. See #102 round 3 defect 3.
+    let sig = cs_ident(&tc.sig_name);
+    let target = cs_ident(&tc.target_type);
+    let field = capitalize(&tc.field_name);
+    writeln!(out, "    private static List<{target}> {fn_name}({sig} start)").unwrap();
+    writeln!(out, "    {{").unwrap();
+    writeln!(out, "        var result = new List<{target}>();").unwrap();
+    match &tc.mult {
+        Multiplicity::Lone | Multiplicity::One => {
+            writeln!(out, "        var seen = new HashSet<{target}>();").unwrap();
+            writeln!(out, "        var current = start.{field};").unwrap();
+            writeln!(out, "        while (current != null && seen.Add(current))").unwrap();
+            writeln!(out, "        {{").unwrap();
+            writeln!(out, "            result.Add(current);").unwrap();
+            if sig == target {
+                writeln!(out, "            current = current.{field};").unwrap();
+            } else {
+                writeln!(out, "            current = (current as {sig})?.{field};").unwrap();
+            }
+            writeln!(out, "        }}").unwrap();
+        }
+        Multiplicity::Set | Multiplicity::Seq => {
+            writeln!(out, "        var queue = new List<{target}>(start.{field});").unwrap();
+            writeln!(out, "        while (queue.Count > 0)").unwrap();
+            writeln!(out, "        {{").unwrap();
+            writeln!(out, "            var next = queue[0];").unwrap();
+            writeln!(out, "            queue.RemoveAt(0);").unwrap();
+            writeln!(out, "            if (result.Contains(next)) continue;").unwrap();
+            writeln!(out, "            result.Add(next);").unwrap();
+            if sig == target {
+                writeln!(out, "            queue.AddRange(next.{field});").unwrap();
+            } else {
+                writeln!(out, "            if (next is {sig} typed) queue.AddRange(typed.{field});").unwrap();
+            }
+            writeln!(out, "        }}").unwrap();
+        }
+    }
+    writeln!(out, "        return result;").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+}
+
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     writeln!(out, "using Xunit;").unwrap();
     writeln!(out, "using System.Collections.Generic;").unwrap();
+    // `Zip`/`Union`/`Intersect`/`Except` below are `System.Linq` extension
+    // methods, not `List<T>` members — without this using they are CS1061.
+    writeln!(out, "using System.Linq;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "public class ModelsTest").unwrap();
     writeln!(out, "{{").unwrap();
@@ -512,6 +626,22 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .map(|s| s.name.clone())
         .collect();
     let all_constraints = analyze::analyze(ir);
+
+    // Transitive-closure helpers (`^field`): C# has no `check_*` fact-path
+    // infrastructure to hang these off of (see #78), so emit only the ones
+    // the constraint/property bodies below actually call.
+    let mut tc_fields = Vec::new();
+    for c in &ir.constraints {
+        tc_fields.extend(expr_translator::extract_tc_fields(&c.expr, ir));
+    }
+    for p in &ir.properties {
+        tc_fields.extend(expr_translator::extract_tc_fields(&p.expr, ir));
+    }
+    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    tc_fields.dedup();
+    for tc in &tc_fields {
+        generate_tc_function(&mut out, tc);
+    }
 
     // --- Constraint tests (facts) ---
     for constraint in &ir.constraints {
@@ -532,15 +662,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    public void {test_name}()").unwrap();
             writeln!(out, "    {{").unwrap();
             for (pname, tname) in &params {
+                let tcs = cs_ident(tname);
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{tname}() }};").unwrap();
                 } else {
-                    writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
                 }
-                writeln!(out, "        var next{cap} = new List<{tname}>({pname});", cap = capitalize(pname)).unwrap();
+                let next_pname = compose_ident("next", pname);
+                writeln!(out, "        var {next_pname} = new List<{tcs}>({pname});").unwrap();
             }
             if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
-                let rewritten_body = analyze::rewrite_prime_as_post_state(inner_body);
+                let rewritten_body = expr_translator::finalize_post_state_idents(
+                    &analyze::rewrite_prime_as_post_state(inner_body),
+                );
                 let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
                 let bind_vars: Vec<String> = bindings.iter()
                     .flat_map(|b| b.vars.clone())
@@ -548,8 +682,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 if bind_vars.len() == 1 {
                     let v = &bind_vars[0];
                     let pname = &params[0].0;
-                    let cap = capitalize(pname);
-                    writeln!(out, "        foreach (var ({v}, next{ucv}) in {pname}.Zip(next{cap}))", ucv = capitalize(v)).unwrap();
+                    let next_pname = compose_ident("next", pname);
+                    let next_v = compose_ident("next", v);
+                    writeln!(out, "        foreach (var ({v}, {next_v}) in {pname}.Zip({next_pname}))").unwrap();
                     writeln!(out, "        {{").unwrap();
                     writeln!(out, "            Assert.True({body_str});").unwrap();
                     writeln!(out, "        }}").unwrap();
@@ -557,7 +692,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        Assert.True({body_str});").unwrap();
                 }
             } else {
-                let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
+                let rewritten = expr_translator::finalize_post_state_idents(
+                    &analyze::rewrite_prime_as_post_state(&constraint.expr),
+                );
                 let body = expr_translator::translate_with_ir(&rewritten, ir);
                 writeln!(out, "        Assert.True({body});").unwrap();
             }
@@ -626,10 +763,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    public void {test_name}()").unwrap();
         writeln!(out, "    {{").unwrap();
         for (pname, tname) in &params {
+            let tcs = cs_ident(tname);
             if has_fixture.contains(tname) {
-                writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{tname}() }};").unwrap();
             } else {
-                writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
             }
         }
         writeln!(out, "        Assert.True({body});").unwrap();
@@ -647,10 +785,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    public void {test_name}()").unwrap();
         writeln!(out, "    {{").unwrap();
         for (pname, tname) in &params {
+            let tcs = cs_ident(tname);
             if has_fixture.contains(tname) {
-                writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{tname}() }};").unwrap();
             } else {
-                writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
             }
         }
         writeln!(out, "        Assert.True({body});").unwrap();
@@ -756,10 +895,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    public void {test_name}()").unwrap();
             writeln!(out, "    {{").unwrap();
             for (pname, tname) in &all_params {
+                let tcs = cs_ident(tname);
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        var {pname} = new List<{tname}>{{ Fixtures.Default{tname}() }};").unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{tname}() }};").unwrap();
                 } else {
-                    writeln!(out, "        var {pname} = new List<{tname}>();").unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
                 }
             }
             writeln!(out, "        Assert.True({body_a});").unwrap();
@@ -775,11 +915,15 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Build a field/param/return type string, resolving Alloy native aliases
+/// (Int/Str/Bool/Float) to their C# primitives and escaping any remaining
+/// identifier that collides with a C# reserved word.
 fn mult_to_cs_type(target: &str, mult: &Multiplicity) -> String {
+    let ty = cs_type_name(target);
     match mult {
-        Multiplicity::One => target.to_string(),
-        Multiplicity::Lone => format!("{target}?"),
-        Multiplicity::Set | Multiplicity::Seq => format!("List<{target}>"),
+        Multiplicity::One => ty,
+        Multiplicity::Lone => format!("{ty}?"),
+        Multiplicity::Set | Multiplicity::Seq => format!("List<{ty}>"),
     }
 }
 
@@ -794,9 +938,73 @@ fn capitalize(s: &str) -> String {
 fn to_camel_case(s: &str) -> String {
     let cap = capitalize(s);
     let mut chars = cap.chars();
-    match chars.next() {
+    let camel = match chars.next() {
         None => String::new(),
         Some(c) => c.to_lowercase().to_string() + chars.as_str(),
+    };
+    cs_ident(&camel)
+}
+
+/// All 77 C# reserved keywords, including the primitive-type ones (bool, int,
+/// long, string, double, …). The `@` verbatim-identifier escape makes any of
+/// them usable as a declaration or reference. Shared by `expr_translator`
+/// (`use super::{CS_KEYWORDS, cs_ident};`) rather than duplicated.
+///
+/// The primitive-type keywords are the tricky half: they are ALSO the correct
+/// bare token in a *resolved-type* position (an Alloy `Int` field resolves to
+/// `long`, which must stay bare, not become `@long`). `cs_ident` alone cannot
+/// tell those two positions apart — see `cs_type_name`, which discriminates
+/// on the original Alloy target before resolution and is the one that should
+/// wrap `resolve_type`'s output. `cs_ident` itself is only for pure
+/// user-defined identifier positions (sig/field/variant names, quantifier
+/// vars, generated locals) where escaping all 77 is always correct.
+pub(crate) const CS_KEYWORDS: &[&str] = &[
+    "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char",
+    "checked", "class", "const", "continue", "decimal", "default", "delegate", "do",
+    "double", "else", "enum", "event", "explicit", "extern", "false", "finally",
+    "fixed", "float", "for", "foreach", "goto", "if", "implicit", "in", "int",
+    "interface", "internal", "is", "lock", "long", "namespace", "new", "null",
+    "object", "operator", "out", "override", "params", "private", "protected",
+    "public", "readonly", "ref", "return", "sbyte", "sealed", "short", "sizeof",
+    "stackalloc", "static", "string", "struct", "switch", "this", "throw", "true",
+    "try", "typeof", "uint", "ulong", "unchecked", "unsafe", "ushort", "using",
+    "virtual", "void", "volatile", "while",
+];
+
+pub(crate) fn cs_ident(name: &str) -> String {
+    if CS_KEYWORDS.contains(&name) {
+        format!("@{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Compose `prefix` + a PascalCased `name` into a single identifier,
+/// escaping only the *finished* result. `name` may already be an escaped
+/// identifier (a leading `@`, e.g. the local generated for a keyword-named
+/// sig's plural, `@params`) — capitalizing and concatenating that as-is
+/// strands the `@` mid-token (`next@params`, CS1002/CS1003), so the escape is
+/// stripped before composing and re-applied, if needed, to the composed
+/// whole instead. See #102 round 3 defect 2.
+pub(crate) fn compose_ident(prefix: &str, name: &str) -> String {
+    let bare = name.strip_prefix('@').unwrap_or(name);
+    cs_ident(&format!("{prefix}{}", capitalize(bare)))
+}
+
+/// Resolve `target` to its C# type name for a *resolved-type* position (a
+/// field's declared type, a `List<T>` element, a fixture's constructed
+/// type). Discriminates on the **original** Alloy `target`, not on the
+/// resolved string: a native alias (`Int`/`Str`/`Bool`/`Float`) resolves to
+/// the genuine bare C# keyword (`long`, `string`, …); anything else is a
+/// user sig name and gets escaped if it collides with a C# keyword (e.g. a
+/// sig named `object` → `@object`). Escaping the resolved string instead
+/// would turn a correct bare `long` into an unresolvable `@long` (CS0246).
+fn cs_type_name(target: &str) -> String {
+    let resolved = resolve_type(TargetLang::CSharp, target);
+    if is_native_type_alias(target) {
+        resolved
+    } else {
+        cs_ident(&resolved)
     }
 }
 
@@ -815,12 +1023,11 @@ fn to_snake_case(s: &str) -> String {
     out
 }
 
-fn cs_default_value(target: &str, mult: &Multiplicity) -> String {
+fn cs_default_value(target: &str, mult: &Multiplicity, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
     match mult {
-        Multiplicity::One => format!("new {}()", target),
+        Multiplicity::One => one_value_for(target, fixture_types, ctx),
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set => format!("new HashSet<{}>()", target),
-        Multiplicity::Seq => format!("new List<{}>()", target),
+        Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(target)),
     }
 }
 

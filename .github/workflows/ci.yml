@@ -171,6 +171,10 @@ jobs:
       - uses: swift-actions/setup-swift@v2
         with:
           swift-version: '6.0'
+      # Must match <TargetFramework> in tests/target_validation.rs::CS_PROJECT.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
 
       - name: Run target validation tests
         run: cargo test --test target_validation -- --include-ignored --test-threads=1
