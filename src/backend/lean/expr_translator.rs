@@ -17,13 +17,29 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
 /// position. Native type aliases are absent by construction, so wrapping is
 /// never applied to `Int`/`String`/`Bool` (the C# `@long` trap from #102).
 const LEAN_KEYWORDS: &[&str] = &[
-    "Prop", "Sort", "Type", "abbrev", "at", "attribute", "by", "calc", "class",
-    "def", "deriving", "do", "else", "end", "example", "extends", "from", "fun",
-    "have", "if", "in", "inductive", "instance", "let", "macro", "match",
-    "mutual", "namespace", "noncomputable", "notation", "open", "partial",
-    "private", "protected", "section", "show", "sorry", "structure", "then",
-    "theorem", "unsafe", "universe", "variable", "where", "with",
+    "Prop", "Sort", "Type", "abbrev", "at", "attribute", "axiom", "break", "by",
+    "calc", "catch", "class", "continue", "declare_syntax_cat", "def", "deriving",
+    "do", "elab", "else", "end", "example", "export", "extends", "finally", "for",
+    "from", "fun", "have", "if", "import", "in", "inductive", "infix", "infixl",
+    "infixr", "initialize", "instance", "let", "local", "macro", "macro_rules",
+    "match", "matches", "mut", "mutual", "namespace", "nofun", "nomatch",
+    "noncomputable", "notation", "opaque", "open", "partial", "postfix", "prefix",
+    "private", "protected", "return", "scoped", "section", "set_option", "show",
+    "sorry", "structure", "suffices", "then", "theorem", "try", "universe",
+    "unless", "unsafe", "variable", "where", "while", "with",
 ];
+
+/// Undoes [`lean_ident`]. Only a wrapper around a token from the list above is
+/// unwrapped — guillemets are legal Lean elsewhere (string literals, and user
+/// identifiers quoted for reasons of their own, `«foo bar»`), and stripping
+/// those would corrupt source `extract` did not generate.
+pub fn unescape_lean_ident(text: &str) -> String {
+    let mut out = text.to_string();
+    for kw in LEAN_KEYWORDS {
+        out = out.replace(&format!("«{kw}»"), kw);
+    }
+    out
+}
 
 /// Wraps a reserved token in guillemets so it can be used as an identifier.
 pub fn lean_ident(name: &str) -> String {

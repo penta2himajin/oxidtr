@@ -1307,23 +1307,34 @@ fn lean_typecheck(ir: &ir::nodes::OxidtrIR) -> (bool, String, String) {
     let mut all = String::new();
     for file in &lean::generate(ir) {
         std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        // Separator, so a pinned substring cannot match across a file boundary.
+        all.push_str("\n-- <oxidtr file boundary> --\n");
         all.push_str(&file.content);
     }
 
     let mut diagnostics = String::new();
     let mut clean = true;
     for stem in ["Types", "Constraints", "Operations"] {
-        let src = dir.join(format!("{stem}.lean"));
-        if !src.exists() { continue; }
+        if !dir.join(format!("{stem}.lean")).exists() { continue; }
+        // Run *inside* the scratch dir with relative names. `lean` takes the
+        // working directory as its root and rejects a source outside it with
+        // "must be contained in root directory" — a message with no `: error`
+        // in it, which is how an earlier version of this harness passed while
+        // never typechecking anything.
         let out = std::process::Command::new("lean")
-            .arg("-o").arg(dir.join(format!("{stem}.olean")))
-            .arg(&src)
+            .arg("-o").arg(format!("{stem}.olean"))
+            .arg(format!("{stem}.lean"))
+            .current_dir(dir)
             .env("LEAN_PATH", dir)
             .output()
             .expect("failed to run lean (is the Lean 4 toolchain on PATH?)");
         let text = format!("{}{}",
             String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-        if text.contains(": error") { clean = false; }
+        // Gate on the exit status, not only on the text. `sorry` is a warning and
+        // leaves lean at 0, so the status alone already admits it — whereas the
+        // substring alone would read a toolchain failure ("error: no default
+        // toolchain") or a signal death as a clean run and pass vacuously.
+        if !out.status.success() || text.contains(": error") { clean = false; }
         diagnostics.push_str(&text);
     }
     (clean, diagnostics, all)
@@ -1442,6 +1453,14 @@ fn lean_adversarial_models_compile() {
         ("cardinality_fact_defers_instead_of_simp",
          "sig Item {}\nsig Bag { items: set Item }\nfact Capped { all b: Bag | #b.items <= 3 }",
          "∀ (x : Bag), x.items.length ≤ 3 := by\n  intro x\n  sorry"),
+        // `x in y.^f` is reachability, not membership: `TransGen` wants the
+        // relation and *both* endpoints, so the closure cannot be translated on
+        // its own and then tested with `∈`. `b ∈ a.f` is well-typed for `Option`
+        // and `List` alike, which is why this needs no multiplicity lookup.
+        ("transitive_closure_membership_is_reachability",
+         "sig Node { parent: lone Node }\nassert NoCycle { no n: Node | n in n.^parent }\n\
+          check NoCycle for 4",
+         "¬ ∃ n : Node, Relation.TransGen (fun a b => b ∈ a.parent) n n"),
         // `x in Circle` asks which variant an atom is. `Circle` lowers to a Lean
         // type, so `x ∈ Circle` is a membership test against a `Type`; the
         // variant test is a pattern match.
