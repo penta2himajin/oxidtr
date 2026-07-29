@@ -186,5 +186,7 @@ fn cs_derived_field_generates_property() {
         fun Account.balance: one Int { #this.deposits }
     "#);
     let models = find_file(&files, "Models.cs");
-    assert!(models.contains("public static Int Balance =>"), "should generate property:\n{models}");
+    // `Int` is an Alloy native alias, not a real C# type — it must resolve to
+    // `long` the same way a stored field does, or this doesn't compile.
+    assert!(models.contains("public static long Balance =>"), "should generate property:\n{models}");
 }
