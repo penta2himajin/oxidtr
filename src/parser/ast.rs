@@ -89,6 +89,8 @@ pub enum Expr {
     },
     Cardinality(Box<Expr>),
     TransitiveClosure(Box<Expr>),
+    /// Reflexive-transitive closure `*r` / `.*field` (id ∪ ^r).
+    ReflexiveClosure(Box<Expr>),
     Comparison {
         op: CompareOp,
         left: Box<Expr>,

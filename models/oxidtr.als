@@ -39,6 +39,7 @@ sig FieldAccess extends Expr {
 sig Cardinality extends Expr { inner: one Expr }
 sig IntLiteral extends Expr {}
 sig TransitiveClosure extends Expr { tcInner: one Expr }
+sig ReflexiveClosure extends Expr { rtcInner: one Expr }
 sig SetOp extends Expr {
   setOpKind:  one SetOpKind,
   setOpLeft:  one Expr,

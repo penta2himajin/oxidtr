@@ -488,6 +488,10 @@ pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
     let s = strip_balanced_parens(s);
 
     // tcField(base) → base.^field
+    if let Some(result) = try_reverse_rtc_call(s) {
+        return Some(result);
+    }
+
     if let Some(result) = try_reverse_tc_call(s) {
         return Some(result);
     }
@@ -552,6 +556,24 @@ fn strip_balanced_parens(s: &str) -> &str {
         match ch { '(' => depth += 1, ')' => { depth -= 1; if depth < 0 { return s; } } _ => {} }
     }
     if depth == 0 { inner.trim() } else { s }
+}
+
+fn try_reverse_rtc_call(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("rtc")?;
+    if rest.is_empty() || !rest.chars().next()?.is_ascii_uppercase() { return None; }
+    let paren = rest.find('(')?;
+    let field_pascal = &rest[..paren];
+    let field = {
+        let mut chars = field_pascal.chars();
+        match chars.next() {
+            None => return None,
+            Some(c) => format!("{}{}", c.to_lowercase(), chars.as_str()),
+        }
+    };
+    let close = find_matching_close(&rest[paren + 1..])?;
+    let args = &rest[paren + 1..paren + 1 + close];
+    let base_alloy = reverse_translate_expr(args.trim()).unwrap_or_else(|| args.trim().to_string());
+    Some(format!("{base_alloy}.*{field}"))
 }
 
 fn try_reverse_tc_call(s: &str) -> Option<String> {

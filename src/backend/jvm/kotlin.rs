@@ -31,6 +31,9 @@ impl JvmLang for KotlinLang {
     fn tc_call(&self, field: &str, base: &str) -> String {
         format!("tc{}({base})", capitalize(field))
     }
+    fn rtc_call(&self, field: &str, base: &str) -> String {
+        format!("rtc{}({base})", capitalize(field))
+    }
     fn eq_op(&self) -> &str { "==" }
     fn neq_op(&self) -> &str { "!=" }
 }
@@ -44,8 +47,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         content: generate_models(ir, &ctx),
     });
 
-    let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
-        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    let has_tc = ir_uses_tc(ir);
 
     // Generate Helpers.kt for TC functions (replaces Invariants.kt)
     if has_tc {
@@ -403,26 +405,51 @@ fn mult_to_kt_type(target: &str, mult: &Multiplicity) -> String {
 
 // ── Helpers.kt ─────────────────────────────────────────────────────────────
 
-/// Generate Helpers.kt containing TC (transitive closure) functions.
+/// Generate Helpers.kt containing TC / RTC functions.
 fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
-    // TC functions
-    let mut tc_fields = Vec::new();
-    for c in &ir.constraints {
-        tc_fields.extend(expr_translator::extract_tc_fields(&c.expr, ir));
-    }
-    for p in &ir.properties {
-        tc_fields.extend(expr_translator::extract_tc_fields(&p.expr, ir));
-    }
-    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
-    tc_fields.dedup();
+    let (tc_fields, rtc_fields) = collect_closure_fields(ir);
 
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
     }
+    for rtc in &rtc_fields {
+        generate_rtc_function(&mut out, rtc);
+    }
 
     out
+}
+
+fn collect_closure_fields(ir: &OxidtrIR) -> (Vec<expr_translator::TCField>, Vec<expr_translator::TCField>) {
+    let mut tc_fields = Vec::new();
+    let mut rtc_fields = Vec::new();
+    let mut push_expr = |expr: &crate::parser::ast::Expr| {
+        tc_fields.extend(expr_translator::extract_tc_fields(expr, ir));
+        rtc_fields.extend(expr_translator::extract_rtc_fields(expr, ir));
+    };
+    for c in &ir.constraints {
+        push_expr(&c.expr);
+    }
+    for p in &ir.properties {
+        push_expr(&p.expr);
+    }
+    for op in &ir.operations {
+        for e in &op.body {
+            push_expr(e);
+        }
+    }
+    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    tc_fields.dedup();
+    rtc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    rtc_fields.dedup();
+    (tc_fields, rtc_fields)
+}
+
+fn ir_uses_tc(ir: &OxidtrIR) -> bool {
+    ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr))
+        || ir.operations.iter().any(|op| op.body.iter().any(expr_uses_tc))
 }
 
 fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
@@ -470,6 +497,21 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "}}").unwrap();
         }
     }
+    writeln!(out).unwrap();
+}
+
+fn generate_rtc_function(out: &mut String, tc: &expr_translator::TCField) {
+    let fn_name = format!("rtc{}", capitalize(&tc.field_name));
+    let tc_name = format!("tc{}", capitalize(&tc.field_name));
+    let sig = &tc.sig_name;
+    let field = &tc.field_name;
+
+    writeln!(out, "/** Reflexive-transitive closure for {sig}.{field} (id ∪ ^{field}). */").unwrap();
+    writeln!(out, "fun {fn_name}(start: {sig}): List<{sig}> {{").unwrap();
+    writeln!(out, "    val result = mutableListOf(start)").unwrap();
+    writeln!(out, "    result.addAll({tc_name}(start))").unwrap();
+    writeln!(out, "    return result").unwrap();
+    writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
 
@@ -987,7 +1029,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;
     match expr {
-        Expr::TransitiveClosure(_) => true,
+        Expr::TransitiveClosure(_) | Expr::ReflexiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
         Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),

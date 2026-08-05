@@ -1,6 +1,7 @@
 use oxidtr::parser;
 use oxidtr::ir;
 use oxidtr::backend::rust;
+use oxidtr::backend::lean;
 
 fn generate_from(input: &str) -> Vec<oxidtr::backend::GeneratedFile> {
     let model = parser::parse(input).expect("should parse");
@@ -115,5 +116,57 @@ fn tc_self_hosting_model_no_generic_transitive_closure() {
     assert!(
         helpers.contains("fn tc_parent("),
         "should generate tc_parent for SigDecl.parent in:\n{helpers}"
+    );
+}
+
+#[test]
+fn rtc_derived_field_generates_rtc_helper_including_start() {
+    // Issue #119: `this.*nxt` must not collapse to a single hop (`self.nxt`).
+    let files = generate_from(r#"
+        sig Node { nxt: lone Node }
+        fun Node.reach: set Node { this.*nxt }
+    "#);
+    let models = find_file(&files, "models.rs");
+    assert!(
+        models.contains("rtc_nxt(&self)"),
+        "reach body should call rtc_nxt, got:\n{models}"
+    );
+    assert!(
+        !models.contains("self.nxt") || models.contains("rtc_nxt"),
+        "must not silently drop * to plain field access:\n{models}"
+    );
+    let helpers = find_file(&files, "helpers.rs");
+    assert!(
+        helpers.contains("fn rtc_nxt("),
+        "missing rtc_nxt in:\n{helpers}"
+    );
+    assert!(
+        helpers.contains("fn tc_nxt("),
+        "rtc_nxt depends on tc_nxt:\n{helpers}"
+    );
+    // Reflexive: start node must be included
+    assert!(
+        helpers.contains("start.clone()") || helpers.contains("vec![start.clone()]"),
+        "rtc_nxt must include the start node:\n{helpers}"
+    );
+}
+
+#[test]
+fn rtc_lean_uses_refl_trans_gen() {
+    // Issue #119 Lean repro: `*` must become ReflTransGen, not a single hop.
+    let model = parser::parse(r#"
+        sig Node { nxt: lone Node }
+        fun Node.reach: set Node { this.*nxt }
+    "#).expect("parse");
+    let ir_result = ir::lower(&model).expect("lower");
+    let files = lean::generate(&ir_result);
+    let types = find_file(&files, "Types.lean");
+    assert!(
+        types.contains("Relation.ReflTransGen"),
+        "expected ReflTransGen for *nxt, got:\n{types}"
+    );
+    assert!(
+        !types.contains("self.nxt") && !types.lines().any(|l| l.trim() == "self.nxt"),
+        "must not silently drop * to self.nxt:\n{types}"
     );
 }

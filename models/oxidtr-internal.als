@@ -46,6 +46,7 @@ one sig Comma    extends Token {}
 one sig Dot      extends Token {}
 one sig Hash     extends Token {}
 one sig Caret    extends Token {}
+one sig Star     extends Token {}
 one sig Eq       extends Token {}
 one sig NotEq    extends Token {}
 one sig Lt       extends Token {}

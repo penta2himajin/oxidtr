@@ -54,6 +54,7 @@ pub enum Token {
     Dot,
     Hash,
     Caret,
+    Star,
     Eq,
     NotEq,
     Lt,
@@ -177,6 +178,7 @@ impl<'a> Lexer<'a> {
             b'.' => { self.advance(); return Token::Dot; }
             b'#' => { self.advance(); return Token::Hash; }
             b'^' => { self.advance(); return Token::Caret; }
+            b'*' => { self.advance(); return Token::Star; }
             b'|' => { self.advance(); return Token::Pipe; }
             b'<' => {
                 self.advance();

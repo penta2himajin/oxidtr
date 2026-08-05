@@ -675,7 +675,7 @@ fn expr_references_sig_name(expr: &crate::parser::ast::Expr, sig_name: &str) -> 
             expr_references_sig_name(left, sig_name)
                 || expr_references_sig_name(right, sig_name)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             expr_references_sig_name(inner, sig_name)
         }
         Expr::MultFormula { expr: inner, .. } => expr_references_sig_name(inner, sig_name),
@@ -712,7 +712,7 @@ fn constraint_references_field(expr: &crate::parser::ast::Expr, _sig: &str, fiel
                 || constraint_references_field(body, _sig, field)
         }
         Expr::Cardinality(inner) => constraint_references_field(inner, _sig, field),
-        Expr::TransitiveClosure(inner) => constraint_references_field(inner, _sig, field),
+        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => constraint_references_field(inner, _sig, field),
         Expr::MultFormula { expr: inner, .. } => constraint_references_field(inner, _sig, field),
         Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             constraint_references_field(left, _sig, field)
@@ -755,7 +755,7 @@ fn constraint_has_cardinality(expr: &crate::parser::ast::Expr, field: &str) -> b
 fn collect_tc_fields(expr: &crate::parser::ast::Expr, out: &mut std::collections::HashSet<String>) {
     use crate::parser::ast::Expr;
     match expr {
-        Expr::TransitiveClosure(inner) => {
+        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_direct_fields(inner, out);
             collect_tc_fields(inner, out);
         }
@@ -805,7 +805,7 @@ fn collect_direct_fields(expr: &crate::parser::ast::Expr, out: &mut std::collect
 fn constraint_references_field_non_tc(expr: &crate::parser::ast::Expr, field: &str) -> bool {
     use crate::parser::ast::Expr;
     match expr {
-        Expr::TransitiveClosure(_) => false, // skip inside TC
+        Expr::TransitiveClosure(_) | Expr::ReflexiveClosure(_) => false, // skip inside TC
         Expr::FieldAccess { base, field: f } => {
             f == field || constraint_references_field_non_tc(base, field)
         }
