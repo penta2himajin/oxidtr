@@ -3,38 +3,29 @@
 
 use oxidtr::generate::{self, GenerateConfig};
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 fn gen_rust(src: &str, konpu: bool) -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
-    let _ = fs::remove_dir_all(&dir);
-    let model = dir.join("model.als");
-    fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.als");
     fs::write(&model, src).unwrap();
 
-    let mut config = GenerateConfig::new("rust", dir.to_str().unwrap());
+    let mut config = GenerateConfig::new("rust", dir.path().to_str().unwrap());
     config.warnings = generate::WarningLevel::Off;
     config.konpu = konpu;
     generate::run(model.to_str().unwrap(), &config).unwrap();
-    fs::read_to_string(dir.join("models.rs")).unwrap()
+    fs::read_to_string(dir.path().join("models.rs")).unwrap()
 }
 
 fn gen_rust_tests(src: &str, konpu: bool) -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
-    let _ = fs::remove_dir_all(&dir);
-    let model = dir.join("model.als");
-    fs::create_dir_all(&dir).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.als");
     fs::write(&model, src).unwrap();
 
-    let mut config = GenerateConfig::new("rust", dir.to_str().unwrap());
+    let mut config = GenerateConfig::new("rust", dir.path().to_str().unwrap());
     config.warnings = generate::WarningLevel::Off;
     config.konpu = konpu;
     generate::run(model.to_str().unwrap(), &config).unwrap();
-    fs::read_to_string(dir.join("tests.rs")).unwrap()
+    fs::read_to_string(dir.path().join("tests.rs")).unwrap()
 }
 
 // Fun-form identity (not a `one sig`), so the identity law tests are actually
@@ -136,14 +127,11 @@ fact Assoc { all a, b, c: S | combine[combine[a, b], c] = combine[a, combine[b, 
 fn one_sig_identity_warns_suggesting_fun_form() {
     // one-sig identity: annotation still emitted, but warn that identity-law
     // tests need a carrier-valued `fun` identity.
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    let model = dir.join("model.als");
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.als");
     fs::write(&model, MONOID).unwrap();
 
-    let mut config = GenerateConfig::new("rust", dir.to_str().unwrap());
+    let mut config = GenerateConfig::new("rust", dir.path().to_str().unwrap());
     config.warnings = generate::WarningLevel::Off;
     config.konpu = true;
     let result = generate::run(model.to_str().unwrap(), &config).unwrap();
@@ -154,11 +142,8 @@ fn one_sig_identity_warns_suggesting_fun_form() {
     );
 
     // fun-form identity → no such warning
-    let n2 = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir2 = std::env::temp_dir().join(format!("oxidtr_konpu_{n2}"));
-    let _ = fs::remove_dir_all(&dir2);
-    fs::create_dir_all(&dir2).unwrap();
-    let model2 = dir2.join("model.als");
+    let dir2 = tempfile::tempdir().unwrap();
+    let model2 = dir2.path().join("model.als");
     fs::write(&model2, r#"
 sig Money { amount: one Int }
 fun zero: Money { Money }
@@ -166,7 +151,7 @@ fun add[a, b: Money]: Money { a }
 fact Assoc { all a, b, c: Money | add[add[a, b], c] = add[a, add[b, c]] }
 fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
 "#).unwrap();
-    let mut config2 = GenerateConfig::new("rust", dir2.to_str().unwrap());
+    let mut config2 = GenerateConfig::new("rust", dir2.path().to_str().unwrap());
     config2.warnings = generate::WarningLevel::Off;
     config2.konpu = true;
     let result2 = generate::run(model2.to_str().unwrap(), &config2).unwrap();
@@ -185,17 +170,14 @@ fact Ident { all a: Money | add[a, zero] = a and add[zero, a] = a }
 "#;
 
 fn gen_target(src: &str, target: &str, models_file: &str) -> String {
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("oxidtr_konpu_{n}"));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    let model = dir.join("model.als");
+    let dir = tempfile::tempdir().unwrap();
+    let model = dir.path().join("model.als");
     fs::write(&model, src).unwrap();
-    let mut config = GenerateConfig::new(target, dir.to_str().unwrap());
+    let mut config = GenerateConfig::new(target, dir.path().to_str().unwrap());
     config.warnings = generate::WarningLevel::Off;
     config.konpu = true;
     generate::run(model.to_str().unwrap(), &config).unwrap();
-    fs::read_to_string(dir.join(models_file)).unwrap()
+    fs::read_to_string(dir.path().join(models_file)).unwrap()
 }
 
 #[test]
