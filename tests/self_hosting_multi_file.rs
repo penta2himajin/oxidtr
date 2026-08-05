@@ -52,8 +52,8 @@ fn split_model_lowers_to_ir() {
 
 #[test]
 fn split_model_generate_round_trip_rust() {
-    let out = std::env::temp_dir().join(format!("oxidtr-split-gen-{}", std::process::id()));
-    if out.exists() { let _ = std::fs::remove_dir_all(&out); }
+    let tmp = tempfile::tempdir().unwrap();
+    let out = tmp.path();
 
     let config = generate::GenerateConfig::new("rust", out.to_str().unwrap());
     generate::run("models/oxidtr-split.als", &config)

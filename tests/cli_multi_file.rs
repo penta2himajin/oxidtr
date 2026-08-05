@@ -3,19 +3,15 @@
 use oxidtr::generate::{load_model, run as generate_run, GenerateConfig};
 use oxidtr::check::{run as check_run, CheckConfig};
 use std::fs;
-use std::path::PathBuf;
 
-fn fresh_dir(name: &str) -> PathBuf {
-    let mut d = std::env::temp_dir();
-    d.push(format!("oxidtr-cli-mf-{}-{}", name, std::process::id()));
-    if d.exists() { let _ = fs::remove_dir_all(&d); }
-    fs::create_dir_all(&d).unwrap();
-    d
+fn fresh_dir() -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
 }
 
 #[test]
 fn load_model_resolves_open_from_file_input() {
-    let root = fresh_dir("load-file");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(
@@ -36,7 +32,8 @@ fn load_model_resolves_open_from_file_input() {
 
 #[test]
 fn load_model_resolves_from_directory_convention() {
-    let root = fresh_dir("load-dir");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(
@@ -58,7 +55,8 @@ fn load_model_resolves_from_directory_convention() {
 
 #[test]
 fn generate_uses_load_model_for_multi_file_input() {
-    let root = fresh_dir("gen-mf");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(
@@ -86,7 +84,8 @@ fn generate_uses_load_model_for_multi_file_input() {
 
 #[test]
 fn check_accepts_multi_file_model() {
-    let root = fresh_dir("check-mf");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(
@@ -115,7 +114,8 @@ fn check_accepts_multi_file_model() {
 fn extract_directory_output_writes_multiple_files() {
     // Build a small Rust crate with module subdirs, extract, then ensure
     // render_files produces >=2 files under `-o <dir>`.
-    let root = fresh_dir("extract-dir");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let src = root.join("src");
     let ast = src.join("ast");
     let ir = src.join("ir");
@@ -143,7 +143,8 @@ fn extract_directory_output_writes_multiple_files() {
 /// create an intermediate `oxidtr/mod.rs` that declares `pub mod ast;`.
 #[test]
 fn modular_codegen_uses_nested_mod_declarations() {
-    let root = fresh_dir("modular-nested");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(
@@ -196,7 +197,8 @@ fn modular_codegen_uses_nested_mod_declarations() {
 /// Rust paths.
 #[test]
 fn modular_codegen_cross_module_imports_use_double_colon() {
-    let root = fresh_dir("modular-imports");
+    let tmp = fresh_dir();
+    let root = tmp.path();
     let sub = root.join("oxidtr");
     fs::create_dir_all(&sub).unwrap();
     fs::write(

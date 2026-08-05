@@ -1,15 +1,8 @@
 use oxidtr::parser;
 use std::fs;
 
-/// Create a temp dir inside cargo's target dir (self-contained, no external deps).
-fn fresh_tmp_dir(name: &str) -> std::path::PathBuf {
-    let mut d = std::env::temp_dir();
-    d.push(format!("oxidtr-multifile-{}-{}", name, std::process::id()));
-    if d.exists() {
-        let _ = fs::remove_dir_all(&d);
-    }
-    fs::create_dir_all(&d).expect("create tmp dir");
-    d
+fn fresh_tmp_dir() -> tempfile::TempDir {
+    tempfile::tempdir().expect("create tmp dir")
 }
 
 #[test]
@@ -53,7 +46,8 @@ fn parse_open_with_parameter_brackets_is_skipped() {
 
 #[test]
 fn parse_from_path_merges_opened_files() {
-    let dir = fresh_tmp_dir("merge");
+    let tmp = fresh_tmp_dir();
+    let dir = tmp.path();
     let sub = dir.join("sub");
     fs::create_dir_all(&sub).unwrap();
 
@@ -82,7 +76,8 @@ fn parse_from_path_merges_opened_files() {
 
 #[test]
 fn parse_from_path_cycle_does_not_infinite_loop() {
-    let dir = fresh_tmp_dir("cycle");
+    let tmp = fresh_tmp_dir();
+    let dir = tmp.path();
     fs::write(
         dir.join("a.als"),
         "module a\nopen b\n\nsig A {}\n",
@@ -102,7 +97,8 @@ fn parse_from_path_cycle_does_not_infinite_loop() {
 
 #[test]
 fn parse_from_path_missing_open_is_non_fatal() {
-    let dir = fresh_tmp_dir("missing");
+    let tmp = fresh_tmp_dir();
+    let dir = tmp.path();
     fs::write(
         dir.join("main.als"),
         "module main\nopen util/ordering[Time]\n\nsig S {}\n",
