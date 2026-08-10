@@ -523,3 +523,45 @@ fn ts_pred_with_a_no_formula_translates_to_emptiness() {
         "`no b.items` over a Set is an emptiness test. got:\n{src}"
     );
 }
+
+// ── Temporal operators must not be erased on the assert path (#78) ─────────
+
+const TEMPORAL_ASSERT_MODEL: &str = "\
+sig Counter { var n: one Int }
+assert Live { eventually (all c: Counter | c.n > 0) }
+assert Ordered { (all c: Counter | c.n > 0) until (all c: Counter | c.n > 5) }
+";
+
+/// `eventually P` is not `P`. The assert path never consulted the temporal
+/// classification, so it translated the operand and dropped the operator —
+/// producing a test that asserts something the model never claimed.
+#[test]
+fn ts_assert_liveness_gets_a_trace_checker() {
+    let files = generate_from(TEMPORAL_ASSERT_MODEL);
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("check_liveness_live") || src.contains("check_liveness_Live"),
+        "an `eventually` assert needs a trace checker, as the fact path emits. got:\n{src}"
+    );
+    assert!(
+        src.contains("trace.some("),
+        "liveness is satisfied in at least one state of the trace. got:\n{src}"
+    );
+}
+
+/// `P until Q` is not `P && Q`.
+#[test]
+fn ts_assert_until_gets_a_trace_checker() {
+    let files = generate_from(TEMPORAL_ASSERT_MODEL);
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("check_until_ordered") || src.contains("check_until_Ordered"),
+        "an `until` assert needs a trace checker. got:\n{src}"
+    );
+    assert!(
+        src.contains("findIndex("),
+        "until is a position search, not a conjunction. got:\n{src}"
+    );
+}

@@ -578,6 +578,59 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them: `eventually P`
+        // became `P`, `P until Q` became `P && Q` (#78). Route it through the
+        // same trace checkers the fact path already emits.
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            let label = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => "binary temporal",
+                _ => "liveness",
+            };
+            // Name the checker exactly as `emit_temporal_trace_checkers` will,
+            // so the test actually calls it. An empty body would leave the
+            // checker unreferenced — a test that asserts nothing, which is the
+            // failure #74/#81 were about.
+            let camel = to_camel_case(&prop.name);
+            let checker = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => analyze::find_temporal_binary_with_bindings(&prop.expr)
+                    .map(|(op, _, _, _)| {
+                        let op_name = match op {
+                            TemporalBinaryOp::Until => "until",
+                            TemporalBinaryOp::Since => "since",
+                            TemporalBinaryOp::Release => "release",
+                            TemporalBinaryOp::Triggered => "triggered",
+                        };
+                        format!("check_{op_name}_{camel}")
+                    }),
+                Some(analyze::TemporalKind::PastLiveness) => Some(format!("check_pastLiveness_{camel}")),
+                _ => Some(format!("check_liveness_{camel}")),
+            };
+            writeln!(out, "  it('{test_name}', () => {{").unwrap();
+            writeln!(out, "    // {label}: full verification needs a trace; an empty trace").unwrap();
+            writeln!(out, "    // can never satisfy it, which at least exercises the checker.").unwrap();
+            match &checker {
+                Some(c) => {
+                    writeln!(out, "    const trace: M.{}[][] = [];",
+                        params.first().map(|(_, t)| t.as_str()).unwrap_or("never")).unwrap();
+                    writeln!(out, "    expect({c}(trace)).toBe(false);").unwrap();
+                }
+                None => {
+                    writeln!(out, "    // oxidtr: no checker emitted for this shape").unwrap();
+                }
+            }
+            writeln!(out, "  }});").unwrap();
+            writeln!(out).unwrap();
+            emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "  it('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
@@ -724,113 +777,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         writeln!(out).unwrap();
         } // end non-binary temporal
 
-        // Generate trace checker functions for temporal constraints
-        if let Some(kind) = temporal_kind {
-            let camel_name = to_camel_case(&fact_name);
-            match kind {
-                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
-                    let kind_label = if kind == analyze::TemporalKind::Liveness {
-                        "liveness" } else { "pastLiveness" };
-                    let semantics = if kind == analyze::TemporalKind::Liveness {
-                        "property holds in at least one future state"
-                    } else {
-                        "property held in at least one past state"
-                    };
-                    let trace_body = expr_translator::translate_trace_body(&constraint.expr, ir);
-                    writeln!(out, "  /** Trace checker for {kind_label}: {semantics}. */").unwrap();
-                    if params.len() == 1 {
-                        let (pname, tname) = &params[0];
-                        writeln!(out, "  function check_{kind_label}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
-                        writeln!(out, "    return trace.some({pname} => {trace_body});").unwrap();
-                    } else {
-                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("M.{t}[]")).collect();
-                        let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
-                        writeln!(out, "  function check_{kind_label}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
-                        writeln!(out, "    return trace.some(([{}]) => {trace_body});", tuple_names.join(", ")).unwrap();
-                    }
-                    writeln!(out, "  }}").unwrap();
-                    writeln!(out).unwrap();
-                }
-                analyze::TemporalKind::Binary => {
-                    if let Some((op, left, right, bound_vars)) =
-                        analyze::find_temporal_binary_with_bindings(&constraint.expr)
-                    {
-                        let op_name = match op {
-                            TemporalBinaryOp::Until => "until",
-                            TemporalBinaryOp::Since => "since",
-                            TemporalBinaryOp::Release => "release",
-                            TemporalBinaryOp::Triggered => "triggered",
-                        };
-                        let semantics = match op {
-                            TemporalBinaryOp::Until => "left holds until right becomes true",
-                            TemporalBinaryOp::Since => "left has held since right was true",
-                            TemporalBinaryOp::Release => "right holds until left releases it",
-                            TemporalBinaryOp::Triggered => "left triggers right",
-                        };
-                        writeln!(out, "  /** Trace checker for {op_name}: {semantics}. */").unwrap();
-                        if params.len() == 1 {
-                            let (pname, tname) = &params[0];
-                            writeln!(out, "  function check_{op_name}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
-                            // Use snapshot-aware translation: each trace element is M.T[]
-                            let snap = pname.as_str();
-                            let left_pred = expr_translator::translate_trace_binary_snapshot(left, snap, &bound_vars, ir);
-                            let right_pred = expr_translator::translate_trace_binary_snapshot(right, snap, &bound_vars, ir);
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "    let pos = -1;").unwrap();
-                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap, &format!("trace[i]"))).unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
-                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
-                                    writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
-                                    writeln!(out, "    }});").unwrap();
-                                }
-                            }
-                        } else {
-                            let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("M.{t}[]")).collect();
-                            let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
-                            let pnames = tuple_names.join(", ");
-                            writeln!(out, "  function check_{op_name}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
-                            let snap = format!("[{pnames}]");
-                            let left_pred = expr_translator::translate_trace_binary_snapshot(left, &snap, &bound_vars, ir);
-                            let right_pred = expr_translator::translate_trace_binary_snapshot(right, &snap, &bound_vars, ir);
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "    let pos = -1;").unwrap();
-                                    writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap.as_str(), "trace[i]")).unwrap();
-                                    writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
-                                    writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
-                                    writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
-                                    writeln!(out, "    }});").unwrap();
-                                }
-                            }
-                        }
-                        writeln!(out, "  }}").unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
-                _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
-            }
-        }
+        emit_temporal_trace_checkers(&mut out, &fact_name, &constraint.expr, &params, ir, temporal_kind);
     }
 
     // Boundary value tests — inline expressions (Feature 5)
@@ -1316,7 +1263,23 @@ fn ts_default_value(target: &str, mult: &Multiplicity) -> String {
     ts_default_value_inner(target, mult, &HashSet::new())
 }
 
+/// The zero value for an Alloy marker sig, which has no generated factory:
+/// `default Int()` names nothing (a ReferenceError at fixture-construction
+/// time, so every test touching such a fixture failed).
+fn ts_native_zero(target: &str) -> Option<&'static str> {
+    match target {
+        "Int" => Some("0"),
+        "Str" => Some("''"),
+        "Bool" => Some("false"),
+        "Float" => Some("0"),
+        _ => None,
+    }
+}
+
 fn ts_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    if let (Multiplicity::One, Some(zero)) = (mult, ts_native_zero(target)) {
+        return zero.to_string();
+    }
     match mult {
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set => {
@@ -1583,4 +1546,132 @@ fn translate_validator_expr(expr: &crate::parser::ast::Expr, sig_name: &str, par
         }
         _ => analyze::describe_expr(expr), // fallback: human-readable
     }
+}
+
+/// Emit the trace-checker functions a temporal constraint needs.
+///
+/// Shared by the `fact` and `assert` paths. Only the fact path used to call it,
+/// so an `assert` erased its temporal operators entirely — `eventually P`
+/// became `P` and `P until Q` became `P && Q` (#78).
+fn emit_temporal_trace_checkers(
+    out: &mut String,
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    params: &[(String, String)],
+    ir: &OxidtrIR,
+    temporal_kind: Option<analyze::TemporalKind>,
+) {
+    let constraint = TemporalSource { expr };
+    // Generate trace checker functions for temporal constraints
+    if let Some(kind) = temporal_kind {
+        let camel_name = to_camel_case(name);
+        match kind {
+            analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
+                let kind_label = if kind == analyze::TemporalKind::Liveness {
+                    "liveness" } else { "pastLiveness" };
+                let semantics = if kind == analyze::TemporalKind::Liveness {
+                    "property holds in at least one future state"
+                } else {
+                    "property held in at least one past state"
+                };
+                let trace_body = expr_translator::translate_trace_body(&constraint.expr, ir);
+                writeln!(out, "  /** Trace checker for {kind_label}: {semantics}. */").unwrap();
+                if params.len() == 1 {
+                    let (pname, tname) = &params[0];
+                    writeln!(out, "  function check_{kind_label}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
+                    writeln!(out, "    return trace.some({pname} => {trace_body});").unwrap();
+                } else {
+                    let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("M.{t}[]")).collect();
+                    let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
+                    writeln!(out, "  function check_{kind_label}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
+                    writeln!(out, "    return trace.some(([{}]) => {trace_body});", tuple_names.join(", ")).unwrap();
+                }
+                writeln!(out, "  }}").unwrap();
+                writeln!(out).unwrap();
+            }
+            analyze::TemporalKind::Binary => {
+                if let Some((op, left, right, bound_vars)) =
+                    analyze::find_temporal_binary_with_bindings(&constraint.expr)
+                {
+                    let op_name = match op {
+                        TemporalBinaryOp::Until => "until",
+                        TemporalBinaryOp::Since => "since",
+                        TemporalBinaryOp::Release => "release",
+                        TemporalBinaryOp::Triggered => "triggered",
+                    };
+                    let semantics = match op {
+                        TemporalBinaryOp::Until => "left holds until right becomes true",
+                        TemporalBinaryOp::Since => "left has held since right was true",
+                        TemporalBinaryOp::Release => "right holds until left releases it",
+                        TemporalBinaryOp::Triggered => "left triggers right",
+                    };
+                    writeln!(out, "  /** Trace checker for {op_name}: {semantics}. */").unwrap();
+                    if params.len() == 1 {
+                        let (pname, tname) = &params[0];
+                        writeln!(out, "  function check_{op_name}_{camel_name}(trace: M.{tname}[][]): boolean {{").unwrap();
+                        // Use snapshot-aware translation: each trace element is M.T[]
+                        let snap = pname.as_str();
+                        let left_pred = expr_translator::translate_trace_binary_snapshot(left, snap, &bound_vars, ir);
+                        let right_pred = expr_translator::translate_trace_binary_snapshot(right, snap, &bound_vars, ir);
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
+                                writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "    let pos = -1;").unwrap();
+                                writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap, &format!("trace[i]"))).unwrap();
+                                writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
+                                writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
+                                writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
+                                writeln!(out, "    }});").unwrap();
+                            }
+                        }
+                    } else {
+                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("M.{t}[]")).collect();
+                        let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
+                        let pnames = tuple_names.join(", ");
+                        writeln!(out, "  function check_{op_name}_{camel_name}(trace: [{}][]): boolean {{", tuple_types.join(", ")).unwrap();
+                        let snap = format!("[{pnames}]");
+                        let left_pred = expr_translator::translate_trace_binary_snapshot(left, &snap, &bound_vars, ir);
+                        let right_pred = expr_translator::translate_trace_binary_snapshot(right, &snap, &bound_vars, ir);
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "    const pos = trace.findIndex({snap} => {right_pred});").unwrap();
+                                writeln!(out, "    return pos >= 0 && trace.slice(0, pos).every({snap} => {left_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "    let pos = -1;").unwrap();
+                                writeln!(out, "    for (let i = trace.length - 1; i >= 0; i--) {{ if ({}) {{ pos = i; break; }} }}", right_pred.replace(snap.as_str(), "trace[i]")).unwrap();
+                                writeln!(out, "    return pos >= 0 && trace.slice(pos).every({snap} => {left_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "    const pos = trace.findIndex({snap} => {left_pred});").unwrap();
+                                writeln!(out, "    return pos >= 0 ? trace.slice(0, pos + 1).every({snap} => {right_pred}) : trace.every({snap} => {right_pred});").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "    return trace.every(({snap}, i) => {{").unwrap();
+                                writeln!(out, "      if ({right_pred}) {{ return trace.slice(0, i + 1).some({snap} => {left_pred}); }} else {{ return true; }}").unwrap();
+                                writeln!(out, "    }});").unwrap();
+                            }
+                        }
+                    }
+                    writeln!(out, "  }}").unwrap();
+                    writeln!(out).unwrap();
+                }
+            }
+            _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
+        }
+    }
+}
+
+/// Adapter so the extracted block keeps reading `constraint.expr`.
+struct TemporalSource<'a> {
+    expr: &'a crate::parser::ast::Expr,
 }
