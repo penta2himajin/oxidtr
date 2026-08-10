@@ -809,163 +809,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
         } // end non-binary temporal
 
-        // Generate trace checker functions for temporal constraints
-        if let Some(kind) = temporal_kind {
-            match kind {
-                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
-                    let kind_label = if kind == analyze::TemporalKind::Liveness {
-                        "Liveness" } else { "PastLiveness" };
-                    let semantics = if kind == analyze::TemporalKind::Liveness {
-                        "property holds in at least one future state"
-                    } else {
-                        "property held in at least one past state"
-                    };
-                    writeln!(out, "    /** Trace checker for {kind_label}: {semantics}. */").unwrap();
-                    if params.len() == 1 {
-                        let (pname, tname) = &params[0];
-                        writeln!(out, "    boolean check{kind_label}{fact_name}(List<List<{tname}>> trace) {{").unwrap();
-                        writeln!(out, "        return trace.stream().anyMatch({pname} -> {body});").unwrap();
-                    } else {
-                        writeln!(out, "    boolean check{kind_label}{fact_name}(List<List<Object>> trace) {{").unwrap();
-                        writeln!(out, "        return trace.stream().anyMatch(entry -> {{").unwrap();
-                        for (i, (pname, tname)) in params.iter().enumerate() {
-                            writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
-                        }
-                        writeln!(out, "            return {body};").unwrap();
-                        writeln!(out, "        }});").unwrap();
-                    }
-                    writeln!(out, "    }}").unwrap();
-                    writeln!(out).unwrap();
-                }
-                analyze::TemporalKind::Binary => {
-                    if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
-                        let left_body = expr_translator::translate_with_ir(left, ir, &lang);
-                        let right_body = expr_translator::translate_with_ir(right, ir, &lang);
-                        let op_name = match op {
-                            TemporalBinaryOp::Until => "Until",
-                            TemporalBinaryOp::Since => "Since",
-                            TemporalBinaryOp::Release => "Release",
-                            TemporalBinaryOp::Triggered => "Triggered",
-                        };
-                        let semantics = match op {
-                            TemporalBinaryOp::Until => "left holds until right becomes true",
-                            TemporalBinaryOp::Since => "left has held since right was true",
-                            TemporalBinaryOp::Release => "right holds until left releases it",
-                            TemporalBinaryOp::Triggered => "left triggers right",
-                        };
-                        writeln!(out, "    /** Trace checker for {op_name}: {semantics}. */").unwrap();
-                        if params.len() == 1 {
-                            let (pname, tname) = &params[0];
-                            writeln!(out, "    boolean check{op_name}{fact_name}(List<List<{tname}>> trace) {{").unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
-                                    writeln!(out, "            .filter(i -> {{ List<{tname}> {pname} = trace.get(i); return {right_body}; }})").unwrap();
-                                    writeln!(out, "            .findFirst().orElse(-1);").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(0, pos).stream().allMatch({pname} -> {left_body});").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        int pos = -1;").unwrap();
-                                    writeln!(out, "        for (int i = trace.size() - 1; i >= 0; i--) {{ List<{tname}> {pname} = trace.get(i); if ({right_body}) {{ pos = i; break; }} }}").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size()).stream().allMatch({pname} -> {left_body});").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
-                                    writeln!(out, "            .filter(i -> {{ List<{tname}> {pname} = trace.get(i); return {left_body}; }})").unwrap();
-                                    writeln!(out, "            .findFirst().orElse(-1);").unwrap();
-                                    writeln!(out, "        return pos >= 0 ? trace.subList(0, pos + 1).stream().allMatch({pname} -> {right_body}) : trace.stream().allMatch({pname} -> {right_body});").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return java.util.stream.IntStream.range(0, trace.size()).allMatch(i -> {{").unwrap();
-                                    writeln!(out, "            List<{tname}> {pname} = trace.get(i);").unwrap();
-                                    writeln!(out, "            if ({right_body}) {{ return trace.subList(0, i + 1).stream().anyMatch({pname}2 -> {{ List<{tname}> {pname} = {pname}2; return {left_body}; }}); }} else {{ return true; }}").unwrap();
-                                    writeln!(out, "        }});").unwrap();
-                                }
-                            }
-                        } else {
-                            writeln!(out, "    boolean check{op_name}{fact_name}(List<List<Object>> trace) {{").unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
-                                    writeln!(out, "            .filter(i -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
-                                    }
-                                    writeln!(out, "                return {right_body};").unwrap();
-                                    writeln!(out, "            }}).findFirst().orElse(-1);").unwrap();
-                                    writeln!(out, "        final int p = pos;").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(0, p).stream().allMatch(entry -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
-                                    }
-                                    writeln!(out, "            return {left_body};").unwrap();
-                                    writeln!(out, "        }});").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        int pos = -1;").unwrap();
-                                    writeln!(out, "        for (int i = trace.size() - 1; i >= 0; i--) {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
-                                    }
-                                    writeln!(out, "            if ({right_body}) {{ pos = i; break; }}").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                    writeln!(out, "        final int p = pos;").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(p, trace.size()).stream().allMatch(entry -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
-                                    }
-                                    writeln!(out, "            return {left_body};").unwrap();
-                                    writeln!(out, "        }});").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
-                                    writeln!(out, "            .filter(i -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
-                                    }
-                                    writeln!(out, "                return {left_body};").unwrap();
-                                    writeln!(out, "            }}).findFirst().orElse(-1);").unwrap();
-                                    writeln!(out, "        final int p = pos;").unwrap();
-                                    writeln!(out, "        if (pos >= 0) {{").unwrap();
-                                    writeln!(out, "            return trace.subList(0, p + 1).stream().allMatch(entry -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
-                                    }
-                                    writeln!(out, "                return {right_body};").unwrap();
-                                    writeln!(out, "            }});").unwrap();
-                                    writeln!(out, "        }} else {{").unwrap();
-                                    writeln!(out, "            return trace.stream().allMatch(entry -> {{").unwrap();
-                                    for (i, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
-                                    }
-                                    writeln!(out, "                return {right_body};").unwrap();
-                                    writeln!(out, "            }});").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return java.util.stream.IntStream.range(0, trace.size()).allMatch(i -> {{").unwrap();
-                                    for (idx, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({idx});").unwrap();
-                                    }
-                                    writeln!(out, "            if ({right_body}) {{").unwrap();
-                                    writeln!(out, "                return trace.subList(0, i + 1).stream().anyMatch(entry -> {{").unwrap();
-                                    for (idx, (pname, tname)) in params.iter().enumerate() {
-                                        writeln!(out, "                    @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({idx});").unwrap();
-                                    }
-                                    writeln!(out, "                    return {left_body};").unwrap();
-                                    writeln!(out, "                }});").unwrap();
-                                    writeln!(out, "            }} else {{ return true; }}").unwrap();
-                                    writeln!(out, "        }});").unwrap();
-                                }
-                            }
-                        }
-                        writeln!(out, "    }}").unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
-                _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
-            }
-        }
+        emit_temporal_trace_checkers(&mut out, &fact_name, &constraint.expr, &params, &body, ir, temporal_kind);
     }
 
     // Boundary value tests (Feature 5) — inline expressions
@@ -1525,4 +1369,184 @@ fn to_snake_case(s: &str) -> String {
         }
     }
     out
+}
+
+/// Emit the trace-checker functions a temporal constraint needs.
+///
+/// Shared by the `fact` and `assert` paths. Only the fact path used to call it,
+/// so an `assert` erased its temporal operators entirely (#78).
+fn emit_temporal_trace_checkers(
+    out: &mut String,
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    params: &[(String, String)],
+    body: &str,
+    ir: &OxidtrIR,
+    temporal_kind: Option<analyze::TemporalKind>,
+) {
+    let constraint = TemporalSource { expr };
+    let lang = JavaLang;
+    let _ = (&constraint, &lang, body);
+    // Generate trace checker functions for temporal constraints
+    if let Some(kind) = temporal_kind {
+        match kind {
+            analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
+                let kind_label = if kind == analyze::TemporalKind::Liveness {
+                    "Liveness" } else { "PastLiveness" };
+                let semantics = if kind == analyze::TemporalKind::Liveness {
+                    "property holds in at least one future state"
+                } else {
+                    "property held in at least one past state"
+                };
+                writeln!(out, "    /** Trace checker for {kind_label}: {semantics}. */").unwrap();
+                if params.len() == 1 {
+                    let (pname, tname) = &params[0];
+                    writeln!(out, "    boolean check{kind_label}{name}(List<List<{tname}>> trace) {{").unwrap();
+                    writeln!(out, "        return trace.stream().anyMatch({pname} -> {body});").unwrap();
+                } else {
+                    writeln!(out, "    boolean check{kind_label}{name}(List<List<Object>> trace) {{").unwrap();
+                    writeln!(out, "        return trace.stream().anyMatch(entry -> {{").unwrap();
+                    for (i, (pname, tname)) in params.iter().enumerate() {
+                        writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
+                    }
+                    writeln!(out, "            return {body};").unwrap();
+                    writeln!(out, "        }});").unwrap();
+                }
+                writeln!(out, "    }}").unwrap();
+                writeln!(out).unwrap();
+            }
+            analyze::TemporalKind::Binary => {
+                if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
+                    let left_body = expr_translator::translate_with_ir(left, ir, &lang);
+                    let right_body = expr_translator::translate_with_ir(right, ir, &lang);
+                    let op_name = match op {
+                        TemporalBinaryOp::Until => "Until",
+                        TemporalBinaryOp::Since => "Since",
+                        TemporalBinaryOp::Release => "Release",
+                        TemporalBinaryOp::Triggered => "Triggered",
+                    };
+                    let semantics = match op {
+                        TemporalBinaryOp::Until => "left holds until right becomes true",
+                        TemporalBinaryOp::Since => "left has held since right was true",
+                        TemporalBinaryOp::Release => "right holds until left releases it",
+                        TemporalBinaryOp::Triggered => "left triggers right",
+                    };
+                    writeln!(out, "    /** Trace checker for {op_name}: {semantics}. */").unwrap();
+                    if params.len() == 1 {
+                        let (pname, tname) = &params[0];
+                        writeln!(out, "    boolean check{op_name}{name}(List<List<{tname}>> trace) {{").unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
+                                writeln!(out, "            .filter(i -> {{ List<{tname}> {pname} = trace.get(i); return {right_body}; }})").unwrap();
+                                writeln!(out, "            .findFirst().orElse(-1);").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(0, pos).stream().allMatch({pname} -> {left_body});").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        int pos = -1;").unwrap();
+                                writeln!(out, "        for (int i = trace.size() - 1; i >= 0; i--) {{ List<{tname}> {pname} = trace.get(i); if ({right_body}) {{ pos = i; break; }} }}").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size()).stream().allMatch({pname} -> {left_body});").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
+                                writeln!(out, "            .filter(i -> {{ List<{tname}> {pname} = trace.get(i); return {left_body}; }})").unwrap();
+                                writeln!(out, "            .findFirst().orElse(-1);").unwrap();
+                                writeln!(out, "        return pos >= 0 ? trace.subList(0, pos + 1).stream().allMatch({pname} -> {right_body}) : trace.stream().allMatch({pname} -> {right_body});").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return java.util.stream.IntStream.range(0, trace.size()).allMatch(i -> {{").unwrap();
+                                writeln!(out, "            List<{tname}> {pname} = trace.get(i);").unwrap();
+                                writeln!(out, "            if ({right_body}) {{ return trace.subList(0, i + 1).stream().anyMatch({pname}2 -> {{ List<{tname}> {pname} = {pname}2; return {left_body}; }}); }} else {{ return true; }}").unwrap();
+                                writeln!(out, "        }});").unwrap();
+                            }
+                        }
+                    } else {
+                        writeln!(out, "    boolean check{op_name}{name}(List<List<Object>> trace) {{").unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
+                                writeln!(out, "            .filter(i -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
+                                }
+                                writeln!(out, "                return {right_body};").unwrap();
+                                writeln!(out, "            }}).findFirst().orElse(-1);").unwrap();
+                                writeln!(out, "        final int p = pos;").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(0, p).stream().allMatch(entry -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
+                                }
+                                writeln!(out, "            return {left_body};").unwrap();
+                                writeln!(out, "        }});").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        int pos = -1;").unwrap();
+                                writeln!(out, "        for (int i = trace.size() - 1; i >= 0; i--) {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
+                                }
+                                writeln!(out, "            if ({right_body}) {{ pos = i; break; }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                                writeln!(out, "        final int p = pos;").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(p, trace.size()).stream().allMatch(entry -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
+                                }
+                                writeln!(out, "            return {left_body};").unwrap();
+                                writeln!(out, "        }});").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        int pos = java.util.stream.IntStream.range(0, trace.size())").unwrap();
+                                writeln!(out, "            .filter(i -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({i});").unwrap();
+                                }
+                                writeln!(out, "                return {left_body};").unwrap();
+                                writeln!(out, "            }}).findFirst().orElse(-1);").unwrap();
+                                writeln!(out, "        final int p = pos;").unwrap();
+                                writeln!(out, "        if (pos >= 0) {{").unwrap();
+                                writeln!(out, "            return trace.subList(0, p + 1).stream().allMatch(entry -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
+                                }
+                                writeln!(out, "                return {right_body};").unwrap();
+                                writeln!(out, "            }});").unwrap();
+                                writeln!(out, "        }} else {{").unwrap();
+                                writeln!(out, "            return trace.stream().allMatch(entry -> {{").unwrap();
+                                for (i, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "                @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({i});").unwrap();
+                                }
+                                writeln!(out, "                return {right_body};").unwrap();
+                                writeln!(out, "            }});").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return java.util.stream.IntStream.range(0, trace.size()).allMatch(i -> {{").unwrap();
+                                for (idx, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "            @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) trace.get(i).get({idx});").unwrap();
+                                }
+                                writeln!(out, "            if ({right_body}) {{").unwrap();
+                                writeln!(out, "                return trace.subList(0, i + 1).stream().anyMatch(entry -> {{").unwrap();
+                                for (idx, (pname, tname)) in params.iter().enumerate() {
+                                    writeln!(out, "                    @SuppressWarnings(\"unchecked\") List<{tname}> {pname} = (List<{tname}>) entry.get({idx});").unwrap();
+                                }
+                                writeln!(out, "                    return {left_body};").unwrap();
+                                writeln!(out, "                }});").unwrap();
+                                writeln!(out, "            }} else {{ return true; }}").unwrap();
+                                writeln!(out, "        }});").unwrap();
+                            }
+                        }
+                    }
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out).unwrap();
+                }
+            }
+            _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
+        }
+    }
+}
+
+/// Adapter so the extracted block keeps reading `constraint.expr`.
+struct TemporalSource<'a> {
+    expr: &'a crate::parser::ast::Expr,
 }
