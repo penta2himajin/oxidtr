@@ -72,12 +72,14 @@ fn cs_abstract_class_with_fields() {
 
 // ── Operations.cs ────────────────────────────────────────────────────────────
 
+/// A pred used to be emitted as `static void` that threw. It is a formula, so
+/// it returns `bool` and its clauses are translated (#82).
 #[test]
-fn cs_operations_use_throw() {
+fn cs_operations_are_boolean_relations() {
     let files = generate_cs("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
     let ops = find_file(&files, "Operations.cs");
-    assert!(ops.contains("public static void ChangeRole("));
-    assert!(ops.contains("throw new NotImplementedException("));
+    assert!(ops.contains("public static bool ChangeRole("), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("throw new NotImplementedException("), "the stub must be gone:\n{ops}");
 }
 
 #[test]
@@ -180,7 +182,7 @@ fn cs_expr_cardinality() {
 // ── Derived fields (fun Sig.name → property) ────────────────────────────────
 
 #[test]
-fn cs_derived_field_generates_property() {
+fn cs_derived_field_generates_extension_method() {
     let files = generate_cs(r#"
         sig Account { deposits: set Int }
         fun Account.balance: one Int { #this.deposits }
@@ -188,7 +190,18 @@ fn cs_derived_field_generates_property() {
     let models = find_file(&files, "Models.cs");
     // `Int` is an Alloy native alias, not a real C# type — it must resolve to
     // `long` the same way a stored field does, or this doesn't compile.
-    assert!(models.contains("public static long Balance =>"), "should generate property:\n{models}");
+    //
+    // C# has no extension properties, so a no-parameter derived field is an
+    // extension *method*. `public static long Balance => ..` was a static
+    // property with no receiver: nothing could call it on an instance.
+    assert!(
+        models.contains("public static long Balance(this Account self) =>"),
+        "should generate an extension method:\n{models}"
+    );
+    assert!(
+        models.contains("=> self.Deposits.Count;"),
+        "the body must be translated against `self`:\n{models}"
+    );
 }
 
 // ── Field resolution through the binding (#95, #108, #111) ─────────────────
