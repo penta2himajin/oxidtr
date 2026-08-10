@@ -11,11 +11,66 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner(expr, false, &sig_names, ir)
 }
 
+/// Lean tokens that cannot appear as a bare identifier. Swept empirically
+/// against Lean 4.31 — each one breaks the parse (or, for `Type`/`Prop`/`Sort`,
+/// elaborates to the wrong thing) in declaration, field, binder or projection
+/// position. Native type aliases are absent by construction, so wrapping is
+/// never applied to `Int`/`String`/`Bool` (the C# `@long` trap from #102).
+const LEAN_KEYWORDS: &[&str] = &[
+    "Prop", "Sort", "Type", "abbrev", "at", "attribute", "axiom", "break", "by",
+    "calc", "catch", "class", "continue", "declare_syntax_cat", "def", "deriving",
+    "do", "elab", "else", "end", "example", "export", "extends", "finally", "for",
+    "from", "fun", "have", "if", "import", "in", "inductive", "infix", "infixl",
+    "infixr", "initialize", "instance", "let", "local", "macro", "macro_rules",
+    "match", "matches", "mut", "mutual", "namespace", "nofun", "nomatch",
+    "noncomputable", "notation", "opaque", "open", "partial", "postfix", "prefix",
+    "private", "protected", "return", "scoped", "section", "set_option", "show",
+    "sorry", "structure", "suffices", "then", "theorem", "try", "universe",
+    "unless", "unsafe", "variable", "where", "while", "with",
+];
+
+/// Undoes [`lean_ident`]. Only a wrapper around a token from the list above is
+/// unwrapped, so a user identifier quoted for reasons of its own (`«foo bar»`)
+/// survives intact.
+///
+/// ponytail: still context-blind. A hand-written string literal or comment that
+/// contains exactly `«in»` is rewritten to `in`, because this is a plain
+/// substring pass rather than a lexer. Narrowing it from "strip every
+/// guillemet" to "unwrap known keywords" shrinks the blast radius to that case;
+/// closing it properly means unescaping per-identifier inside the parsers below.
+pub fn unescape_lean_ident(text: &str) -> String {
+    let mut out = text.to_string();
+    for kw in LEAN_KEYWORDS {
+        out = out.replace(&format!("«{kw}»"), kw);
+    }
+    out
+}
+
+/// Wraps a reserved token in guillemets so it can be used as an identifier.
+pub fn lean_ident(name: &str) -> String {
+    if LEAN_KEYWORDS.contains(&name) { format!("«{name}»") } else { name.to_string() }
+}
+
+/// A field, binder or parameter name: lower-camelled, then escaped. Lowering
+/// the first character can *manufacture* a keyword (`End` → `end`), so the two
+/// steps have to happen in this order.
+pub fn lean_field(name: &str) -> String {
+    lean_ident(&to_lower_camel(name))
+}
+
 pub fn to_lower_camel(name: &str) -> String {
     if name.is_empty() { return name.to_string(); }
     let mut chars = name.chars();
     let first = chars.next().unwrap().to_lowercase().to_string();
     format!("{first}{}", chars.collect::<String>())
+}
+
+/// The binary relation behind Alloy's `^f`. `b ∈ a.f` is well-typed for both
+/// encodings a field can take — `Option T` for `lone` and `List T` for `set` —
+/// so this needs no multiplicity lookup (which Lean's translator cannot do
+/// soundly anyway; see issue #95).
+fn closure_relation(field: &str) -> String {
+    format!("(fun a b => b ∈ a.{})", lean_field(field))
 }
 
 fn translate_inner(
@@ -30,22 +85,27 @@ fn translate_inner(
         Expr::IntLiteral(n) => n.to_string(),
 
         Expr::VarRef(name) => {
-            if sig_names.contains(name) {
-                name.clone()
+            // Alloy's implicit receiver in `fun/pred Sig.op[...] { this... }` is
+            // the binder `generate_derived_fields` emits, which is named `self`.
+            // Mapped unconditionally, as the Rust backend does.
+            if name == "this" {
+                "self".to_string()
+            } else if sig_names.contains(name) {
+                lean_ident(name)
             } else {
-                to_lower_camel(name)
+                lean_field(name)
             }
         }
 
         Expr::FieldAccess { base, field } => {
-            format!("{}.{}", ti(base, false), to_lower_camel(field))
+            format!("{}.{}", ti(base, false), lean_field(field))
         }
 
         Expr::Cardinality(inner) => format!("{}.length", ti(inner, false)),
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
-                format!("Relation.TransGen (· {} ·) {}", to_lower_camel(field), ti(base, false))
+                format!("Relation.TransGen {} {}", closure_relation(field), ti(base, true))
             } else {
                 format!("Relation.TransGen {}", ti(inner, false))
             }
@@ -68,9 +128,20 @@ fn translate_inner(
                 CompareOp::Lte => format!("{} ≤ {}", ti(left, false), ti(right, false)),
                 CompareOp::Gte => format!("{} ≥ {}", ti(left, false), ti(right, false)),
                 CompareOp::In => {
-                    let l = ti(left, false);
-                    let r = ti(right, false);
-                    format!("{l} ∈ {r}")
+                    // `x in y.^f` is reachability, not membership: `TransGen`
+                    // wants the relation and *both* endpoints, so the closure
+                    // cannot be translated on its own and then tested with `∈`.
+                    let reachability = match right.as_ref() {
+                        Expr::TransitiveClosure(c) => match c.as_ref() {
+                            Expr::FieldAccess { base, field } => Some(format!(
+                                "Relation.TransGen {} {} {}",
+                                closure_relation(field), ti(base, true), ti(left, true))),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    reachability.unwrap_or_else(||
+                        format!("{} ∈ {}", ti(left, false), ti(right, false)))
                 }
             }
         }
@@ -85,17 +156,32 @@ fn translate_inner(
         Expr::Not(inner) => format!("¬{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            let quantifier = match kind {
-                QuantKind::All => "∀",
-                QuantKind::Some => "∃",
-                QuantKind::No => "¬ ∃",
+            // `no x, y | P` is `¬ ∃ x, ∃ y, P` — the negation belongs to the
+            // whole prefix, so only the first binder carries it.
+            let (first, rest) = match kind {
+                QuantKind::All => ("∀", "∀"),
+                QuantKind::Some => ("∃", "∃"),
+                QuantKind::No => ("¬ ∃", "∃"),
             };
-            let binding_strs: Vec<String> = bindings.iter().map(|b| {
-                let vars = b.vars.join(" ");
+            // One quantifier per variable: Lean accepts `∀ x y : T,` but not
+            // `∀ x y ∈ e,`, and comma-joining binders is invalid either way.
+            let mut binders: Vec<String> = Vec::new();
+            for b in bindings {
                 let domain = ti(&b.domain, false);
-                format!("{vars} : {domain}")
-            }).collect();
-            format!("{quantifier} {}, {}", binding_strs.join(", "), ti(body, false))
+                // A sig name is a Lean type and binds with `:`; any other
+                // expression is a set, which binds with `∈`.
+                let sep = if matches!(&b.domain, Expr::VarRef(n) if sig_names.contains(n)) { ":" } else { "∈" };
+                for v in &b.vars {
+                    binders.push(format!("{} {sep} {domain}", lean_field(v)));
+                }
+            }
+            let mut out = String::new();
+            for (i, b) in binders.iter().enumerate() {
+                out.push_str(if i == 0 { first } else { rest });
+                out.push_str(&format!(" {b}, "));
+            }
+            out.push_str(&ti(body, false));
+            out
         }
 
         Expr::MultFormula { kind, expr: inner } => {
@@ -146,17 +232,18 @@ fn translate_inner(
         }
 
         Expr::FunApp { name, receiver, args } => {
-            let args_str: Vec<String> = args.iter().map(|a| ti(a, false)).collect();
+            let args_str: Vec<String> = args.iter().map(|a| ti(a, true)).collect();
+            let callee = lean_field(name);
             if let Some(recv) = receiver {
                 if args_str.is_empty() {
-                    format!("{}.{name}", ti(recv, false))
+                    format!("{}.{callee}", ti(recv, false))
                 } else {
-                    format!("{}.{name} {}", ti(recv, false), args_str.join(" "))
+                    format!("{}.{callee} {}", ti(recv, false), args_str.join(" "))
                 }
             } else if args_str.is_empty() {
-                name.clone()
+                callee
             } else {
-                format!("{name} {}", args_str.join(" "))
+                format!("{callee} {}", args_str.join(" "))
             }
         }
     };

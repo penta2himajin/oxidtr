@@ -156,14 +156,21 @@ fn lean_implication_theorem_intros_hypothesis() {
     assert!(c.contains("intro x h"), "should intro variable and hypothesis:\n{c}");
 }
 
+/// An Alloy fact restricts which instances exist. Restated as a claim about
+/// every inhabitant of the Lean type it is generally false, so the canned
+/// `simp [List.length]; omega` script could never close it — and a failing
+/// tactic is a hard error, which is how the backend shipped output that has
+/// never typechecked (#79). `sorry` is a warning, so the file still builds.
 #[test]
-fn lean_cardinality_theorem_uses_simp() {
+fn lean_cardinality_theorem_defers_instead_of_running_a_doomed_tactic() {
     let files = generate_lean(
         "sig Team { members: set User }\nsig User {}\nfact { all t: Team | #t.members <= 10 }",
     );
     let c = find_file(&files, "Constraints.lean");
     assert!(c.contains(":= by"), "should use tactic block:\n{c}");
-    assert!(c.contains("simp"), "cardinality should use simp tactic:\n{c}");
+    assert!(c.contains("x.members.length ≤ 10"), "should state the bound:\n{c}");
+    assert!(c.contains("sorry"), "cardinality goal is not provable, must defer:\n{c}");
+    assert!(!c.contains("omega"), "omega cannot close an axiom restated as a goal:\n{c}");
 }
 
 // ── Operations.lean ─────────────────────────────────────────────────────────
