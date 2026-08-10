@@ -1054,24 +1054,18 @@ fn cs_adversarial_models_compile() {
 }
 
 /// Two sigs sharing a field name with *differing* multiplicities. `field_mult`
-/// resolves a field by name alone and returns the first sig that declares it,
-/// so `o.items` — a `lone Marker` — is translated as if it were `Holder`'s
-/// `set Item` and emits `.TrueForAll` on a bare `Marker`:
+/// used to resolve a field by name alone and return the first sig that declared
+/// it, so `o.items` — a `lone Marker` — was translated as if it were `Holder`'s
+/// `set Item` and emitted `.TrueForAll` on a bare `Marker`:
 /// `CS1061: 'Marker' does not contain a definition for 'TrueForAll'`.
 ///
-/// This is the tripwire for #95, which spans six backends and is the next
-/// mainline item. It is deliberately NOT fixed here, so the assertion is
-/// inverted: it pins the *known-broken* output. `#[ignore]` alone would not
-/// do — CI runs `--include-ignored`, so a plain failing test turns CI red
-/// (that is why PR #101 was closed unmerged).
-///
-/// **When #95 lands this test starts failing.** That is the point: flip it to
-/// `assert!(out.status.success(), ...)` and rename it to `..._compiles`, then
-/// strengthen the table case `shared_field_name_resolves_per_sig`, which today
-/// passes only because both sigs there declare `items` as `set`.
+/// This was the tripwire for #95 and asserted the *known-broken* output. The
+/// shared `TypeEnv` now resolves `o.items` through the binding of `o`, and a
+/// `lone` domain is lifted with `Rel.LoneOf` before it is quantified over, so
+/// the assertion is the right way round: the build must succeed.
 #[test]
 #[ignore]
-fn cs_shared_field_name_differing_multiplicity_is_still_broken_pending_95() {
+fn cs_shared_field_name_differing_multiplicity_compiles() {
     const MODEL: &str = "sig Item {}\nsig Marker {}\nsig Holder { items: set Item }\n\
         sig Other { items: lone Marker }\n\
         assert R { all o: Other | all i: o.items | i = i }";
@@ -1080,17 +1074,20 @@ fn cs_shared_field_name_differing_multiplicity_is_still_broken_pending_95() {
 
     let (out, all) = dotnet_build(&lowered);
     let diagnostics = String::from_utf8_lossy(&out.stdout);
-    // `CS1061` alone is too weak a pin: any unrelated missing-member error
-    // anywhere in the generated code would keep this green after #95 lands.
-    // Pin the generated fragment that *causes* it as well — `o.items` is a
-    // `lone Marker`, so `.TrueForAll` on it is the mis-resolution itself.
     assert!(
-        !out.status.success()
-            && diagnostics.contains("CS1061")
-            && all.contains("o.Items.TrueForAll("),
-        "#95 appears to be FIXED — `field_mult` no longer mis-resolves a shared \
-         field name by multiplicity. Flip this test to assert the build SUCCEEDS \
-         (see the doc comment above).\nstdout:\n{diagnostics}\n--- generated ---\n{all}"
+        out.status.success(),
+        "generated C# must compile once the field resolves through its binding\n\
+         stdout:\n{diagnostics}\n--- generated ---\n{all}"
+    );
+    // A clean build is not enough on its own: pin the translation that makes it
+    // clean, so a future regression to name-keyed lookup cannot pass silently.
+    assert!(
+        all.contains("Rel.LoneOf(o.Items).TrueForAll("),
+        "`o.items` is a `lone Marker` and must be lifted, not treated as a list:\n{all}"
+    );
+    assert!(
+        !all.contains("o.Items.TrueForAll("),
+        "the old name-keyed mis-resolution is back:\n{all}"
     );
 }
 

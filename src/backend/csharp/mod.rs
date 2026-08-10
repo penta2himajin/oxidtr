@@ -78,6 +78,20 @@ fn generate_models(ir: &OxidtrIR, ctx: &CsContext) -> String {
     writeln!(out, "using System.Collections.Generic;").unwrap();
     writeln!(out).unwrap();
 
+    // Alloy quantifies over relations of any multiplicity, but `one`/`lone`
+    // fields lower to a bare `T` / `T?`, which carry no `TrueForAll`. Lifting
+    // them to a one- or zero-element list keeps one quantifier rendering for
+    // every multiplicity — the same trick Go uses with `oneOf`/`loneOf`.
+    writeln!(out, "public static class Rel").unwrap();
+    writeln!(out, "{{").unwrap();
+    writeln!(out, "    public static List<T> OneOf<T>(T v) => new List<T> {{ v }};").unwrap();
+    writeln!(out, "    public static List<T> LoneOf<T>(T v) where T : class =>").unwrap();
+    writeln!(out, "        v == null ? new List<T>() : new List<T> {{ v }};").unwrap();
+    writeln!(out, "    public static List<T> LoneOf<T>(T? v) where T : struct =>").unwrap();
+    writeln!(out, "        v.HasValue ? new List<T> {{ v.Value }} : new List<T>();").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     for s in &ir.structures {
         if ctx.is_variant(&s.name) { continue; }
         if is_native_type_alias(&s.name) { continue; }
@@ -97,8 +111,8 @@ fn generate_models(ir: &OxidtrIR, ctx: &CsContext) -> String {
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
-    use std::collections::HashMap;
-    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    let mut by_sig: std::collections::BTreeMap<String, Vec<&OperationNode>> =
+        std::collections::BTreeMap::new();
     for op in &ir.operations {
         if let Some(ref sig) = op.receiver_sig {
             by_sig.entry(sig.clone()).or_default().push(op);

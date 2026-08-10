@@ -1,6 +1,7 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
 use crate::backend::{is_native_type_alias, resolve_type, TargetLang};
+use crate::backend::type_env::{TypeEnv, resolve_field};
 use std::collections::{BTreeSet, HashSet};
 
 use super::{cs_ident, cs_zero_value, compose_ident};
@@ -156,7 +157,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir)
+    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
 }
 
 /// Finalise the synthesized `next_x` post-state names that
@@ -236,25 +237,14 @@ pub fn finalize_post_state_idents(expr: &Expr) -> Expr {
     }
 }
 
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
-            }
-        }
-    }
-    None
-}
-
 fn translate_inner(
     expr: &Expr,
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -295,7 +285,9 @@ fn translate_inner(
                     let l = ti(left, false);
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
+                        if let Some(Multiplicity::Lone) =
+                            resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone())
+                        {
                             return format!("{r_base}.{} == {l}", capitalize(field));
                         }
                     }
@@ -315,8 +307,9 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            let b = ti(body, false);
-            build_nested_quantifier(kind, bindings, &b, sig_names, ir)
+            let inner = env.extended(bindings, sig_names, ir);
+            let b = translate_inner(body, false, sig_names, ir, &inner);
+            build_nested_quantifier(kind, bindings, &b, sig_names, ir, env)
         }
 
         Expr::SetOp { op, left, right } => {
@@ -342,9 +335,22 @@ fn translate_inner(
 
         Expr::MultFormula { kind, expr: inner } => {
             let translated = ti(inner, false);
-            match kind {
-                QuantKind::Some => format!("{translated} != null"),
-                QuantKind::No => format!("{translated} == null"),
+            // A `set`/`seq` field lowers to a `List<T>` that fixtures always
+            // initialise, so it is never null: emptiness is `.Count`. Only a
+            // `lone` field is nullable. Which one this is can only be answered
+            // through the binding — the field name alone is ambiguous (#108).
+            let is_collection = match inner.as_ref() {
+                Expr::FieldAccess { base, field } => matches!(
+                    resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+                    Some(Multiplicity::Set) | Some(Multiplicity::Seq)
+                ),
+                _ => false,
+            };
+            match (kind, is_collection) {
+                (QuantKind::Some, true) => format!("{translated}.Count > 0"),
+                (QuantKind::No, true) => format!("{translated}.Count == 0"),
+                (QuantKind::Some, false) => format!("{translated} != null"),
+                (QuantKind::No, false) => format!("{translated} == null"),
                 _ => format!("{kind:?}({translated})"),
             }
         }
@@ -379,13 +385,31 @@ fn translate_inner(
     }
 }
 
+/// The multiplicity of the relation a quantifier ranges over, when the domain
+/// is a field access. Any other domain is already a collection or a sig.
+fn domain_multiplicity(
+    domain: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> Option<Multiplicity> {
+    match domain {
+        Expr::FieldAccess { base, field } => {
+            resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone())
+        }
+        _ => None,
+    }
+}
+
 fn build_nested_quantifier(
     kind: &QuantKind,
     bindings: &[QuantBinding],
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
+    let mut scope = env.clone();
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
@@ -406,8 +430,18 @@ fn build_nested_quantifier(
                 cs_ident(name)
             }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir)
+            let raw = translate_inner(&b.domain, false, sig_names, ir, &scope);
+            // A `one`/`lone` domain is not a list; lift it so the quantifier
+            // renders the same way regardless of the relation's multiplicity.
+            match domain_multiplicity(&b.domain, sig_names, ir, &scope) {
+                Some(Multiplicity::One) => format!("Rel.OneOf({raw})"),
+                Some(Multiplicity::Lone) => format!("Rel.LoneOf({raw})"),
+                _ => raw,
+            }
         };
+        // Sequential bindings: an earlier binder must be in scope before a
+        // later domain that refers to it is rendered.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((cs_ident(v), d.clone(), b.disj));
         }
