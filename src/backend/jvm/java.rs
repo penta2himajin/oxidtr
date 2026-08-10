@@ -45,6 +45,8 @@ impl JvmLang for JavaLang {
     fn value_neq(&self, l: &str, r: &str) -> String {
         format!("!java.util.Objects.equals({l}, {r})")
     }
+    // Java has no extension methods: the value arrives as a leading parameter.
+    fn receiver_expr(&self) -> &str { "self" }
     fn neq_op(&self) -> &str { "!=" }
     fn field_access(&self, base: &str, field: &str) -> String {
         format!("{base}.{field}()")
@@ -164,11 +166,21 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 
             let return_str = match &op.return_type {
                 Some(rt) => java_return_type(&rt.type_name, &rt.mult),
-                None => "void".to_string(),
+                None => "boolean".to_string(),
             };
 
             writeln!(out, "    static {return_str} {}({params_with_self}) {{", op.name).unwrap();
-            writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement {}\");", op.name).unwrap();
+            {
+                let lang = JavaLang;
+                let env = crate::backend::type_env::operation_env(op);
+                if op.body.is_empty() {
+                    writeln!(out, "        return true;").unwrap();
+                } else {
+                    let body_expr = &op.body[op.body.len() - 1];
+                    let body = expr_translator::translate_with_env(body_expr, ir, &lang, &env);
+                    writeln!(out, "        return {body};").unwrap();
+                }
+            }
             writeln!(out, "    }}").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -626,11 +638,26 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
         let return_type = match &op.return_type {
             Some(rt) => java_return_type(&rt.type_name, &rt.mult),
-            None => "void".to_string(),
+            // An Alloy `pred` is a formula, not a procedure (#82).
+            None => "boolean".to_string(),
         };
 
         writeln!(out, "    static {} {}({params}) {{", return_type, op.name).unwrap();
-        writeln!(out, "        throw new UnsupportedOperationException(\"oxidtr: implement {}\");", op.name).unwrap();
+        {
+            let lang = JavaLang;
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "        return true;").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &lang, &env);
+                writeln!(out, "        return {body};").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &lang, &env))
+                    .collect();
+                writeln!(out, "        return {};", conjuncts.join(" && ")).unwrap();
+            }
+        }
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1428,6 +1455,12 @@ fn java_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> Strin
 }
 
 fn java_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    // `Int`/`Str`/`Bool` are Alloy marker sigs, not emitted types.
+    let type_name = &if crate::backend::is_native_type_alias(type_name) {
+        crate::backend::resolve_type(crate::backend::TargetLang::Java, type_name)
+    } else {
+        type_name.to_string()
+    };
     match mult {
         Multiplicity::One => type_name.to_string(),
         Multiplicity::Lone => format!("{type_name} /* @Nullable */"),

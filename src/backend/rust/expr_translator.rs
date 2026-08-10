@@ -578,20 +578,7 @@ pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
 ///
 /// This is intentionally NOT folded into `translate_with_ir`/`lone_comparison`
 /// itself: `translate_with_ir` has ~10 other call sites (tests.rs,
-/// The scope an operation body is translated in: its parameters bound to their
-/// declared sigs, plus Alloy's implicit `this` for a receiver operation. Without
-/// it a field access through a parameter cannot be typed at all, and boxing and
-/// One-multiplicity deref decisions silently fall back to "unknown".
-pub fn operation_env(op: &crate::ir::nodes::OperationNode) -> TypeEnv {
-    let mut env = TypeEnv::new();
-    if let Some(sig) = &op.receiver_sig {
-        env.bind("this", sig);
-    }
-    for p in &op.params {
-        env.bind(&p.name, &p.type_name);
-    }
-    env
-}
+pub use crate::backend::type_env::operation_env;
 
 /// invariants.rs, newtypes.rs, …) where a bare `VarRef` may not be a
 /// reference at all (e.g. an owned loop variable) — deref'ing it there would

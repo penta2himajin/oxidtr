@@ -239,13 +239,24 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
         for op in ops {
             let return_str = match &op.return_type {
                 Some(rt) => swift_return_type(&rt.type_name, &rt.mult),
-                None => "Void".to_string(),
+                None => "Bool".to_string(),
+            };
+            let env = crate::backend::type_env::operation_env(op);
+            let body_str = if op.body.is_empty() {
+                "true".to_string()
+            } else if op.return_type.is_some() {
+                expr_translator::translate_with_env(&op.body[0], ir, &env)
+            } else {
+                op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect::<Vec<_>>()
+                    .join(" && ")
             };
 
             if op.params.is_empty() {
                 // No params → computed property
                 writeln!(out, "    var {}: {return_str} {{", op.name).unwrap();
-                writeln!(out, "        fatalError(\"oxidtr: implement {}\")", op.name).unwrap();
+                writeln!(out, "        {body_str}").unwrap();
                 writeln!(out, "    }}").unwrap();
             } else {
                 let params = op.params.iter().map(|p| {
@@ -253,7 +264,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
                     format!("{}: {type_str}", p.name)
                 }).collect::<Vec<_>>().join(", ");
                 writeln!(out, "    func {}({params}) -> {return_str} {{", op.name).unwrap();
-                writeln!(out, "        fatalError(\"oxidtr: implement {}\")", op.name).unwrap();
+                writeln!(out, "        return {body_str}").unwrap();
                 writeln!(out, "    }}").unwrap();
             }
         }
@@ -670,13 +681,27 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             }
         }
 
+        // An Alloy `pred` is a formula, not a procedure (#82).
         let return_str = match &op.return_type {
             Some(rt) => format!(" -> {}", swift_return_type(&rt.type_name, &rt.mult)),
-            None => String::new(),
+            None => " -> Bool".to_string(),
         };
 
         writeln!(out, "func {}({params}){return_str} {{", op.name).unwrap();
-        writeln!(out, "    fatalError(\"oxidtr: implement {}\")", op.name).unwrap();
+        {
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "    return true").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+                writeln!(out, "    return {body}").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect();
+                writeln!(out, "    return {}", conjuncts.join(" && ")).unwrap();
+            }
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1422,6 +1447,12 @@ fn swift_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> Stri
 }
 
 fn swift_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    // `Int`/`Str`/`Bool` are Alloy marker sigs, not emitted types.
+    let type_name = &if is_native_type_alias(type_name) {
+        resolve_type(TargetLang::Swift, type_name)
+    } else {
+        type_name.to_string()
+    };
     match mult {
         Multiplicity::One => type_name.to_string(),
         Multiplicity::Lone => format!("{type_name}?"),

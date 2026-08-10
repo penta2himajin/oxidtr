@@ -181,13 +181,30 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
                 format!("{}: {type_str}", to_camel_case(&p.name))
             }).collect::<Vec<_>>().join(", ");
 
+            // A derived field (`fun Sig.name: T { body }`) is an expression,
+            // and a receiver `pred` is a formula — neither is a procedure to
+            // be filled in by hand (#82/#83).
+            // These methods live *in* models.ts, so the types are local: an
+            // `M.` qualifier names nothing (TS2503, present since the signature
+            // was first emitted).
             let return_str = match &op.return_type {
-                Some(rt) => ts_return_type(&rt.type_name, &rt.mult),
-                None => "void".to_string(),
+                Some(rt) => ts_local_return_type(&rt.type_name, &rt.mult),
+                None => "boolean".to_string(),
             };
 
             writeln!(out, "  {fn_name}({params}): {return_str} {{").unwrap();
-            writeln!(out, "    throw new Error(\"oxidtr: implement {}\");", op.name).unwrap();
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "    return true;").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+                writeln!(out, "    return {body};").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect();
+                writeln!(out, "    return {};", conjuncts.join(" && ")).unwrap();
+            }
             writeln!(out, "  }}").unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -493,13 +510,29 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             writeln!(out, " */").unwrap();
         }
 
+        // An Alloy `pred` is a formula, not a procedure: it denotes true or
+        // false, and its body is the conjunction of its clauses. Generating it
+        // as `void` with a throw left it uncallable, which is why the
+        // `Op(..) implies Fact(..)` cross-tests had nothing to call (#82).
         let return_str = match &op.return_type {
             Some(rt) => ts_return_type(&rt.type_name, &rt.mult),
-            None => "void".to_string(),
+            None => "boolean".to_string(),
         };
 
         writeln!(out, "export function {fn_name}({params}): {return_str} {{").unwrap();
-        writeln!(out, "  throw new Error(\"oxidtr: implement {}\");", op.name).unwrap();
+        let env = crate::backend::type_env::operation_env(op);
+        if op.body.is_empty() {
+            // A pred with no clauses constrains nothing.
+            writeln!(out, "  return true;").unwrap();
+        } else if op.return_type.is_some() {
+            let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+            writeln!(out, "  return {body};").unwrap();
+        } else {
+            let conjuncts: Vec<String> = op.body.iter()
+                .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                .collect();
+            writeln!(out, "  return {};", conjuncts.join(" && ")).unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1232,12 +1265,36 @@ fn ts_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String 
     }
 }
 
-fn ts_return_type(type_name: &str, mult: &Multiplicity) -> String {
+/// As `ts_return_type`, but for a declaration inside models.ts, where the
+/// generated types are in scope unqualified.
+fn ts_local_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    let base = if is_native_type_alias(type_name) {
+        resolve_type(TargetLang::TypeScript, type_name)
+    } else {
+        type_name.to_string()
+    };
     match mult {
-        Multiplicity::One => format!("M.{type_name}"),
-        Multiplicity::Lone => format!("M.{type_name} | null"),
-        Multiplicity::Set => format!("Set<M.{type_name}>"),
-        Multiplicity::Seq => format!("M.{type_name}[]"),
+        Multiplicity::One => base,
+        Multiplicity::Lone => format!("{base} | null"),
+        Multiplicity::Set => format!("Set<{base}>"),
+        Multiplicity::Seq => format!("{base}[]"),
+    }
+}
+
+fn ts_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    // `Int`/`Str`/`Bool` are Alloy marker sigs, not emitted types — `M.Int`
+    // names nothing. Harmless while the body was a `throw`; now that the body
+    // returns a value, the signature has to be a real type.
+    let base = if is_native_type_alias(type_name) {
+        resolve_type(TargetLang::TypeScript, type_name)
+    } else {
+        format!("M.{type_name}")
+    };
+    match mult {
+        Multiplicity::One => base,
+        Multiplicity::Lone => format!("{base} | null"),
+        Multiplicity::Set => format!("Set<{base}>"),
+        Multiplicity::Seq => format!("{base}[]"),
     }
 }
 

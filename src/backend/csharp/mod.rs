@@ -125,12 +125,27 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
         for op in ops {
             let return_type = match &op.return_type {
                 Some(rt) => mult_to_cs_type(&rt.type_name, &rt.mult),
-                None => "void".to_string(),
+                None => "bool".to_string(),
+            };
+            let env = crate::backend::type_env::operation_env(op);
+            let body_str = if op.body.is_empty() {
+                "true".to_string()
+            } else if op.return_type.is_some() {
+                expr_translator::translate_with_env(&op.body[0], ir, &env)
+            } else {
+                op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect::<Vec<_>>()
+                    .join(" && ")
             };
 
             if op.params.is_empty() {
-                // No params → extension property (C# uses method for this)
-                writeln!(out, "    public static {return_type} {} => throw new NotImplementedException(\"oxidtr: implement {}\");", capitalize(&op.name), op.name).unwrap();
+                // C# has no extension properties, so a no-parameter derived
+                // field is an extension *method*. It used to be emitted as
+                // `public static T Name => ..`, a static property with no
+                // receiver at all — nothing could call it on an instance.
+                writeln!(out, "    public static {return_type} {}(this {} self) => {body_str};",
+                    capitalize(&op.name), cs_ident(sig_name)).unwrap();
             } else {
                 let params = op.params.iter().map(|p| {
                     let type_str = mult_to_cs_type(&p.type_name, &p.mult);
@@ -138,7 +153,7 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
                 }).collect::<Vec<_>>().join(", ");
                 writeln!(out, "    public static {return_type} {}(this {} self, {params})", capitalize(&op.name), cs_ident(sig_name)).unwrap();
                 writeln!(out, "    {{").unwrap();
-                writeln!(out, "        throw new NotImplementedException(\"oxidtr: implement {}\");", op.name).unwrap();
+                writeln!(out, "        return {body_str};").unwrap();
                 writeln!(out, "    }}").unwrap();
             }
         }
@@ -371,14 +386,28 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             }
         }
 
+        // An Alloy `pred` is a formula, not a procedure (#82).
         let return_type = match &op.return_type {
             Some(rt) => mult_to_cs_type(&rt.type_name, &rt.mult),
-            None => "void".to_string(),
+            None => "bool".to_string(),
         };
 
         writeln!(out, "    public static {} {}({params})", return_type, capitalize(&op.name)).unwrap();
         writeln!(out, "    {{").unwrap();
-        writeln!(out, "        throw new NotImplementedException(\"oxidtr: implement {}\");", op.name).unwrap();
+        {
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "        return true;").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+                writeln!(out, "        return {body};").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect();
+                writeln!(out, "        return {};", conjuncts.join(" && ")).unwrap();
+            }
+        }
         writeln!(out, "    }}").unwrap();
         writeln!(out).unwrap();
     }

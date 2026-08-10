@@ -301,3 +301,75 @@ fn lower_non_intersection_sig_has_empty_vec() {
     let ir = parse_and_lower("sig Foo {}");
     assert!(ir.structures[0].intersection_of.is_empty());
 }
+
+// ── Implicit receiver on field references ──────────────────────────────────
+
+/// Inside `fun Sig.x { .. }` a bare field name is an implicit `this.field` —
+/// Alloy's receiver is in scope for the sig's own relations. Every backend used
+/// to emit the bare name, which references nothing in any target language; it
+/// only stayed hidden because the self-hosting model always writes `this.`
+/// explicitly.
+#[test]
+fn lower_desugars_a_bare_field_reference_to_the_receiver() {
+    let ir = parse_and_lower(
+        "sig Item {}\nsig Box { items: set Item }\nfun Box.size: one Int { #items }",
+    );
+    let op = ir.operations.iter().find(|o| o.name == "size").expect("fun lowered");
+
+    match &op.body[0] {
+        Expr::Cardinality(inner) => match inner.as_ref() {
+            Expr::FieldAccess { base, field } => {
+                assert_eq!(field, "items");
+                assert_eq!(**base, Expr::VarRef("this".to_string()));
+            }
+            other => panic!("expected `this.items`, got {other:?}"),
+        },
+        other => panic!("expected a cardinality, got {other:?}"),
+    }
+}
+
+/// A name that is *not* one of the receiver's fields is left alone — a
+/// parameter, a sig name, and a quantifier binder all keep their meaning.
+#[test]
+fn lower_leaves_non_field_names_alone() {
+    let ir = parse_and_lower(
+        "sig Item {}\nsig Box { items: set Item }\n\
+         fun Box.pick[i: one Item]: one Item { i }",
+    );
+    let op = ir.operations.iter().find(|o| o.name == "pick").expect("fun lowered");
+    assert_eq!(op.body[0], Expr::VarRef("i".to_string()));
+}
+
+/// A free `pred` has no receiver, so nothing is rewritten.
+#[test]
+fn lower_does_not_desugar_without_a_receiver() {
+    let ir = parse_and_lower(
+        "sig Item {}\nsig Box { items: set Item }\npred anyBox[b: one Box] { some b.items }",
+    );
+    let op = ir.operations.iter().find(|o| o.name == "anyBox").expect("pred lowered");
+    match &op.body[0] {
+        Expr::MultFormula { expr, .. } => match expr.as_ref() {
+            Expr::FieldAccess { base, .. } => {
+                assert_eq!(**base, Expr::VarRef("b".to_string()));
+            }
+            other => panic!("expected `b.items`, got {other:?}"),
+        },
+        other => panic!("expected a mult formula, got {other:?}"),
+    }
+}
+
+/// A parameter that shares a field's name shadows it — inside
+/// `fun Box.pick[items: one Item]`, `items` is the parameter, not `this.items`.
+#[test]
+fn lower_respects_a_parameter_that_shadows_a_field() {
+    let ir = parse_and_lower(
+        "sig Item {}\nsig Box { items: set Item }\n\
+         fun Box.pick[items: one Item]: one Item { items }",
+    );
+    let op = ir.operations.iter().find(|o| o.name == "pick").expect("fun lowered");
+    assert_eq!(
+        op.body[0],
+        Expr::VarRef("items".to_string()),
+        "a parameter of the same name shadows the field"
+    );
+}

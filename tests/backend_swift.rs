@@ -80,12 +80,17 @@ fn swift_enum_with_associated_values() {
 
 // ── Operations.swift ─────────────────────────────────────────────────────────
 
+/// A pred used to be emitted with a `fatalError` body. It is a formula, so it
+/// returns `Bool` and its clauses are translated (#82).
 #[test]
-fn swift_operations_use_fatalerror() {
-    let files = generate_swift("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
+fn swift_operations_are_boolean_relations() {
+    let files = generate_swift(
+        "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
+    );
     let ops = find_file(&files, "Operations.swift");
     assert!(ops.contains("func changeRole("));
-    assert!(ops.contains("fatalError("));
+    assert!(ops.contains("-> Bool {"), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("fatalError("), "the stub must be gone:\n{ops}");
 }
 
 #[test]

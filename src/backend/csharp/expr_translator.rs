@@ -156,8 +156,13 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
 }
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
+    translate_with_env(expr, ir, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope — an operation's parameters, for instance.
+pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
+    translate_inner(expr, false, &sig_names, ir, env)
 }
 
 /// Finalise the synthesized `next_x` post-state names that
@@ -248,6 +253,10 @@ fn translate_inner(
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
+
+        // Alloy's implicit receiver: a derived field is an extension method,
+        // whose first parameter is `self`.
+        Expr::VarRef(name) if name == "this" => "self".to_string(),
 
         Expr::VarRef(name) => cs_ident(name),
 

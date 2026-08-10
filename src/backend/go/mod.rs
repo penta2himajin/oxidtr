@@ -175,11 +175,23 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 
             let return_str = match &op.return_type {
                 Some(rt) => format!(" {}", go_return_type(&rt.type_name, &rt.mult)),
-                None => String::new(),
+                // A receiver `pred` is a formula too (#82).
+                None => " bool".to_string(),
             };
 
             writeln!(out, "func (s *{sig}) {fn_name}({params}){return_str} {{").unwrap();
-            writeln!(out, "\tpanic(\"oxidtr: implement {}\")", op.name).unwrap();
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "\treturn true").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+                writeln!(out, "\treturn {body}").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                    .collect();
+                writeln!(out, "\treturn {}", conjuncts.join(" && ")).unwrap();
+            }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
@@ -724,11 +736,23 @@ fn generate_operations(ir: &OxidtrIR) -> String {
                 let rt_str = go_return_type(&rt.type_name, &rt.mult);
                 format!(" {rt_str}")
             }
-            None => String::new(),
+            // An Alloy `pred` is a formula, not a procedure (#82).
+            None => " bool".to_string(),
         };
 
         writeln!(out, "func {}({params}){return_str} {{", expr_translator::capitalize(&op.name)).unwrap();
-        writeln!(out, "\tpanic(\"oxidtr: implement {}\")", op.name).unwrap();
+        let env = crate::backend::type_env::operation_env(op);
+        if op.body.is_empty() {
+            writeln!(out, "\treturn true").unwrap();
+        } else if op.return_type.is_some() {
+            let body = expr_translator::translate_with_env(&op.body[0], ir, &env);
+            writeln!(out, "\treturn {body}").unwrap();
+        } else {
+            let conjuncts: Vec<String> = op.body.iter()
+                .map(|e| expr_translator::translate_with_env(e, ir, &env))
+                .collect();
+            writeln!(out, "\treturn {}", conjuncts.join(" && ")).unwrap();
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1510,10 +1534,18 @@ fn go_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String 
 }
 
 fn go_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    // `Int`/`Str`/`Bool` are Alloy marker sigs, not emitted types — `Int` names
+    // nothing in Go. Harmless while the body was a `panic`; now that the body
+    // returns a value, the signature has to be a real type.
+    let base = if is_native_type_alias(type_name) {
+        resolve_type(TargetLang::Go, type_name)
+    } else {
+        type_name.to_string()
+    };
     match mult {
-        Multiplicity::One => type_name.to_string(),
-        Multiplicity::Lone => format!("*{type_name}"),
-        Multiplicity::Set | Multiplicity::Seq => format!("[]{type_name}"),
+        Multiplicity::One => base,
+        Multiplicity::Lone => format!("*{base}"),
+        Multiplicity::Set | Multiplicity::Seq => format!("[]{base}"),
     }
 }
 

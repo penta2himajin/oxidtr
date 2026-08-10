@@ -23,6 +23,10 @@ pub trait JvmLang {
     /// both languages.
     fn value_eq(&self, left: &str, right: &str) -> String;
     fn value_neq(&self, left: &str, right: &str) -> String;
+    /// How Alloy's implicit receiver (`this` in `fun Sig.op { this... }`) is
+    /// named in the emitted method. Kotlin uses an extension function, so it is
+    /// `this`; Java passes the value as a leading `self` parameter.
+    fn receiver_expr(&self) -> &str;
     /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`
     fn field_access(&self, base: &str, field: &str) -> String {
         format!("{base}.{field}")
@@ -30,8 +34,18 @@ pub trait JvmLang {
 }
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR, lang: &dyn JvmLang) -> String {
+    translate_with_env(expr, ir, lang, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope — an operation's parameters, for instance.
+pub fn translate_with_env(
+    expr: &Expr,
+    ir: &OxidtrIR,
+    lang: &dyn JvmLang,
+    env: &TypeEnv,
+) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir, lang, &TypeEnv::new())
+    translate_inner(expr, false, &sig_names, ir, lang, env)
 }
 
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
@@ -215,6 +229,8 @@ fn translate_inner(
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
+
+        Expr::VarRef(name) if name == "this" => lang.receiver_expr().to_string(),
 
         Expr::VarRef(name) => name.clone(),
 

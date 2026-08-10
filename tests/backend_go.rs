@@ -72,12 +72,42 @@ fn go_enum_interface_with_fields() {
 
 // ── operations.go ────────────────────────────────────────────────────────────
 
+/// A pred used to be emitted as a procedure that panicked. It is a formula, so
+/// it returns `bool` and its clauses are translated (#82).
 #[test]
-fn go_operations_use_panic() {
+fn go_operations_are_boolean_relations() {
     let files = generate_go("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
     let ops = find_file(&files, "operations.go");
     assert!(ops.contains("func ChangeRole("));
-    assert!(ops.contains("panic("));
+    assert!(ops.contains(") bool {"), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("panic("), "the stub must be gone:\n{ops}");
+}
+
+/// `#e` is an Alloy Int, which Go models as int64, but `len` yields `int` —
+/// comparing or returning it needs the conversion or it does not compile.
+#[test]
+fn go_cardinality_converts_to_int64() {
+    let files = generate_go(
+        "sig Item {}\nsig Box { items: set Item, cap: one Int }\n\
+         pred hasRoom[b: one Box] { #b.items < b.cap }",
+    );
+    let ops = find_file(&files, "operations.go");
+    assert!(
+        ops.contains("int64(len(b.Items)) < b.Cap"),
+        "got:\n{ops}"
+    );
+}
+
+/// Alloy's implicit receiver is the method's receiver, not a variable named
+/// `this` that Go never declared.
+#[test]
+fn go_derived_field_uses_the_receiver() {
+    let files = generate_go(
+        "sig Item {}\nsig Box { items: set Item }\nfun Box.count: one Int { #this.items }",
+    );
+    let m = find_file(&files, "models.go");
+    assert!(m.contains("func (s *Box) Count() int64 {"), "got:\n{m}");
+    assert!(m.contains("return int64(len(s.Items))"), "got:\n{m}");
 }
 
 #[test]

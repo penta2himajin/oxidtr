@@ -60,14 +60,17 @@ fn ts_generates_discriminated_union_for_enum_with_fields() {
     assert!(models.contains("export type Expr = Literal | BinOp;"));
 }
 
+/// A pred used to be emitted as a `void` function that threw. It is a formula,
+/// so it returns `boolean` and its clauses are translated (#82).
 #[test]
-fn ts_generates_operation_stubs() {
+fn ts_generates_operations_as_boolean_relations() {
     let files = generate_from(
         "sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }",
     );
     let ops = find_file(&files, "operations.ts");
     assert!(ops.contains("export function changeRole("));
-    assert!(ops.contains("throw new Error"));
+    assert!(ops.contains("): boolean {"), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("throw new Error"), "the stub must be gone:\n{ops}");
 }
 
 #[test]
@@ -386,7 +389,13 @@ fn ts_derived_field_generates_method() {
         fun Account.balance: one Int { #this.deposits }
     "#);
     let models = find_file(&files, "models.ts");
-    assert!(models.contains("balance(): M.Int"), "should generate method on class:\n{models}");
+    // Inside models.ts the types are local, and `Int` is a marker sig that
+    // lowers to `number` — `M.Int` named nothing (TS2503).
+    assert!(models.contains("balance(): number"), "should generate method on class:\n{models}");
+    assert!(
+        models.contains("return this.self.deposits.size"),
+        "Alloy `this` is the wrapper's `self` field, not the wrapper:\n{models}"
+    );
 }
 
 // ── Native type alias mapping ───────────────────────────────────────────────
@@ -466,5 +475,51 @@ fn ts_shared_field_name_keeps_identity_for_a_lone_field() {
     assert!(
         src.contains("n.next === p"),
         "membership in a lone field is an identity test. got:\n{src}"
+    );
+}
+
+// ── pred bodies are formulas, not stubs (#82) ──────────────────────────────
+
+const PRED_MODEL: &str = "\
+sig Item {}
+sig Box { items: set Item, cap: one Int }
+pred hasRoom[b: one Box] { #b.items < b.cap }
+pred isEmpty[b: one Box] { no b.items }
+";
+
+/// An Alloy `pred` is a formula: it denotes true or false. Generating it as
+/// `void` with a `throw` makes it unusable as a relation — the cross-tests that
+/// are supposed to check `Op(..) implies Fact(..)` have nothing to call.
+#[test]
+fn ts_pred_returns_boolean_and_translates_its_body() {
+    let files = generate_from(PRED_MODEL);
+    let src = find_file(&files, "operations.ts");
+
+    assert!(
+        src.contains("export function hasRoom(b: M.Box): boolean {"),
+        "a pred is a formula, so it returns boolean. got:\n{src}"
+    );
+    assert!(
+        src.contains("b.items.size < b.cap"),
+        "the body must be translated, not stubbed. got:\n{src}"
+    );
+    assert!(
+        !src.contains("oxidtr: implement hasRoom"),
+        "the stub must be gone. got:\n{src}"
+    );
+}
+
+#[test]
+fn ts_pred_with_a_no_formula_translates_to_emptiness() {
+    let files = generate_from(PRED_MODEL);
+    let src = find_file(&files, "operations.ts");
+
+    assert!(
+        src.contains("export function isEmpty(b: M.Box): boolean {"),
+        "got:\n{src}"
+    );
+    assert!(
+        src.contains("b.items.size === 0"),
+        "`no b.items` over a Set is an emptiness test. got:\n{src}"
     );
 }
