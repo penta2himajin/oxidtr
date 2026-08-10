@@ -164,6 +164,8 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `backend_rust`, `backend_ts`, `backend_jvm`, `backend_swift`, `backend_go`, `backend_csharp`, `backend_lean` | 各言語コード生成 (派生フィールド含む) |
 | `test_generation`, `tc_generation` | テスト・TC関数生成 |
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
+| `determinism` | 同一モデルの2回生成がバイト一致すること (全8バックエンド) |
+| `type_env` | 共通型付け層 (binder経由のフィールド解決・継承・スコープ) |
 | `check` | 構造的整合性検証 (var field差分検出含む) |
 | `analyze`, `enrich` | 制約分析・enrichment (temporal constraint分類含む) |
 | `guarantee_differentiation` | 言語間テスト生成差異化 |

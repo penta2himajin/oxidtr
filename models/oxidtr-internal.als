@@ -148,6 +148,13 @@ sig TCField {
   tcSigName:   one SigDecl
 }
 
+-- Shared by every backend's expression translator: the sig each in-scope
+-- quantifier binder ranges over. A field access is typed through the binding of
+-- its base, never by scanning every sig for a matching field name.
+sig TypeEnv {
+  envBindings: set SigDecl
+}
+
 sig JvmContext {
   jvmChildren:     set SigDecl,
   jvmEnumParents:  set SigDecl,
