@@ -1090,7 +1090,8 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
         writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
         writeln!(out).unwrap();
 
-        let mut anomaly_sigs: std::collections::HashMap<String, Vec<&analyze::AnomalyPattern>> = std::collections::HashMap::new();
+        let mut anomaly_sigs: std::collections::BTreeMap<String, Vec<&analyze::AnomalyPattern>> =
+            std::collections::BTreeMap::new();
         for a in &anomalies {
             let sig = match a {
                 analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,

@@ -1184,7 +1184,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             .map(|s| s.name.clone())
             .collect();
 
-        let mut anomaly_sigs: HashMap<String, Vec<&analyze::AnomalyPattern>> = HashMap::new();
+        let mut anomaly_sigs: std::collections::BTreeMap<String, Vec<&analyze::AnomalyPattern>> =
+            std::collections::BTreeMap::new();
         for a in &anomalies {
             let sig = match a {
                 analyze::AnomalyPattern::UnconstrainedField { sig_name, .. } => sig_name,
