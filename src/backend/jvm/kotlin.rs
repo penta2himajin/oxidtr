@@ -23,7 +23,9 @@ impl JvmLang for KotlinLang {
         format!("{collection}.contains({element})")
     }
     fn cardinality(&self, expr: &str) -> String {
-        format!("{expr}.size")
+        // Alloy `#e` is an Int, which Kotlin models as Long; `size` is an Int,
+        // so returning it from a `fun ...: one Int` does not type-check.
+        format!("{expr}.size.toLong()")
     }
     fn lone_eq(&self, base: &str, field: &str, value: &str) -> String {
         format!("{base}.{field} == {value}")
@@ -39,6 +41,8 @@ impl JvmLang for KotlinLang {
     // Kotlin's `==` is `equals()`, so value equality needs nothing special.
     fn value_eq(&self, l: &str, r: &str) -> String { format!("{l} == {r}") }
     fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
+    // A derived field is an extension function, so the receiver is `this`.
+    fn receiver_expr(&self) -> &str { "this" }
 }
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
@@ -136,13 +140,16 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
             };
 
             writeln!(out, "fun {sig}.{}({params}){return_str} {{", op.name).unwrap();
-            if !op.body.is_empty() {
+            {
                 let lang = KotlinLang;
-                let body_expr = &op.body[op.body.len() - 1];
-                let body_str = expr_translator::translate_with_ir(body_expr, ir, &lang);
-                writeln!(out, "    return {body_str}").unwrap();
-            } else {
-                writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
+                let env = crate::backend::type_env::operation_env(op);
+                if op.body.is_empty() {
+                    writeln!(out, "    return true").unwrap();
+                } else {
+                    let body_expr = &op.body[op.body.len() - 1];
+                    let body_str = expr_translator::translate_with_env(body_expr, ir, &lang, &env);
+                    writeln!(out, "    return {body_str}").unwrap();
+                }
             }
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
@@ -552,13 +559,29 @@ fn generate_operations(ir: &OxidtrIR) -> String {
             writeln!(out, " */").unwrap();
         }
 
+        // An Alloy `pred` is a formula, not a procedure: it denotes true or
+        // false, and its body is the conjunction of its clauses (#82).
         let return_str = match &op.return_type {
             Some(rt) => format!(": {}", kt_return_type(&rt.type_name, &rt.mult)),
-            None => String::new(),
+            None => ": Boolean".to_string(),
         };
 
         writeln!(out, "fun {}({params}){return_str} {{", op.name).unwrap();
-        writeln!(out, "    TODO(\"oxidtr: implement {}\")", op.name).unwrap();
+        {
+            let lang = KotlinLang;
+            let env = crate::backend::type_env::operation_env(op);
+            if op.body.is_empty() {
+                writeln!(out, "    return true").unwrap();
+            } else if op.return_type.is_some() {
+                let body = expr_translator::translate_with_env(&op.body[0], ir, &lang, &env);
+                writeln!(out, "    return {body}").unwrap();
+            } else {
+                let conjuncts: Vec<String> = op.body.iter()
+                    .map(|e| expr_translator::translate_with_env(e, ir, &lang, &env))
+                    .collect();
+                writeln!(out, "    return {}", conjuncts.join(" && ")).unwrap();
+            }
+        }
         writeln!(out, "}}").unwrap();
         writeln!(out).unwrap();
     }
@@ -1311,6 +1334,12 @@ fn kt_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String 
 }
 
 fn kt_return_type(type_name: &str, mult: &Multiplicity) -> String {
+    // `Int`/`Str`/`Bool` are Alloy marker sigs, not emitted types.
+    let type_name = &if crate::backend::is_native_type_alias(type_name) {
+        crate::backend::resolve_type(crate::backend::TargetLang::Kotlin, type_name)
+    } else {
+        type_name.to_string()
+    };
     match mult {
         Multiplicity::One => type_name.to_string(),
         Multiplicity::Lone => format!("{type_name}?"),

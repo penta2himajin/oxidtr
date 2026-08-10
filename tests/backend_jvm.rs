@@ -67,12 +67,15 @@ fn kt_sealed_class_for_enum_with_fields() {
     assert!(m.contains("val left: Expr"));
 }
 
+/// A pred used to be emitted with a `TODO(..)` body. It is a formula, so it
+/// returns Boolean and its clauses are translated (#82).
 #[test]
-fn kt_operations_use_todo() {
+fn kt_operations_are_boolean_relations() {
     let files = generate_kt("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
     let ops = find_file(&files, "Operations.kt");
     assert!(ops.contains("fun changeRole("));
-    assert!(ops.contains("TODO("));
+    assert!(ops.contains("): Boolean {"), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("TODO("), "the stub must be gone:\n{ops}");
 }
 
 #[test]
@@ -208,12 +211,14 @@ fn java_sealed_interface_for_enum_with_fields() {
     assert!(m.contains("implements Expr"));
 }
 
+/// A pred used to be emitted as `static void` that threw. It is a formula, so
+/// it returns `boolean` and its clauses are translated (#82).
 #[test]
-fn java_operations_throw() {
+fn java_operations_are_boolean_relations() {
     let files = generate_java("sig User {}\nsig Role {}\npred changeRole[u: one User, r: one Role] { u = u }");
     let ops = find_file(&files, "Operations.java");
-    assert!(ops.contains("static void changeRole("), "expected static void:\n{ops}");
-    assert!(ops.contains("UnsupportedOperationException"));
+    assert!(ops.contains("static boolean changeRole("), "a pred denotes true or false:\n{ops}");
+    assert!(!ops.contains("UnsupportedOperationException"), "the stub must be gone:\n{ops}");
 }
 
 #[test]
@@ -576,7 +581,13 @@ fn java_derived_field_generates_method() {
         fun Account.balance: one Int { #this.deposits }
     "#);
     let models = find_file(&files, "Models.java");
-    assert!(models.contains("Int balance("), "should generate method on derived class:\n{models}");
+    // `Int` is a marker sig that lowers to `long` — `Int` named no Java type.
+    assert!(models.contains("long balance("), "should generate method on derived class:\n{models}");
+    // Java has no extension methods: Alloy's `this` is the leading parameter.
+    assert!(
+        models.contains("return self.deposits().size()"),
+        "the body must be translated against the `self` parameter:\n{models}"
+    );
 }
 
 // ── Field resolution through the binding (#95) ─────────────────────────────
