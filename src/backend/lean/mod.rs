@@ -674,8 +674,9 @@ fn called_ops(expr: &crate::parser::ast::Expr, want_receiver: bool, out: &mut Ve
             for a in args { called_ops(a, want_receiver, out); }
         }
         E::FieldAccess { base, .. } => called_ops(base, want_receiver, out),
-        E::Cardinality(i) | E::TransitiveClosure(i) | E::Not(i) | E::Prime(i)
-            | E::TemporalUnary { expr: i, .. } | E::MultFormula { expr: i, .. } => called_ops(i, want_receiver, out),
+        E::Cardinality(i) | E::TransitiveClosure(i) | E::ReflexiveClosure(i) | E::Not(i)
+            | E::Prime(i) | E::TemporalUnary { expr: i, .. }
+            | E::MultFormula { expr: i, .. } => called_ops(i, want_receiver, out),
         E::Comparison { left, right, .. } | E::BinaryLogic { left, right, .. }
             | E::SetOp { left, right, .. } | E::Product { left, right }
             | E::TemporalBinary { left, right, .. } => { called_ops(left, want_receiver, out); called_ops(right, want_receiver, out); }
