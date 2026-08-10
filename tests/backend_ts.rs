@@ -425,3 +425,46 @@ fn ts_native_bool_maps_to_boolean() {
     assert!(models.contains("active: boolean;"), "Bool field should map to boolean:\n{models}");
     assert!(models.contains("flags: boolean[];"), "seq Bool → boolean[]:\n{models}");
 }
+
+// ── Field resolution through the binding (#95) ─────────────────────────────
+
+/// Both sigs name the field `next`, with different multiplicities, and one fact
+/// tests membership in each — so a single translated expression has to get both
+/// right, and only the binding can tell them apart.
+const TS_SHARED_FIELD_MODEL: &str = "\
+sig Page {}
+sig Node { next: lone Page }
+sig Cursor { next: set Page }
+fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }
+";
+
+/// A `set` field lowers to `Set<T>`, so membership is `.has`. Resolving `next`
+/// by name found `Node`'s `lone` first and emitted `c.next === p`, which
+/// compares a `Set` to an element and is therefore always false.
+#[test]
+fn ts_shared_field_name_uses_has_for_a_set_field() {
+    let files = generate_from(TS_SHARED_FIELD_MODEL);
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("c.next.has(p)"),
+        "a `set` field lowers to `Set<T>`, so membership is `.has`. got:\n{src}"
+    );
+    assert!(
+        !src.contains("c.next === p"),
+        "a Set is never identical to one of its elements. got:\n{src}"
+    );
+}
+
+/// The same membership over the `lone` field of the other sig stays an identity
+/// comparison.
+#[test]
+fn ts_shared_field_name_keeps_identity_for_a_lone_field() {
+    let files = generate_from(TS_SHARED_FIELD_MODEL);
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("n.next === p"),
+        "membership in a lone field is an identity test. got:\n{src}"
+    );
+}

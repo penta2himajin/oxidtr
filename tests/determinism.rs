@@ -16,9 +16,28 @@ use oxidtr::parser;
 
 const SELF_HOSTING_MODEL: &str = include_str!("../models/oxidtr.als");
 
+/// The self-hosting model declares exactly one derived field, so the per-sig
+/// `HashMap` that groups them holds a single entry and cannot expose an
+/// ordering bug. Several sigs, each with a derived field, can.
+const DERIVED_FIELDS_MODEL: &str = "\
+sig Leaf {}
+sig Alpha { a: set Leaf }
+sig Bravo { b: set Leaf }
+sig Charlie { c: set Leaf }
+sig Delta { d: set Leaf }
+fun Alpha.firstA: set Leaf { this.a }
+fun Bravo.firstB: set Leaf { this.b }
+fun Charlie.firstC: set Leaf { this.c }
+fun Delta.firstD: set Leaf { this.d }
+";
+
+fn lower(src: &str, what: &str) -> ir::nodes::OxidtrIR {
+    let model = parser::parse(src).unwrap_or_else(|e| panic!("{what} should parse: {e:?}"));
+    ir::lower(&model).unwrap_or_else(|e| panic!("{what} should lower: {e:?}"))
+}
+
 fn lower_self_hosting_model() -> ir::nodes::OxidtrIR {
-    let model = parser::parse(SELF_HOSTING_MODEL).expect("self-hosting model should parse");
-    ir::lower(&model).expect("self-hosting model should lower")
+    lower(SELF_HOSTING_MODEL, "self-hosting model")
 }
 
 fn render(files: &[GeneratedFile]) -> Vec<(String, String)> {
@@ -31,9 +50,16 @@ fn render(files: &[GeneratedFile]) -> Vec<(String, String)> {
 /// its own seed, so a single process is enough to expose the instability — no
 /// re-exec, no sleeping, no flake.
 fn assert_generates_identically(label: &str, gen: fn(&ir::nodes::OxidtrIR) -> Vec<GeneratedFile>) {
-    let ir = lower_self_hosting_model();
-    let first = render(&gen(&ir));
-    let second = render(&gen(&ir));
+    assert_ir_generates_identically(label, &lower_self_hosting_model(), gen);
+}
+
+fn assert_ir_generates_identically(
+    label: &str,
+    ir: &ir::nodes::OxidtrIR,
+    gen: fn(&ir::nodes::OxidtrIR) -> Vec<GeneratedFile>,
+) {
+    let first = render(&gen(ir));
+    let second = render(&gen(ir));
 
     assert_eq!(
         first.len(),
@@ -97,4 +123,22 @@ fn csharp_generates_identically_twice() {
 #[test]
 fn lean_generates_identically_twice() {
     assert_generates_identically("lean", backend::lean::generate);
+}
+
+/// Derived fields are grouped per sig before they are emitted. With more than
+/// one sig carrying one, a `HashMap` there reorders the output run to run — the
+/// same defect as the anomaly grouping in #125, in a spot the self-hosting
+/// model is too thin to reach.
+#[test]
+fn derived_fields_are_emitted_in_a_stable_order() {
+    let ir = lower(DERIVED_FIELDS_MODEL, "derived-fields model");
+    for (label, gen) in [
+        ("rust", backend::rust::generate as fn(&ir::nodes::OxidtrIR) -> Vec<GeneratedFile>),
+        ("ts", backend::typescript::generate),
+        ("java", backend::jvm::java::generate),
+        ("swift", backend::swift::generate),
+        ("cs", backend::csharp::generate),
+    ] {
+        assert_ir_generates_identically(label, &ir, gen);
+    }
 }

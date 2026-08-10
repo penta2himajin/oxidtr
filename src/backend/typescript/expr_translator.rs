@@ -1,11 +1,12 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::type_env::{TypeEnv, resolve_field};
 use std::collections::{HashSet, BTreeSet};
 
 /// Translate an Alloy expression to a TypeScript expression string with IR context.
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir)
+    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
 }
 
 /// Translate a temporal constraint expression for trace checker bodies.
@@ -19,10 +20,12 @@ pub fn translate_trace_body(expr: &Expr, ir: &OxidtrIR) -> String {
     };
     match inner {
         Expr::Quantifier { kind, bindings, body } => {
-            let body_str = translate_inner(body, false, &sig_names, ir);
-            build_trace_quantifier_ts(kind, bindings, &body_str, &sig_names, ir)
+            let env = TypeEnv::new();
+            let inner_env = env.extended(bindings, &sig_names, ir);
+            let body_str = translate_inner(body, false, &sig_names, ir, &inner_env);
+            build_trace_quantifier_ts(kind, bindings, &body_str, &sig_names, ir, &env)
         }
-        _ => translate_inner(inner, false, &sig_names, ir),
+        _ => translate_inner(inner, false, &sig_names, ir, &TypeEnv::new()),
     }
 }
 
@@ -38,7 +41,7 @@ pub fn translate_trace_binary_side(
     ir: &OxidtrIR,
 ) -> (String, String) {
     let sig_names = collect_sig_names(ir);
-    let body_str = translate_inner(side, false, &sig_names, ir);
+    let body_str = translate_inner(side, false, &sig_names, ir, &TypeEnv::new());
 
     if bound_vars.is_empty() {
         // No quantifier context — return as-is
@@ -68,14 +71,24 @@ pub fn translate_trace_binary_snapshot(
         // Strip enclosing quantifier if present and translate body without spread
         let var = &bound_vars[0];
         let body_str = match side {
-            Expr::Quantifier { body, .. } => translate_inner(body, false, &sig_names, ir),
-            _ => translate_inner(side, false, &sig_names, ir),
+            // The enclosing quantifier is stripped, but its bindings are what
+            // type the vars the lambda receives — keep them in scope.
+            Expr::Quantifier { bindings, body, .. } => translate_inner(
+                body, false, &sig_names, ir,
+                &TypeEnv::new().extended(bindings, &sig_names, ir),
+            ),
+            _ => translate_inner(side, false, &sig_names, ir, &TypeEnv::new()),
         };
         format!("{snapshot_var}.every({var} => {body_str})")
     } else if bound_vars.len() > 1 {
         let body_str = match side {
-            Expr::Quantifier { body, .. } => translate_inner(body, false, &sig_names, ir),
-            _ => translate_inner(side, false, &sig_names, ir),
+            // The enclosing quantifier is stripped, but its bindings are what
+            // type the vars the lambda receives — keep them in scope.
+            Expr::Quantifier { bindings, body, .. } => translate_inner(
+                body, false, &sig_names, ir,
+                &TypeEnv::new().extended(bindings, &sig_names, ir),
+            ),
+            _ => translate_inner(side, false, &sig_names, ir, &TypeEnv::new()),
         };
         let checks: Vec<String> = bound_vars.iter().enumerate()
             .map(|(i, v)| format!("const {v} = {snapshot_var}[{i}];"))
@@ -259,25 +272,14 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
 }
 
 /// Look up the multiplicity of a named field across all IR structures.
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
-            }
-        }
-    }
-    None
-}
-
 fn translate_inner(
     expr: &Expr,
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -290,8 +292,11 @@ fn translate_inner(
 
         Expr::Cardinality(inner) => {
             // Set<T> uses .size, T[] uses .length
-            let is_set = if let Expr::FieldAccess { field, .. } = inner.as_ref() {
-                matches!(field_mult(field, ir), Some((Multiplicity::Set, _)))
+            let is_set = if let Expr::FieldAccess { base, field } = inner.as_ref() {
+                matches!(
+                    resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+                    Some(Multiplicity::Set)
+                )
             } else {
                 false
             };
@@ -334,11 +339,13 @@ fn translate_inner(
                     let l = ti(left, false);
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
+                        let mult = resolve_field(base, field, sig_names, ir, env)
+                            .map(|f| f.mult.clone());
+                        if let Some(Multiplicity::Lone) = mult {
                             return format!("{r_base}.{} === {l}", to_camel_case(field));
                         }
                         // Set<T> uses .has(), T[] uses .includes()
-                        if let Some((Multiplicity::Set, _)) = field_mult(field, ir) {
+                        if let Some(Multiplicity::Set) = mult {
                             return format!("{r_base}.{}.has({l})", to_camel_case(field));
                         }
                     }
@@ -360,8 +367,9 @@ fn translate_inner(
         }
 
         Expr::Quantifier { kind, bindings, body } => {
-            let b = ti(body, false);
-            build_nested_quantifier_ts(kind, bindings, &b, sig_names, ir)
+            let inner_env = env.extended(bindings, sig_names, ir);
+            let b = translate_inner(body, false, sig_names, ir, &inner_env);
+            build_nested_quantifier_ts(kind, bindings, &b, sig_names, ir, env)
         }
 
         Expr::SetOp { op, left, right } => {
@@ -428,8 +436,9 @@ fn build_nested_quantifier_ts(
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, true)
+    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, env, true)
 }
 
 /// Build quantifier iteration for trace checker bodies.
@@ -440,8 +449,9 @@ fn build_trace_quantifier_ts(
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, false)
+    build_quantifier_ts_common(kind, bindings, body_str, sig_names, ir, env, false)
 }
 
 fn build_quantifier_ts_common(
@@ -450,17 +460,22 @@ fn build_quantifier_ts_common(
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
     spread_domain: bool,
 ) -> String {
     // Collect all (var, domain_str, is_disj) expanding multi-var bindings
+    let mut scope = env.clone();
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
             else { name.clone() }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir)
+            translate_inner(&b.domain, false, sig_names, ir, &scope)
         };
+        // Sequential bindings: an earlier binder must be in scope before a
+        // later domain that refers to it is rendered.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj));
         }

@@ -578,3 +578,56 @@ fn java_derived_field_generates_method() {
     let models = find_file(&files, "Models.java");
     assert!(models.contains("Int balance("), "should generate method on derived class:\n{models}");
 }
+
+// ── Field resolution through the binding (#95) ─────────────────────────────
+
+/// Both sigs name the field `next`, with different multiplicities, and one fact
+/// tests membership in each — so a single translated expression has to get both
+/// right, and only the binding can tell them apart.
+const JVM_SHARED_FIELD_MODEL: &str = "\
+sig Page {}
+sig Node { next: lone Page }
+sig Cursor { next: set Page }
+fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }
+";
+
+/// A `set` field lowers to a collection, so membership is `contains`. Resolving
+/// `next` by name found `Node`'s `lone` first and emitted `c.next == p`, which
+/// compares a `Set` to an element and is therefore always false.
+#[test]
+fn kotlin_shared_field_name_uses_contains_for_a_set_field() {
+    let files = generate_kt(JVM_SHARED_FIELD_MODEL);
+    let src = find_file(&files, "Tests.kt");
+
+    assert!(
+        src.contains("c.next.contains(p)"),
+        "membership in a set field is `contains`. got:\n{src}"
+    );
+    assert!(
+        !src.contains("c.next == p"),
+        "a Set is never equal to one of its elements. got:\n{src}"
+    );
+    assert!(
+        src.contains("n.next == p"),
+        "membership in a lone field stays an equality test. got:\n{src}"
+    );
+}
+
+#[test]
+fn java_shared_field_name_uses_contains_for_a_set_field() {
+    let files = generate_java(JVM_SHARED_FIELD_MODEL);
+    let src = find_file(&files, "Tests.java");
+
+    assert!(
+        src.contains("c.next().contains(p)"),
+        "membership in a set field is `contains`. got:\n{src}"
+    );
+    assert!(
+        src.contains("Objects.equals(n.next(), p)"),
+        "membership in a lone field stays an equality test. got:\n{src}"
+    );
+    assert!(
+        !src.contains("Objects.equals(c.next(), p)"),
+        "a collection is never equal to one of its elements. got:\n{src}"
+    );
+}

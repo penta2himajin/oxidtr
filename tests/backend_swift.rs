@@ -549,16 +549,21 @@ fn swift_skips_tests_referencing_a_case_constructor_as_a_value() {
 }
 
 #[test]
-fn swift_skips_tests_with_ambiguously_typed_field() {
-    // `rel` is `set` in one sig and `lone` in another; resolving by name picks
-    // one and emits `Optional.contains`.
+fn swift_translates_an_ambiguously_named_field_via_its_binding() {
+    // `rel` is `set` in one sig and `lone` in another. Resolving by name picked
+    // whichever came first and could emit `Optional.contains`, so the fact used
+    // to be dropped with a "different multiplicities across sigs" note. The
+    // shared TypeEnv types `m` as `Maybe`, so the `lone` branch is now reached
+    // and the fact survives.
     let files = generate_swift(
         "sig Item {}\nsig Many { rel: set Item }\nsig Maybe { rel: lone Item }\n\
          fact NoMember { all m: Maybe | all i: Item | not (i in m.rel) }",
     );
     let t = find_file(&files, "Tests.swift");
-    assert!(t.contains("different multiplicities"), "got:\n{t}");
+    assert!(t.contains("test_invariant_NoMember"), "the fact was dropped:\n{t}");
+    assert!(t.contains("!(m.rel == i)"), "lone field compares, not contains:\n{t}");
     assert!(!t.contains("m.rel.contains(i)"), "wrong branch for a lone field:\n{t}");
+    assert!(!t.contains("different multiplicities"), "workaround should be gone:\n{t}");
 }
 
 #[test]
@@ -700,4 +705,54 @@ fn swift_transition_facts_go_through_the_case_ref_guard() {
     let t = find_file(&files, "Tests.swift");
     assert!(t.contains("is a case constructor"), "expected a skip:\n{t}");
     assert!(!t.contains("Expr.lit.name"), "got:\n{t}");
+}
+
+// ── Field resolution through the binding (#95) ──────────────────────────────
+//
+// `field_mult` resolved a field by scanning every sig for a matching *name* and
+// taking the first hit, so when two sigs declare the same field name with
+// different multiplicities the membership branch could emit `Optional == x` for
+// a `set` field, or `.contains` for a `lone` one. The workaround was
+// `ambiguous_membership_field`, which detected the ambiguity and dropped the
+// constraint entirely rather than mistranslate it — correct output, at the cost
+// of silently losing the validation.
+
+const SHARED_FIELD_NAME_MODEL: &str = "\
+sig Page {}
+sig Node { next: lone Page }
+sig Cursor { next: set Page }
+fact NodeHolds { all n: Node, p: Page | p in n.next }
+fact CursorHolds { all c: Cursor, p: Page | p in c.next }
+";
+
+/// A `lone` field compares; a `set` field uses `contains`. Both facts share the
+/// field name `next`, so only a binding-directed lookup can tell them apart.
+#[test]
+fn shared_field_name_picks_the_multiplicity_of_the_bound_sig() {
+    let files = generate_swift(SHARED_FIELD_NAME_MODEL);
+    let src = find_file(&files, "Tests.swift");
+
+    assert!(
+        src.contains("n.next == p"),
+        "Node.next is `lone`, so membership is an equality test. got:\n{src}"
+    );
+    assert!(
+        src.contains("c.next.contains(p)"),
+        "Cursor.next is `set`, so membership is `contains`. got:\n{src}"
+    );
+}
+
+/// The ambiguity workaround dropped both facts. Neither may be skipped now that
+/// the shared TypeEnv can resolve them.
+#[test]
+fn shared_field_name_no_longer_drops_the_constraint() {
+    let files = generate_swift(SHARED_FIELD_NAME_MODEL);
+    let src = find_file(&files, "Tests.swift");
+
+    assert!(src.contains("test_invariant_NodeHolds"), "NodeHolds was dropped:\n{src}");
+    assert!(src.contains("test_invariant_CursorHolds"), "CursorHolds was dropped:\n{src}");
+    assert!(
+        !src.contains("different multiplicities across sigs"),
+        "the ambiguity workaround should be gone:\n{src}"
+    );
 }

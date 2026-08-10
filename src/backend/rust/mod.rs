@@ -705,7 +705,8 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
     // Group receiver operations by sig name
-    let mut by_sig: HashMap<String, Vec<&OperationNode>> = HashMap::new();
+    let mut by_sig: std::collections::BTreeMap<String, Vec<&OperationNode>> =
+        std::collections::BTreeMap::new();
     for op in &ir.operations {
         if let Some(ref sig) = op.receiver_sig {
             by_sig.entry(sig.clone()).or_default().push(op);

@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::type_env::{TypeEnv, resolve_field};
 use std::collections::{HashSet, BTreeSet};
 
 /// Language-specific expression syntax.
@@ -22,7 +23,7 @@ pub trait JvmLang {
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR, lang: &dyn JvmLang) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir, lang)
+    translate_inner(expr, false, &sig_names, ir, lang, &TypeEnv::new())
 }
 
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
@@ -194,26 +195,15 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
     }
 }
 
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
-            }
-        }
-    }
-    None
-}
-
 fn translate_inner(
     expr: &Expr,
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
     lang: &dyn JvmLang,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, lang);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, lang, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -254,7 +244,9 @@ fn translate_inner(
                     let l = ti(left, false);
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, _)) = field_mult(field, ir) {
+                        if let Some(Multiplicity::Lone) =
+                            resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone())
+                        {
                             return lang.lone_eq(&r_base, field, &l);
                         }
                     }
@@ -274,8 +266,9 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            let b = ti(body, false);
-            build_nested_quantifier_jvm(kind, bindings, &b, sig_names, ir, lang)
+            let inner = env.extended(bindings, sig_names, ir);
+            let b = translate_inner(body, false, sig_names, ir, lang, &inner);
+            build_nested_quantifier_jvm(kind, bindings, &b, sig_names, ir, lang, env)
         }
 
         Expr::SetOp { op, left, right } => {
@@ -343,15 +336,20 @@ fn build_nested_quantifier_jvm(
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
     lang: &dyn JvmLang,
+    env: &TypeEnv,
 ) -> String {
+    let mut scope = env.clone();
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
             else { name.clone() }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir, lang)
+            translate_inner(&b.domain, false, sig_names, ir, lang, &scope)
         };
+        // Sequential bindings: an earlier binder must be in scope before a
+        // later domain that refers to it is rendered.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj));
         }
