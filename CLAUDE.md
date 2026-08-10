@@ -187,6 +187,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | テストファイル | 対象 | 必要ツール |
 |---|---|---|
 | `target_validation::rust_self_hosted_crate_compiles` | Rust型検査 | cargo |
+| `target_validation::rust_adversarial_models_compile` | Rust敵対的モデル型検査 (`--all-targets`) | cargo |
 | `target_validation::rust_self_hosted_tests_pass` | Rustテスト実行 | cargo |
 | `target_validation::ts_self_hosted_tests_pass` | TSテスト実行 | bun |
 | `target_validation::kotlin_self_hosted_tests_pass` | Kotlinテスト実行 | gradle |

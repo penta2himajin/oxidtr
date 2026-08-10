@@ -100,11 +100,26 @@ pub fn resolve_field<'a>(
     ir: &'a OxidtrIR,
     env: &TypeEnv,
 ) -> Option<&'a IRField> {
+    resolve_field_owner(base, field, sig_names, ir, env).map(|(_, f)| f)
+}
+
+/// As `resolve_field`, but also naming the sig that *declares* the field.
+///
+/// For an inherited field that is the parent, not the child the expression went
+/// through — anything recorded per declaration site, such as Rust's boxing of
+/// cyclic fields, has to be keyed on the declaring sig to be found.
+pub fn resolve_field_owner<'a>(
+    base: &Expr,
+    field: &str,
+    sig_names: &HashSet<String>,
+    ir: &'a OxidtrIR,
+    env: &TypeEnv,
+) -> Option<(String, &'a IRField)> {
     let mut sig = expr_sig(base, sig_names, ir, env)?;
     loop {
         let st = ir.structures.iter().find(|s| s.name == sig)?;
         if let Some(f) = st.fields.iter().find(|f| f.name == field) {
-            return Some(f);
+            return Some((st.name.clone(), f));
         }
         sig = st.parent.clone()?;
     }

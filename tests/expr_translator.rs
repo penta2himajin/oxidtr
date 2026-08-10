@@ -1,4 +1,13 @@
-use oxidtr::backend::rust::expr_translator::{translate, translate_with_ir};
+use oxidtr::backend::rust::expr_translator::{translate, translate_with_env, translate_with_ir};
+use oxidtr::backend::type_env::TypeEnv;
+
+/// A scope binding one free variable, as every real call site has: a field
+/// access is typed through its base's binding, never by field name alone.
+fn scope(var_name: &str, sig_name: &str) -> TypeEnv {
+    let mut env = TypeEnv::new();
+    env.bind(var_name, sig_name);
+    env
+}
 use oxidtr::parser::ast::*;
 use oxidtr::ir::nodes::*;
 
@@ -274,7 +283,7 @@ fn translate_in_with_lone_field_non_selfref() {
             field: "group".into(),
         }),
     };
-    let result = translate_with_ir(&expr, &ir);
+    let result = translate_with_env(&expr, &ir, &scope("u", "User"));
     assert!(
         result.contains("as_ref()") && result.contains("Some"),
         "lone non-selfref should use as_ref() == Some, got: {result}"
@@ -293,7 +302,7 @@ fn translate_in_with_lone_selfref_field() {
             field: "parent".into(),
         }),
     };
-    let result = translate_with_ir(&expr, &ir);
+    let result = translate_with_env(&expr, &ir, &scope("s", "SigDecl"));
     assert!(
         result.contains("as_deref()") && result.contains("Some"),
         "lone self-ref should use as_deref() == Some, got: {result}"
@@ -333,7 +342,7 @@ fn translate_eq_with_lone_selfref_field() {
         }),
         right: Box::new(Expr::VarRef("p".into())),
     };
-    let result = translate_with_ir(&expr, &ir);
+    let result = translate_with_env(&expr, &ir, &scope("s", "SigDecl"));
     assert!(
         result.contains("as_deref()") && result.contains("Some"),
         "lone self-ref Eq should use as_deref() == Some, got: {result}"
@@ -352,7 +361,7 @@ fn translate_eq_with_lone_non_selfref_field() {
         }),
         right: Box::new(Expr::VarRef("g".into())),
     };
-    let result = translate_with_ir(&expr, &ir);
+    let result = translate_with_env(&expr, &ir, &scope("u", "User"));
     assert!(
         result.contains("as_ref()") && result.contains("Some"),
         "lone non-selfref Eq should use as_ref() == Some, got: {result}"
