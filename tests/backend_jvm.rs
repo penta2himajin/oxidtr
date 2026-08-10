@@ -710,3 +710,28 @@ fn kotlin_discloses_an_empty_assert_domain() {
         "an empty domain must be disclosed in the generated test. got:\n{src}"
     );
 }
+
+// ── Temporal operators must not be erased on the assert path (#78) ─────────
+
+const TEMPORAL_ASSERT_MODEL: &str = "\
+sig Counter { var n: one Int }
+assert Live { eventually (all c: Counter | c.n > 0) }
+assert Ordered { (all c: Counter | c.n > 0) until (all c: Counter | c.n > 5) }
+";
+
+/// `eventually P` is not `P`, and `P until Q` is not `P && Q`. The assert path
+/// never consulted the temporal classification, so it translated the operand
+/// and dropped the operator — a test asserting something the model never said.
+#[test]
+fn kotlin_assert_temporal_gets_trace_checkers() {
+    let files = generate_kt(TEMPORAL_ASSERT_MODEL);
+    let src = find_file(&files, "Tests.kt");
+
+    assert!(src.contains("checkLivenessLive"), "eventually needs a trace checker:\n{src}");
+    assert!(src.contains("trace.any"), "liveness holds in at least one state:\n{src}");
+    assert!(src.contains("checkUntilOrdered"), "until needs a trace checker:\n{src}");
+    assert!(
+        !src.contains("c.n > 0 } && counters.all { c -> c.n > 5"),
+        "until must not collapse to a conjunction:\n{src}"
+    );
+}

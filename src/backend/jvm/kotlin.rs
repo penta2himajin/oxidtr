@@ -617,6 +617,41 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them: `eventually P`
+        // became `P`, `P until Q` became `P && Q` (#78). Route it through the
+        // trace checkers the fact path already emits.
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            let label = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => "binary temporal",
+                _ => "liveness",
+            };
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
+            writeln!(out, "        // {label}: full verification needs a trace; an empty trace").unwrap();
+            writeln!(out, "        // can never satisfy it, which at least exercises the checker.").unwrap();
+            match temporal_checker_name(&prop.name, &prop.expr, temporal_kind) {
+                Some(checker) => {
+                    let tname = params.first().map(|(_, t)| t.as_str()).unwrap_or("Nothing");
+                    writeln!(out, "        val trace: List<List<{tname}>> = emptyList()").unwrap();
+                    writeln!(out, "        assertFalse({checker}(trace))").unwrap();
+                }
+                None => {
+                    writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -1409,4 +1444,31 @@ fn emit_temporal_trace_checkers(
 /// Adapter so the extracted block keeps reading `constraint.expr`.
 struct TemporalSource<'a> {
     expr: &'a crate::parser::ast::Expr,
+}
+
+/// The name `emit_temporal_trace_checkers` will give this constraint's checker,
+/// so the generated test can call it. A checker nothing references is a test
+/// that asserts nothing — the failure #74/#81 were about.
+fn temporal_checker_name(
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    kind: Option<analyze::TemporalKind>,
+) -> Option<String> {
+    // The emitter interpolates the constraint name verbatim.
+    let camel = name.to_string();
+    match kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let (op, _, _, _) = analyze::find_temporal_binary_with_bindings(expr)?;
+            let op_name = match op {
+                TemporalBinaryOp::Until => "Until",
+                TemporalBinaryOp::Since => "Since",
+                TemporalBinaryOp::Release => "Release",
+                TemporalBinaryOp::Triggered => "Triggered",
+            };
+            Some(format!("check{op_name}{camel}"))
+        }
+        Some(analyze::TemporalKind::PastLiveness) => Some(format!("checkPastLiveness{camel}")),
+        Some(analyze::TemporalKind::Liveness) => Some(format!("checkLiveness{camel}")),
+        _ => None,
+    }
 }
