@@ -170,8 +170,15 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
 }
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
+    translate_with_env(expr, ir, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope — an operation's parameters, for instance.
+/// A field access is typed through the binding of its base, so a caller holding
+/// free variables has to say what they range over.
+pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
+    translate_inner(expr, false, &sig_names, ir, env)
 }
 
 fn translate_inner(
@@ -186,13 +193,20 @@ fn translate_inner(
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
 
+        // Alloy's implicit receiver in `fun Sig.op { this... }`. A derived
+        // field is emitted as a method with receiver `s`.
+        Expr::VarRef(name) if name == "this" => "s".to_string(),
+
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
             format!("{}.{}", ti(base, false), capitalize(field))
         }
 
-        Expr::Cardinality(inner) => format!("len({})", ti(inner, false)),
+        // Alloy `#e` is an Int, which Go models as int64; `len` yields `int`,
+        // so comparing it against an `int64` field — or returning it from a
+        // `fun ...: one Int` — does not type-check without the conversion.
+        Expr::Cardinality(inner) => format!("int64(len({}))", ti(inner, false)),
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
