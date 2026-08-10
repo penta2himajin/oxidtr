@@ -1,7 +1,8 @@
 use crate::parser::ast::*;
-use crate::ir::nodes::{OxidtrIR, IRField};
+use crate::ir::nodes::OxidtrIR;
 use crate::backend::{TargetLang, resolve_type, is_native_type_alias};
-use std::collections::{HashSet, BTreeSet, HashMap};
+use crate::backend::type_env::{TypeEnv, expr_sig, resolve_field};
+use std::collections::{HashSet, BTreeSet};
 
 /// TC field info.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -123,9 +124,7 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
     }
 }
 
-pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
-    ir.structures.iter().map(|s| s.name.clone()).collect()
-}
+pub use crate::backend::type_env::collect_sig_names;
 
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
     let mut params = BTreeSet::new();
@@ -173,50 +172,6 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
     translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
-}
-
-/// Maps a quantifier-bound variable to the sig it ranges over.
-///
-/// Resolving a field through the *binding* is the only sound way to type an
-/// expression: looking a field up by name across every sig silently picks the
-/// wrong one whenever two sigs share a field name, which produced both
-/// non-compiling closures and vet-clean-but-always-false membership tests.
-type TypeEnv = HashMap<String, String>;
-
-/// The sig name an expression denotes, or `None` if it is not a sig-valued
-/// expression (a literal, a native scalar, an unresolvable domain).
-fn expr_sig(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv) -> Option<String> {
-    match expr {
-        Expr::VarRef(name) => env.get(name).cloned()
-            .or_else(|| sig_names.contains(name).then(|| name.clone())),
-        Expr::FieldAccess { base, field } => {
-            resolve_field(base, field, sig_names, ir, env).map(|f| f.target.clone())
-        }
-        // `^f` ranges over the same sig as `f` itself, and lowers to a
-        // slice-returning Tc* helper, so it needs no singleton lifting.
-        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => expr_sig(inner, sig_names, ir, env),
-        _ => None,
-    }
-}
-
-/// Resolve `base.field` to the actual field declaration, via `base`'s sig.
-fn resolve_field<'a>(
-    base: &Expr,
-    field: &str,
-    sig_names: &HashSet<String>,
-    ir: &'a OxidtrIR,
-    env: &TypeEnv,
-) -> Option<&'a IRField> {
-    let mut sig = expr_sig(base, sig_names, ir, env)?;
-    // Walk the inheritance chain: a field declared on an abstract parent is
-    // reachable through the child.
-    loop {
-        let st = ir.structures.iter().find(|s| s.name == sig)?;
-        if let Some(f) = st.fields.iter().find(|f| f.name == field) {
-            return Some(f);
-        }
-        sig = st.parent.clone()?;
-    }
 }
 
 fn translate_inner(
@@ -324,14 +279,7 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            // Bindings are sequential: `all b: Box, x: b.items | ..` binds `b`
-            // before `x`'s domain is resolved, so extend as we go.
-            let mut inner = env.clone();
-            for bd in bindings {
-                if let Some(sig) = expr_sig(&bd.domain, sig_names, ir, &inner) {
-                    for v in &bd.vars { inner.insert(v.clone(), sig.clone()); }
-                }
-            }
+            let inner = env.extended(bindings, sig_names, ir);
             let b = translate_inner(body, false, sig_names, ir, &inner);
             build_nested_quantifier(kind, bindings, &b, sig_names, ir, env)
         }
@@ -475,9 +423,9 @@ fn build_nested_quantifier(
         // parses, instead of emitting an outright syntax error.
         let elem_ty = domain_element_type(&b.domain, sig_names, ir, &scope)
             .unwrap_or_else(|| "any".to_string());
-        if let Some(sig) = expr_sig(&b.domain, sig_names, ir, &scope) {
-            for v in &b.vars { scope.insert(v.clone(), sig.clone()); }
-        }
+        // Enter this binding before the next domain is typed — the bindings are
+        // sequential, and this loop interleaves scoping with rendering.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj, elem_ty.clone()));
         }
