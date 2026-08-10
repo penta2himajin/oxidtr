@@ -129,9 +129,8 @@ fn rendered_multi_file_output_parses_via_parse_from_path() {
     };
     let files = render_files(&model);
 
-    let dir = std::env::temp_dir().join(format!("oxidtr-render-rt-{}", std::process::id()));
-    if dir.exists() { let _ = fs::remove_dir_all(&dir); }
-    fs::create_dir_all(&dir).unwrap();
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
     for f in &files {
         let full = dir.join(&f.path);
         if let Some(parent) = full.parent() {
