@@ -35,6 +35,16 @@ impl JvmLang for JavaLang {
         format!("Helpers.rtc{}({base})", capitalize(field))
     }
     fn eq_op(&self) -> &str { "==" }
+    // Alloy `=` is atom equality, and a fixture builds a fresh instance every
+    // call — `==` compares references and would be false for two structurally
+    // identical atoms. Boxing an `int` through `Objects.equals` still compares
+    // by value, so one form covers both.
+    fn value_eq(&self, l: &str, r: &str) -> String {
+        format!("java.util.Objects.equals({l}, {r})")
+    }
+    fn value_neq(&self, l: &str, r: &str) -> String {
+        format!("!java.util.Objects.equals({l}, {r})")
+    }
     fn neq_op(&self) -> &str { "!=" }
     fn field_access(&self, base: &str, field: &str) -> String {
         format!("{base}.{field}()")

@@ -36,6 +36,9 @@ impl JvmLang for KotlinLang {
     }
     fn eq_op(&self) -> &str { "==" }
     fn neq_op(&self) -> &str { "!=" }
+    // Kotlin's `==` is `equals()`, so value equality needs nothing special.
+    fn value_eq(&self, l: &str, r: &str) -> String { format!("{l} == {r}") }
+    fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
 }
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
