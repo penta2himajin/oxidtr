@@ -5,6 +5,13 @@
 use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
+    // Reserved tokens are emitted wrapped in guillemets (`«end»`, `«in»`), so
+    // unwrap those before any identifier is read. Only *keyword* wrappers are
+    // unwrapped, which matters because this also runs over hand-written Lean,
+    // where guillemets are legal around any identifier. See the ceiling noted on
+    // `unescape_lean_ident`: it is a substring pass, so a string literal holding
+    // exactly `«in»` is still rewritten. Line numbering is unaffected.
+    let source = crate::backend::lean::expr_translator::unescape_lean_ident(source);
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
