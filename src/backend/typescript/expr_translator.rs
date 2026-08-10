@@ -5,8 +5,15 @@ use std::collections::{HashSet, BTreeSet};
 
 /// Translate an Alloy expression to a TypeScript expression string with IR context.
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
+    translate_with_env(expr, ir, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope — an operation's parameters, for instance.
+/// A field access is typed through the binding of its base, so a caller holding
+/// free variables has to say what they range over.
+pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
+    translate_inner(expr, false, &sig_names, ir, env)
 }
 
 /// Translate a temporal constraint expression for trace checker bodies.
@@ -284,6 +291,11 @@ fn translate_inner(
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
 
+        // Alloy's implicit receiver in `fun Sig.op { this... }`. A derived
+        // field is emitted as a method on `{Sig}Methods`, which holds the value
+        // in a `self` field — bare `this` would name the wrapper instead.
+        Expr::VarRef(name) if name == "this" => "this.self".to_string(),
+
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
@@ -389,11 +401,25 @@ fn translate_inner(
         }
 
         Expr::MultFormula { kind, expr } => {
-            let inner = ti(expr, false);
-            match kind {
-                QuantKind::Some => format!("{inner} != null"),
-                QuantKind::No => format!("{inner} == null"),
-                _ => inner,
+            let inner_str = ti(expr, false);
+            // A `set` field lowers to `Set<T>` and a `seq` to an array, neither
+            // of which is ever null — emptiness is `.size` / `.length`. Only a
+            // `lone` field is nullable, and the field name alone cannot say
+            // which this is (#108's TypeScript twin).
+            let collection = match expr.as_ref() {
+                Expr::FieldAccess { base, field } => {
+                    resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone())
+                }
+                _ => None,
+            };
+            match (kind, collection) {
+                (QuantKind::Some, Some(Multiplicity::Set)) => format!("{inner_str}.size > 0"),
+                (QuantKind::No, Some(Multiplicity::Set)) => format!("{inner_str}.size === 0"),
+                (QuantKind::Some, Some(Multiplicity::Seq)) => format!("{inner_str}.length > 0"),
+                (QuantKind::No, Some(Multiplicity::Seq)) => format!("{inner_str}.length === 0"),
+                (QuantKind::Some, _) => format!("{inner_str} != null"),
+                (QuantKind::No, _) => format!("{inner_str} == null"),
+                _ => inner_str,
             }
         }
 

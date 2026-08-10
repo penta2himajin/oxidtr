@@ -13,7 +13,7 @@
 //! `base`'s sig. This module holds that logic once, in language-agnostic form,
 //! so a new backend inherits it rather than re-deriving it.
 
-use crate::ir::nodes::{IRField, OxidtrIR};
+use crate::ir::nodes::{IRField, OperationNode, OxidtrIR};
 use crate::parser::ast::{Expr, QuantBinding};
 use std::collections::{HashMap, HashSet};
 
@@ -123,4 +123,20 @@ pub fn resolve_field_owner<'a>(
         }
         sig = st.parent.clone()?;
     }
+}
+
+/// The scope an operation body is translated in: its parameters bound to their
+/// declared sigs, plus Alloy's implicit `this` for a receiver operation.
+///
+/// Without it a field access through a parameter cannot be typed at all, and
+/// every multiplicity-dependent decision silently falls back to "unknown".
+pub fn operation_env(op: &OperationNode) -> TypeEnv {
+    let mut env = TypeEnv::new();
+    if let Some(sig) = &op.receiver_sig {
+        env.bind("this", sig);
+    }
+    for p in &op.params {
+        env.bind(&p.name, &p.type_name);
+    }
+    env
 }
