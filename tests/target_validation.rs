@@ -683,10 +683,15 @@ fn swift_adversarial_models_compile() {
          "sig Name {}\nabstract sig Expr {}\nsig Lit extends Expr { name: one Name }\n\
           sig Other extends Expr {}\nassert A { all e: Expr | e = Lit }",
          "e.isLit"),
+        // `rel` is `set` on one sig and `lone` on the other. This used to be
+        // dropped with a "different multiplicities across sigs" note, because a
+        // name-keyed lookup could not tell which one `m.rel` meant. The shared
+        // TypeEnv types `m` as `Maybe`, so the `lone` branch is reached and the
+        // fact is translated instead of skipped.
         ("ambiguous_field_multiplicity",
          "sig Item {}\nsig Many { rel: set Item }\nsig Maybe { rel: lone Item }\n\
           fact NoMember { all m: Maybe | all i: Item | not (i in m.rel) }",
-         "different multiplicities"),
+         "!(m.rel == i)"),
         ("reserved_argument_label",
          "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
           assert Reflexive { all n: Node | n = n }",
