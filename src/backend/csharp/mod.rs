@@ -556,6 +556,31 @@ fn boundary_value_for(target: &str, mult: &Multiplicity, fixture_types: &HashSet
 
 // ── Tests.cs ─────────────────────────────────────────────────────────────────
 
+fn collect_closure_fields(ir: &OxidtrIR) -> (Vec<expr_translator::TCField>, Vec<expr_translator::TCField>) {
+    let mut tc_fields = Vec::new();
+    let mut rtc_fields = Vec::new();
+    let mut push_expr = |expr: &crate::parser::ast::Expr| {
+        tc_fields.extend(expr_translator::extract_tc_fields(expr, ir));
+        rtc_fields.extend(expr_translator::extract_rtc_fields(expr, ir));
+    };
+    for c in &ir.constraints {
+        push_expr(&c.expr);
+    }
+    for p in &ir.properties {
+        push_expr(&p.expr);
+    }
+    for op in &ir.operations {
+        for e in &op.body {
+            push_expr(e);
+        }
+    }
+    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    tc_fields.dedup();
+    rtc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    rtc_fields.dedup();
+    (tc_fields, rtc_fields)
+}
+
 /// A `^field` closure over a self-referential field, chasing `Lone`/`One` as a
 /// single pointer and `Set`/`Seq` as a worklist — every variant must terminate
 /// even on a cyclic graph.
@@ -609,6 +634,21 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
     writeln!(out).unwrap();
 }
 
+fn generate_rtc_function(out: &mut String, tc: &expr_translator::TCField) {
+    let fn_name = format!("Rtc{}", capitalize(&tc.field_name));
+    let tc_name = format!("Tc{}", capitalize(&tc.field_name));
+    let sig = cs_ident(&tc.sig_name);
+    let target = cs_ident(&tc.target_type);
+
+    writeln!(out, "    private static List<{target}> {fn_name}({sig} start)").unwrap();
+    writeln!(out, "    {{").unwrap();
+    writeln!(out, "        var result = new List<{target}> {{ start }};").unwrap();
+    writeln!(out, "        result.AddRange({tc_name}(start));").unwrap();
+    writeln!(out, "        return result;").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+}
+
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
     writeln!(out, "using Xunit;").unwrap();
@@ -627,20 +667,15 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .collect();
     let all_constraints = analyze::analyze(ir);
 
-    // Transitive-closure helpers (`^field`): C# has no `check_*` fact-path
+    // Transitive-closure helpers (`^field` / `*field`): C# has no `check_*` fact-path
     // infrastructure to hang these off of (see #78), so emit only the ones
-    // the constraint/property bodies below actually call.
-    let mut tc_fields = Vec::new();
-    for c in &ir.constraints {
-        tc_fields.extend(expr_translator::extract_tc_fields(&c.expr, ir));
-    }
-    for p in &ir.properties {
-        tc_fields.extend(expr_translator::extract_tc_fields(&p.expr, ir));
-    }
-    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
-    tc_fields.dedup();
+    // the constraint/property/operation bodies below actually call.
+    let (tc_fields, rtc_fields) = collect_closure_fields(ir);
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
+    }
+    for rtc in &rtc_fields {
+        generate_rtc_function(&mut out, rtc);
     }
 
     // --- Constraint tests (facts) ---

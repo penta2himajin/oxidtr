@@ -41,9 +41,8 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
         content: generate_models_with_config(ir, config),
     });
 
-    // Check if TC functions are needed by any expression
-    let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
-        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    // Check if TC functions are needed by any expression (constraints, properties, or fun/pred bodies)
+    let has_tc = ir_uses_tc(ir);
 
     // Generate helpers.rs for TC functions (replaces invariants.rs)
     if has_tc {
@@ -274,8 +273,7 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
     }
 
     // Check if TC, operations, tests, fixtures, newtypes are needed
-    let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
-        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    let has_tc = ir_uses_tc(ir);
     if has_tc {
         writeln!(lib_rs, "pub mod helpers;").unwrap();
         let helpers_content = rewrite_models_import(
@@ -1121,8 +1119,7 @@ fn rust_return_type(type_name: &str, mult: &Multiplicity) -> String {
     }
 }
 
-/// Generate helpers.rs containing TC (transitive closure) functions.
-/// These were previously in invariants.rs.
+/// Generate helpers.rs containing TC / RTC (transitive / reflexive-transitive closure) functions.
 fn generate_helpers(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
@@ -1130,22 +1127,47 @@ fn generate_helpers(ir: &OxidtrIR) -> String {
     writeln!(out, "use super::models::*;").unwrap();
     writeln!(out).unwrap();
 
-    // Collect all TC fields and generate specific traversal functions
-    let mut tc_fields = Vec::new();
-    for c in &ir.constraints {
-        tc_fields.extend(expr_translator::extract_tc_fields(&c.expr, ir));
-    }
-    for p in &ir.properties {
-        tc_fields.extend(expr_translator::extract_tc_fields(&p.expr, ir));
-    }
-    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
-    tc_fields.dedup();
+    let (tc_fields, rtc_fields) = collect_closure_fields(ir);
 
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
     }
+    for rtc in &rtc_fields {
+        generate_rtc_function(&mut out, rtc);
+    }
 
     out
+}
+
+fn collect_closure_fields(ir: &OxidtrIR) -> (Vec<expr_translator::TCField>, Vec<expr_translator::TCField>) {
+    let mut tc_fields = Vec::new();
+    let mut rtc_fields = Vec::new();
+    let mut push_expr = |expr: &Expr| {
+        tc_fields.extend(expr_translator::extract_tc_fields(expr, ir));
+        rtc_fields.extend(expr_translator::extract_rtc_fields(expr, ir));
+    };
+    for c in &ir.constraints {
+        push_expr(&c.expr);
+    }
+    for p in &ir.properties {
+        push_expr(&p.expr);
+    }
+    for op in &ir.operations {
+        for e in &op.body {
+            push_expr(e);
+        }
+    }
+    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    tc_fields.dedup();
+    rtc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    rtc_fields.dedup();
+    (tc_fields, rtc_fields)
+}
+
+fn ir_uses_tc(ir: &OxidtrIR) -> bool {
+    ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr))
+        || ir.operations.iter().any(|op| op.body.iter().any(expr_uses_tc))
 }
 
 fn collect_sig_names(ir: &OxidtrIR) -> std::collections::HashSet<String> {
@@ -1155,7 +1177,7 @@ fn collect_sig_names(ir: &OxidtrIR) -> std::collections::HashSet<String> {
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;
     match expr {
-        Expr::TransitiveClosure(_) => true,
+        Expr::TransitiveClosure(_) | Expr::ReflexiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
         Expr::MultFormula { expr: inner, .. } => expr_uses_tc(inner),
@@ -1197,7 +1219,7 @@ fn expr_refs_any(expr: &Expr, names: &HashSet<String>) -> bool {
         Expr::IntLiteral(_) => false,
         Expr::FieldAccess { base, .. } => expr_refs_any(base, names),
         Expr::Cardinality(e)
-        | Expr::TransitiveClosure(e)
+        | Expr::TransitiveClosure(e) | Expr::ReflexiveClosure(e)
         | Expr::Not(e)
         | Expr::Prime(e)
         | Expr::MultFormula { expr: e, .. }
@@ -1238,8 +1260,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let cyclic = find_cyclic_fields(ir);
 
     // Check if any expression uses TC functions → need helpers import
-    let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
-        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    let needs_helpers = ir_uses_tc(ir);
 
     // tests.rs is already #[cfg(test)] gated via mod.rs, no wrapper needed
     writeln!(out, "#[allow(unused_imports)]").unwrap();
@@ -2045,7 +2066,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     }
 
     // Check if TC functions are needed → import helpers
-    let needs_helpers = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr));
+    let needs_helpers = ir_uses_tc(ir);
     if needs_helpers {
         writeln!(out, "#[allow(unused_imports)]").unwrap();
         writeln!(out, "use super::helpers::*;").unwrap();
@@ -2390,7 +2411,7 @@ fn expr_has_comparison(expr: &crate::parser::ast::Expr) -> bool {
             bindings.iter().any(|b| expr_has_comparison(&b.domain))
                 || expr_has_comparison(body)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             expr_has_comparison(inner)
         }
         Expr::MultFormula { expr: inner, .. } => expr_has_comparison(inner),
@@ -2466,6 +2487,21 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "}}").unwrap();
         }
     }
+    writeln!(out).unwrap();
+}
+
+fn generate_rtc_function(out: &mut String, tc: &expr_translator::TCField) {
+    let fn_name = format!("rtc_{}", tc.field_name);
+    let tc_name = format!("tc_{}", tc.field_name);
+    let sig = &tc.sig_name;
+
+    writeln!(out, "/// Reflexive-transitive closure for {sig}.{} (id ∪ ^{}).", tc.field_name, tc.field_name).unwrap();
+    writeln!(out, "#[allow(dead_code)]").unwrap();
+    writeln!(out, "pub fn {fn_name}(start: &{sig}) -> Vec<{sig}> {{").unwrap();
+    writeln!(out, "    let mut result = vec![start.clone()];").unwrap();
+    writeln!(out, "    result.extend({tc_name}(start));").unwrap();
+    writeln!(out, "    result").unwrap();
+    writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
 
@@ -3227,7 +3263,7 @@ fn references_nullary_fun_of_sig(expr: &Expr, ir: &OxidtrIR, sig_name: &str) -> 
                 || args.iter().any(|a| references_nullary_fun_of_sig(a, ir, sig_name))
         }
         Expr::FieldAccess { base, .. } => references_nullary_fun_of_sig(base, ir, sig_name),
-        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::Prime(inner) | Expr::TemporalUnary { expr: inner, .. } => {
             references_nullary_fun_of_sig(inner, ir, sig_name)
         }

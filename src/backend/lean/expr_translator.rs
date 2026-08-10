@@ -111,6 +111,14 @@ fn translate_inner(
             }
         }
 
+        Expr::ReflexiveClosure(inner) => {
+            if let Expr::FieldAccess { base, field } = inner.as_ref() {
+                format!("Relation.ReflTransGen (· {} ·) {}", to_lower_camel(field), ti(base, false))
+            } else {
+                format!("Relation.ReflTransGen {}", ti(inner, false))
+            }
+        }
+
         Expr::Comparison { op, left, right } => {
             match op {
                 CompareOp::Eq => format!("{} = {}", ti(left, false), ti(right, false)),

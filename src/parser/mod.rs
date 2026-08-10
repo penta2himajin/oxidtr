@@ -849,6 +849,14 @@ impl<'a> Parser<'a> {
                         field: field.clone(),
                     };
                     expr = Expr::TransitiveClosure(Box::new(expr));
+                } else if self.peek() == Token::Star {
+                    self.next(); // consume *
+                    let field = self.expect_ident()?;
+                    expr = Expr::FieldAccess {
+                        base: Box::new(expr),
+                        field: field.clone(),
+                    };
+                    expr = Expr::ReflexiveClosure(Box::new(expr));
                 } else {
                     let field = self.expect_ident()?;
                     // Alloy 6: `s.field'` — prime on field access

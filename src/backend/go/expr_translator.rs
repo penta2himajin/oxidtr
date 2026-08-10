@@ -19,9 +19,66 @@ pub fn extract_tc_fields(expr: &Expr, ir: &OxidtrIR) -> Vec<TCField> {
     fields
 }
 
+/// Extract all RTC (`*field`) field usages from an expression.
+pub fn extract_rtc_fields(expr: &Expr, ir: &OxidtrIR) -> Vec<TCField> {
+    let mut fields = Vec::new();
+    collect_rtc_fields(expr, ir, &mut fields);
+    fields.sort_by(|a, b| a.field_name.cmp(&b.field_name));
+    fields.dedup();
+    fields
+}
+
+fn collect_rtc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
+    match expr {
+        Expr::ReflexiveClosure(inner) => {
+            if let Expr::FieldAccess { field, .. } = inner.as_ref() {
+                for s in &ir.structures {
+                    for f in &s.fields {
+                        if f.name == *field && f.target == s.name {
+                            out.push(TCField {
+                                field_name: field.clone(),
+                                sig_name: s.name.clone(),
+                                mult: f.mult.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+            collect_rtc_fields(inner, ir, out);
+        }
+        Expr::TransitiveClosure(inner) => collect_rtc_fields(inner, ir, out),
+        Expr::FieldAccess { base, .. } => collect_rtc_fields(base, ir, out),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. } => {
+            collect_rtc_fields(left, ir, out);
+            collect_rtc_fields(right, ir, out);
+        }
+        Expr::Not(inner) | Expr::Cardinality(inner) => collect_rtc_fields(inner, ir, out),
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings { collect_rtc_fields(&b.domain, ir, out); }
+            collect_rtc_fields(body, ir, out);
+        }
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_rtc_fields(left, ir, out);
+            collect_rtc_fields(right, ir, out);
+        }
+        Expr::MultFormula { expr: inner, .. } => collect_rtc_fields(inner, ir, out),
+        Expr::Prime(inner) => collect_rtc_fields(inner, ir, out),
+        Expr::TemporalUnary { expr: inner, .. } => collect_rtc_fields(inner, ir, out),
+        Expr::TemporalBinary { left, right, .. } => {
+            collect_rtc_fields(left, ir, out);
+            collect_rtc_fields(right, ir, out);
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver { collect_rtc_fields(r, ir, out); }
+            for arg in args { collect_rtc_fields(arg, ir, out); }
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => {}
+    }
+}
+
 fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
     match expr {
-        Expr::TransitiveClosure(inner) => {
+        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             if let Expr::FieldAccess { field, .. } = inner.as_ref() {
                 for s in &ir.structures {
                     for f in &s.fields {
@@ -94,7 +151,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
             collect_params(left, sig_names, params);
             collect_params(right, sig_names, params);
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_params(inner, sig_names, params);
         }
         Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
@@ -137,7 +194,7 @@ fn expr_sig(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeE
         }
         // `^f` ranges over the same sig as `f` itself, and lowers to a
         // slice-returning Tc* helper, so it needs no singleton lifting.
-        Expr::TransitiveClosure(inner) => expr_sig(inner, sig_names, ir, env),
+        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => expr_sig(inner, sig_names, ir, env),
         _ => None,
     }
 }
@@ -187,6 +244,14 @@ fn translate_inner(
                 format!("Tc{}({})", capitalize(field), ti(base, false))
             } else {
                 format!("transitiveClosure({})", ti(inner, false))
+            }
+        }
+
+        Expr::ReflexiveClosure(inner) => {
+            if let Expr::FieldAccess { base, field } = inner.as_ref() {
+                format!("Rtc{}({})", capitalize(field), ti(base, false))
+            } else {
+                format!("reflexiveTransitiveClosure({})", ti(inner, false))
             }
         }
 

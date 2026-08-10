@@ -332,6 +332,11 @@ pub fn reverse_translate_expr(code_line: &str) -> Option<String> {
     // Strip Rust clone blocks: { let v = v.clone(); body } → body
     let s = strip_clone_block(s);
 
+    // rtc_field(&v) → v.*field
+    if let Some(result) = try_reverse_rtc_call(s) {
+        return Some(result);
+    }
+
     // tc_field(&v) → v.^field
     if let Some(result) = try_reverse_tc_call(s) {
         return Some(result);
@@ -417,6 +422,26 @@ fn strip_clone_block(s: &str) -> &str {
         }
     }
     s
+}
+
+/// Reverse rtc_field(&v) → v.*field
+fn try_reverse_rtc_call(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("rtc_")?;
+    let paren = rest.find('(')?;
+    let field = &rest[..paren];
+    if field.is_empty() { return None; }
+    let close = find_matching_close(&rest[paren + 1..], '(', ')')?;
+    let args = &rest[paren + 1..paren + 1 + close];
+    let base = args.trim().strip_prefix('&').unwrap_or(args.trim());
+    let base_alloy = reverse_translate_expr(base).unwrap_or_else(|| base.to_string());
+    let rtc_expr = format!("{base_alloy}.*{field}");
+
+    let after = &rest[paren + 1 + close + 1..];
+    if after.is_empty() {
+        return Some(rtc_expr);
+    }
+    let full_after = format!("{rtc_expr}{after}");
+    reverse_translate_expr(&full_after).or(Some(rtc_expr))
 }
 
 /// Reverse tc_field(&v) → v.^field

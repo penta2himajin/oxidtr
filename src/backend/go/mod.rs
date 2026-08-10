@@ -16,8 +16,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         content: generate_models(ir, &ctx),
     });
 
-    let has_tc = ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
-        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr));
+    let has_tc = ir_uses_tc(ir);
 
     // helpers.go also carries forAll/exists/contains, which any translated
     // quantifier or `in` expression calls — so it is needed whenever there is
@@ -570,21 +569,47 @@ fn generate_helpers(ir: &OxidtrIR) -> String {
 
     generate_collection_helpers(&mut out);
 
-    let mut tc_fields = Vec::new();
-    for c in &ir.constraints {
-        tc_fields.extend(expr_translator::extract_tc_fields(&c.expr, ir));
-    }
-    for p in &ir.properties {
-        tc_fields.extend(expr_translator::extract_tc_fields(&p.expr, ir));
-    }
-    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
-    tc_fields.dedup();
+    let (tc_fields, rtc_fields) = collect_closure_fields(ir);
 
     for tc in &tc_fields {
         generate_tc_function(&mut out, tc);
     }
+    for rtc in &rtc_fields {
+        generate_rtc_function(&mut out, rtc);
+    }
 
     out
+}
+
+fn collect_closure_fields(ir: &OxidtrIR) -> (Vec<expr_translator::TCField>, Vec<expr_translator::TCField>) {
+    let mut tc_fields = Vec::new();
+    let mut rtc_fields = Vec::new();
+    let mut push_expr = |expr: &crate::parser::ast::Expr| {
+        tc_fields.extend(expr_translator::extract_tc_fields(expr, ir));
+        rtc_fields.extend(expr_translator::extract_rtc_fields(expr, ir));
+    };
+    for c in &ir.constraints {
+        push_expr(&c.expr);
+    }
+    for p in &ir.properties {
+        push_expr(&p.expr);
+    }
+    for op in &ir.operations {
+        for e in &op.body {
+            push_expr(e);
+        }
+    }
+    tc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    tc_fields.dedup();
+    rtc_fields.sort_by(|a, b| (&a.sig_name, &a.field_name).cmp(&(&b.sig_name, &b.field_name)));
+    rtc_fields.dedup();
+    (tc_fields, rtc_fields)
+}
+
+fn ir_uses_tc(ir: &OxidtrIR) -> bool {
+    ir.constraints.iter().any(|c| expr_uses_tc(&c.expr))
+        || ir.properties.iter().any(|p| expr_uses_tc(&p.expr))
+        || ir.operations.iter().any(|op| op.body.iter().any(expr_uses_tc))
 }
 
 fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
@@ -642,6 +667,21 @@ fn generate_tc_function(out: &mut String, tc: &expr_translator::TCField) {
             writeln!(out, "}}").unwrap();
         }
     }
+    writeln!(out).unwrap();
+}
+
+fn generate_rtc_function(out: &mut String, tc: &expr_translator::TCField) {
+    let fn_name = format!("Rtc{}", expr_translator::capitalize(&tc.field_name));
+    let tc_name = format!("Tc{}", expr_translator::capitalize(&tc.field_name));
+    let sig = &tc.sig_name;
+    let field = &tc.field_name;
+
+    writeln!(out, "// {fn_name} computes the reflexive-transitive closure for {sig}.{field}.").unwrap();
+    writeln!(out, "func {fn_name}(start {sig}) []{sig} {{").unwrap();
+    writeln!(out, "\tresult := []{sig}{{start}}").unwrap();
+    writeln!(out, "\tresult = append(result, {tc_name}(start)...)").unwrap();
+    writeln!(out, "\treturn result").unwrap();
+    writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
 
@@ -1531,7 +1571,7 @@ fn to_snake_case(name: &str) -> String {
 fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
     use crate::parser::ast::Expr;
     match expr {
-        Expr::TransitiveClosure(_) => true,
+        Expr::TransitiveClosure(_) | Expr::ReflexiveClosure(_) => true,
         Expr::FieldAccess { base, .. } => expr_uses_tc(base),
         Expr::Cardinality(inner) | Expr::Not(inner) => expr_uses_tc(inner),
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }

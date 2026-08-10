@@ -117,7 +117,7 @@ pub fn expr_contains_prime(expr: &Expr) -> bool {
         Expr::Not(inner) => expr_contains_prime(inner),
         Expr::FieldAccess { base, .. } => expr_contains_prime(base),
         Expr::Cardinality(inner) => expr_contains_prime(inner),
-        Expr::TransitiveClosure(inner) => expr_contains_prime(inner),
+        Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => expr_contains_prime(inner),
         Expr::SetOp { left, right, .. } => {
             expr_contains_prime(left) || expr_contains_prime(right)
         }
@@ -193,6 +193,7 @@ pub fn rewrite_prime_as_post_state(expr: &Expr) -> Expr {
         },
         Expr::Cardinality(inner) => Expr::Cardinality(Box::new(rewrite_prime_as_post_state(inner))),
         Expr::TransitiveClosure(inner) => Expr::TransitiveClosure(Box::new(rewrite_prime_as_post_state(inner))),
+        Expr::ReflexiveClosure(inner) => Expr::ReflexiveClosure(Box::new(rewrite_prime_as_post_state(inner))),
         Expr::SetOp { op, left, right } => Expr::SetOp {
             op: *op,
             left: Box::new(rewrite_prime_as_post_state(left)),
@@ -374,7 +375,7 @@ fn snapshot_sound_inner(expr: &Expr, ir: &OxidtrIR, positive: bool, allow_prime:
             snapshot_sound_inner(left, ir, positive, allow_prime, seen)
                 && snapshot_sound_inner(right, ir, positive, allow_prime, seen)
         }
-        Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
             snapshot_sound_inner(inner, ir, positive, allow_prime, seen)
         }
@@ -452,7 +453,7 @@ fn calls_temporal_pred(expr: &Expr, ir: &OxidtrIR, seen: &mut Vec<String>) -> bo
         | Expr::TemporalBinary { left, right, .. } => {
             calls_temporal_pred(left, ir, seen) || calls_temporal_pred(right, ir, seen)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } | Expr::FieldAccess { base: inner, .. }
         | Expr::TemporalUnary { expr: inner, .. } | Expr::Prime(inner) => {
             calls_temporal_pred(inner, ir, seen)
@@ -573,7 +574,7 @@ pub fn contains_prime_through_calls(expr: &Expr, ir: &OxidtrIR) -> bool {
             Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
             | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
             | Expr::TemporalBinary { left, right, .. } => scan(left, ir, seen) || scan(right, ir, seen),
-            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } => scan(i, ir, seen),
             Expr::Quantifier { bindings, body, .. } => {
@@ -656,7 +657,7 @@ pub fn transition_shape_supported(expr: &Expr, ir: &OxidtrIR) -> bool {
             | Expr::TemporalBinary { left, right, .. } => {
                 primes_ok(left, var, in_nested_quant) && primes_ok(right, var, in_nested_quant)
             }
-            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } => primes_ok(i, var, in_nested_quant),
             Expr::Quantifier { bindings, body, .. } => {
@@ -703,7 +704,7 @@ fn calls_any_op(expr: &Expr, ir: &OxidtrIR) -> bool {
         Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
         | Expr::TemporalBinary { left, right, .. } => calls_any_op(left, ir) || calls_any_op(right, ir),
-        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
         | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
         | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => calls_any_op(i, ir),
         Expr::Quantifier { bindings, body, .. } => {
@@ -746,7 +747,7 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
                 | Expr::TemporalBinary { left, right, .. } => {
                     scan(left, sigs, params) || scan(right, sigs, params)
                 }
-                Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+                Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
                 | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
                 | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => scan(i, sigs, params),
                 Expr::FunApp { receiver, args, .. } => {
@@ -775,7 +776,7 @@ pub fn calls_op_scanning_an_unpassed_sig(expr: &Expr, ir: &OxidtrIR) -> bool {
             Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
             | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
             | Expr::TemporalBinary { left, right, .. } => walk(left, ir, seen) || walk(right, ir, seen),
-            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => walk(i, ir, seen),
             Expr::Quantifier { bindings, body, .. } => {
@@ -805,7 +806,7 @@ fn mentions_any_sig_in(e: &Expr, all: &std::collections::HashSet<&str>) -> bool 
         | Expr::TemporalBinary { left, right, .. } => {
             mentions_any_sig_in(left, all) || mentions_any_sig_in(right, all)
         }
-        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
         | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
         | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => mentions_any_sig_in(i, all),
         Expr::Quantifier { bindings, body, .. } => {
@@ -863,7 +864,7 @@ pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
             // `#X` reads a collection whatever X is, so a singleton name is
             // no longer a plain value there.
             Expr::Cardinality(i) => !mentions_any_sig_in(i, all),
-            Expr::Not(i) | Expr::TransitiveClosure(i)
+            Expr::Not(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => no_global_quantifier(i, sigs, all),
             Expr::FunApp { receiver, args, .. } => {
@@ -898,7 +899,7 @@ pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
             | Expr::TemporalBinary { left, right, .. } => {
                 callee_is_atom_local(left, ir, sigs, all, seen) && callee_is_atom_local(right, ir, sigs, all, seen)
             }
-            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
             | Expr::MultFormula { expr: i, .. } | Expr::FieldAccess { base: i, .. }
             | Expr::TemporalUnary { expr: i, .. } | Expr::Prime(i) => {
                 callee_is_atom_local(i, ir, sigs, all, seen)
@@ -1037,6 +1038,7 @@ pub fn describe_expr(expr: &Expr) -> String {
         Expr::Not(inner) => format!("not {}", describe_expr(inner)),
         Expr::Cardinality(inner) => format!("#{}", describe_expr(inner)),
         Expr::TransitiveClosure(inner) => format!("^{}", describe_expr(inner)),
+        Expr::ReflexiveClosure(inner) => format!("*{}", describe_expr(inner)),
         Expr::FieldAccess { base, field } => format!("{}.{field}", describe_expr(base)),
         Expr::VarRef(name) => name.clone(),
         Expr::IntLiteral(n) => n.to_string(),
@@ -1579,6 +1581,7 @@ fn substitute_var(expr: &Expr, var: &str, sig_name: &str) -> Expr {
         Expr::Not(inner) => Expr::Not(Box::new(substitute_var(inner, var, sig_name))),
         Expr::Cardinality(inner) => Expr::Cardinality(Box::new(substitute_var(inner, var, sig_name))),
         Expr::TransitiveClosure(inner) => Expr::TransitiveClosure(Box::new(substitute_var(inner, var, sig_name))),
+        Expr::ReflexiveClosure(inner) => Expr::ReflexiveClosure(Box::new(substitute_var(inner, var, sig_name))),
         Expr::SetOp { op, left, right } => Expr::SetOp {
             op: *op,
             left: Box::new(substitute_var(left, var, sig_name)),
@@ -1711,7 +1714,7 @@ fn collect_disj_fields(expr: &Expr, results: &mut Vec<(String, String)>) {
             collect_disj_fields(left, results);
             collect_disj_fields(right, results);
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) => {
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_disj_fields(inner, results);
         }
         Expr::MultFormula { expr: inner, .. } => collect_disj_fields(inner, results),
@@ -1805,7 +1808,7 @@ fn expr_only_refs_params(expr: &Expr, param_names: &[String]) -> bool {
             // Field access on a param is still a param reference (e.g., a.balance)
             expr_only_refs_params(base, param_names)
         }
-        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner)
+        Expr::Cardinality(inner) | Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } => {
             expr_only_refs_params(inner, param_names)
         }
@@ -1876,6 +1879,7 @@ pub fn alloy_repr(expr: &Expr) -> String {
         Expr::Not(inner) => format!("not {}", alloy_repr_atom(inner)),
         Expr::Cardinality(inner) => format!("#{}", alloy_repr_atom(inner)),
         Expr::TransitiveClosure(inner) => format!("^{}", alloy_repr_atom(inner)),
+        Expr::ReflexiveClosure(inner) => format!("*{}", alloy_repr_atom(inner)),
         Expr::FieldAccess { base, field } => format!("{}.{field}", alloy_repr_atom(base)),
         Expr::VarRef(name) => name.clone(),
         Expr::IntLiteral(n) => n.to_string(),
@@ -2206,7 +2210,7 @@ fn collect_field_refs_in_body(
             collect_field_refs_in_body(left, sig_name, var, fields);
             collect_field_refs_in_body(right, sig_name, var, fields);
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } | Expr::Prime(inner) => {
             collect_field_refs_in_body(inner, sig_name, var, fields);
         }
@@ -2367,7 +2371,7 @@ fn expr_references_sig(expr: &Expr, sig_name: &str) -> bool {
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
             expr_references_sig(left, sig_name) || expr_references_sig(right, sig_name)
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner)
+        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
         | Expr::MultFormula { expr: inner, .. } => {
             expr_references_sig(inner, sig_name)
         }

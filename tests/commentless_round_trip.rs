@@ -144,6 +144,14 @@ fn rust_reverse_translate_tc_call() {
 }
 
 #[test]
+fn rust_reverse_translate_rtc_call() {
+    assert_eq!(
+        rust_extractor::reverse_translate_expr("rtc_nxt(&n)"),
+        Some("n.*nxt".to_string())
+    );
+}
+
+#[test]
 fn rust_reverse_translate_clone_block() {
     assert_eq!(
         rust_extractor::reverse_translate_expr("{ let s = s.clone(); tc_parent(&s).contains(&s) }"),

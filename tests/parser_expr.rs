@@ -80,6 +80,24 @@ fn parse_field_access_expr() {
 }
 
 #[test]
+fn parse_reflexive_closure_dot_star_field() {
+    // Issue #119: `this.*nxt` must become ReflexiveClosure, not plain FieldAccess.
+    let input = r#"
+        sig Node { nxt: lone Node }
+        fun Node.reach: set Node { this.*nxt }
+    "#;
+    let model = parser::parse(input).expect("should parse");
+    assert_eq!(model.funs.len(), 1);
+    match &model.funs[0].body {
+        Expr::ReflexiveClosure(inner) => match inner.as_ref() {
+            Expr::FieldAccess { field, .. } => assert_eq!(field, "nxt"),
+            other => panic!("expected FieldAccess inside ReflexiveClosure, got {other:?}"),
+        },
+        other => panic!("expected ReflexiveClosure, got {other:?}"),
+    }
+}
+
+#[test]
 fn parse_not_expr() {
     let input = r#"
         sig A {}
