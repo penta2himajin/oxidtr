@@ -732,10 +732,6 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             writeln!(out, "    // oxidtr: skipped test_{} — `{r}` is a case constructor, not a value", prop.name).unwrap();
             continue;
         }
-        if let Some(r) = expr_translator::ambiguous_membership_field(&prop.expr, ir) {
-            writeln!(out, "    // oxidtr: skipped test_{} — field `{r}` has different multiplicities across sigs", prop.name).unwrap();
-            continue;
-        }
 
         writeln!(out, "    func test_{}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -760,10 +756,6 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             &expr_translator::translate_with_ir(&constraint.expr, ir), &case_refs)
         {
             writeln!(out, "    // oxidtr: skipped tests for {fact_name} — `{r}` is a case constructor, not a value").unwrap();
-            continue;
-        }
-        if let Some(r) = expr_translator::ambiguous_membership_field(&constraint.expr, ir) {
-            writeln!(out, "    // oxidtr: skipped tests for {fact_name} — field `{r}` has different multiplicities across sigs").unwrap();
             continue;
         }
 
@@ -1008,7 +1000,6 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
         if variant_domain(&params, ctx).is_some() { continue; }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
         if unrenderable_case_ref(&body, &case_refs).is_some() { continue; }
-        if expr_translator::ambiguous_membership_field(&constraint.expr, ir).is_some() { continue; }
 
         let has_boundary = params.iter().any(|(_, tname)| {
             ir.structures.iter().any(|s| {

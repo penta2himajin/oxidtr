@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::type_env::{TypeEnv, resolve_field};
 use std::collections::{HashSet, BTreeSet};
 
 /// TC field info.
@@ -173,7 +174,7 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir)
+    translate_inner(expr, false, &sig_names, ir, &TypeEnv::new())
 }
 
 /// If `name` is a `one sig` variant of an abstract sig that was lowered to an enum,
@@ -204,52 +205,6 @@ fn case_test_operand(left: &Expr, right: &Expr, ir: &OxidtrIR) -> Option<String>
 /// A case that carries a payload is not a value: `Expr.lit` is a constructor
 /// function, so it can be neither compared nor searched. Membership in such a
 /// subsig becomes the generated `is<Case>` test instead.
-/// `field_mult` resolves a field by *name* across every sig, so when two sigs
-/// declare the same name with different multiplicities the `lone`-membership
-/// branch can pick the wrong one and emit `Optional.contains` or `Set == x`.
-/// Without a type environment there is no way to tell which was meant, so the
-/// test is skipped instead of mistranslated.
-pub(crate) fn ambiguous_membership_field(expr: &Expr, ir: &OxidtrIR) -> Option<String> {
-    fn ambiguous(field: &str, ir: &OxidtrIR) -> bool {
-        let mut mults = ir.structures.iter()
-            .flat_map(|s| s.fields.iter())
-            .filter(|f| f.name == field)
-            .map(|f| f.mult.clone());
-        match mults.next() {
-            Some(first) => mults.any(|m| m != first),
-            None => false,
-        }
-    }
-    match expr {
-        Expr::Comparison { op: CompareOp::In, left, right } => {
-            if let Expr::FieldAccess { field, .. } = right.as_ref() {
-                if ambiguous(field, ir) { return Some(field.clone()); }
-            }
-            ambiguous_membership_field(left, ir)
-                .or_else(|| ambiguous_membership_field(right, ir))
-        }
-        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
-        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
-        | Expr::TemporalBinary { left, right, .. } => {
-            ambiguous_membership_field(left, ir)
-                .or_else(|| ambiguous_membership_field(right, ir))
-        }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner)
-        | Expr::MultFormula { expr: inner, .. } | Expr::Prime(inner)
-        | Expr::TemporalUnary { expr: inner, .. } | Expr::FieldAccess { base: inner, .. } => {
-            ambiguous_membership_field(inner, ir)
-        }
-        Expr::Quantifier { bindings, body, .. } => {
-            bindings.iter().find_map(|b| ambiguous_membership_field(&b.domain, ir))
-                .or_else(|| ambiguous_membership_field(body, ir))
-        }
-        Expr::FunApp { receiver, args, .. } => {
-            receiver.as_deref().and_then(|r| ambiguous_membership_field(r, ir))
-                .or_else(|| args.iter().find_map(|a| ambiguous_membership_field(a, ir)))
-        }
-        Expr::VarRef(_) | Expr::IntLiteral(_) => None,
-    }
-}
 
 /// `Enum.case` spellings that are constructors, not values. If one of these
 /// survives translation the expression used a payload case in a position the
@@ -276,25 +231,14 @@ pub(crate) fn variant_case_test(name: &str, ir: &OxidtrIR) -> Option<String> {
 
 use super::{to_swift_case_name as enum_case_name, to_swift_field_name};
 
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_self_ref = f.target == s.name;
-                return Some((f.mult.clone(), is_self_ref));
-            }
-        }
-    }
-    None
-}
-
 fn translate_inner(
     expr: &Expr,
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -359,7 +303,10 @@ fn translate_inner(
                     if let Some(t) = case_test { return t; }
                     let lone_eq = match right.as_ref() {
                         Expr::FieldAccess { base, field }
-                            if matches!(field_mult(field, ir), Some((Multiplicity::Lone, _))) =>
+                            if matches!(
+                                resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+                                Some(Multiplicity::Lone)
+                            ) =>
                         {
                             Some(format!("{}.{} == {l}", ti(base, false), to_swift_field_name(field)))
                         }
@@ -383,8 +330,9 @@ fn translate_inner(
         Expr::Not(inner) => format!("!{}", ti(inner, true)),
 
         Expr::Quantifier { kind, bindings, body } => {
-            let b = ti(body, false);
-            build_nested_quantifier(kind, bindings, &b, sig_names, ir)
+            let inner = env.extended(bindings, sig_names, ir);
+            let b = translate_inner(body, false, sig_names, ir, &inner);
+            build_nested_quantifier(kind, bindings, &b, sig_names, ir, env)
         }
 
         Expr::SetOp { op, left, right } => {
@@ -451,15 +399,20 @@ fn build_nested_quantifier(
     body_str: &str,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
+    let mut scope = env.clone();
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) { to_camel_plural(name) }
             else { name.clone() }
         } else {
-            translate_inner(&b.domain, false, sig_names, ir)
+            translate_inner(&b.domain, false, sig_names, ir, &scope)
         };
+        // Sequential bindings: `all b: Box, x: b.items | ..` needs `b` in scope
+        // before `x`'s domain is rendered.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((v.clone(), d.clone(), b.disj));
         }
