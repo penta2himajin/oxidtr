@@ -2002,3 +2002,53 @@ fn rust_exhaustive_gets_a_helper_and_not_a_vacuous_wrapper() {
     assert!(!nt.contains("struct ValidatedItem"), "vacuous wrapper certifying nothing:\n{nt}");
     assert!(!nt.contains("if true"), "vacuous validator body:\n{nt}");
 }
+
+// ── Field resolution through the binding (#128) ────────────────────────────
+
+/// Both sigs name the field `next`, with different multiplicities, and one fact
+/// tests membership in each — so a single translated expression has to get both
+/// right, and only the binding can tell them apart.
+const RUST_SHARED_FIELD_MODEL: &str = "\
+sig Page {}
+sig Node { next: lone Page }
+sig Cursor { next: set Page }
+fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }
+";
+
+/// `field_mult` used to scan every sig by name and take the first hit, so both
+/// halves resolved to `Node`'s `lone` and the set half became
+/// `c.next.as_ref() == Some(&p)`. `BTreeSet` has no `as_ref`, so generated
+/// `tests.rs` did not compile — in the backend #87 calls the reference.
+#[test]
+fn rust_shared_field_name_resolves_each_half_through_its_binding() {
+    let files = generate_from(RUST_SHARED_FIELD_MODEL);
+    let src = find_file(&files, "tests.rs");
+
+    assert!(
+        src.contains("c.next.contains(&p)"),
+        "a `set` field lowers to BTreeSet, so membership is `contains`. got:\n{src}"
+    );
+    assert!(
+        src.contains("n.next.as_ref() == Some(&p)"),
+        "a `lone` field lowers to Option, so membership is an equality test. got:\n{src}"
+    );
+    assert!(
+        !src.contains("c.next.as_ref()"),
+        "BTreeSet has no `as_ref` — this is the E0599 that made tests.rs \
+         uncompilable. got:\n{src}"
+    );
+}
+
+/// The inverse pairing, to pin that the fix is binding-directed rather than a
+/// reordering that happens to suit one declaration order.
+#[test]
+fn rust_shared_field_name_is_order_independent() {
+    let files = generate_from(
+        "sig Page {}\nsig Cursor { next: set Page }\nsig Node { next: lone Page }\n\
+         fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }",
+    );
+    let src = find_file(&files, "tests.rs");
+
+    assert!(src.contains("c.next.contains(&p)"), "got:\n{src}");
+    assert!(src.contains("n.next.as_ref() == Some(&p)"), "got:\n{src}");
+}

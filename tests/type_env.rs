@@ -7,7 +7,9 @@
 //! how non-compiling closures and vet-clean-but-always-false membership tests
 //! reached `main`. These tests pin the binding-directed behaviour instead.
 
-use oxidtr::backend::type_env::{TypeEnv, collect_sig_names, expr_sig, resolve_field};
+use oxidtr::backend::type_env::{
+    TypeEnv, collect_sig_names, expr_sig, resolve_field, resolve_field_owner,
+};
 use oxidtr::ir;
 use oxidtr::parser;
 use oxidtr::parser::ast::*;
@@ -217,4 +219,34 @@ fn collect_sig_names_covers_every_structure() {
     assert!(sigs.contains("Shape"));
     assert!(sigs.contains("Circle"));
     assert_eq!(sigs.len(), 3);
+}
+
+/// Some callers need the sig that *declares* the field, not just the field —
+/// Rust looks up per-(sig, field) boxing information for cyclic types, which a
+/// bare `&IRField` cannot answer.
+#[test]
+fn resolve_field_owner_reports_the_declaring_sig() {
+    let ir = parse_and_lower("sig Page {}\nsig Node { next: one Page }");
+    let sigs = collect_sig_names(&ir);
+    let mut env = TypeEnv::new();
+    env.bind("n", "Node");
+
+    let (owner, f) = resolve_field_owner(&var("n"), "next", &sigs, &ir, &env).expect("resolves");
+    assert_eq!(owner, "Node");
+    assert_eq!(f.target, "Page");
+}
+
+/// For an inherited field the declaring sig is the *parent*, not the child the
+/// expression went through — boxing is recorded against the declaration site.
+#[test]
+fn resolve_field_owner_reports_the_parent_for_an_inherited_field() {
+    let ir = parse_and_lower(
+        "sig Owner {}\nabstract sig Shape { owner: one Owner }\nsig Circle extends Shape {}",
+    );
+    let sigs = collect_sig_names(&ir);
+    let mut env = TypeEnv::new();
+    env.bind("c", "Circle");
+
+    let (owner, _) = resolve_field_owner(&var("c"), "owner", &sigs, &ir, &env).expect("resolves");
+    assert_eq!(owner, "Shape");
 }

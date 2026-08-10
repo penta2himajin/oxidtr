@@ -143,6 +143,86 @@ fn rust_self_hosted_split_crate_compiles() {
     );
 }
 
+/// Models Rust had no compile gate for. Every other backend has an adversarial
+/// table; Rust was validated against `models/oxidtr.als` alone, which declares
+/// no field name twice — so #128 (a shared field name resolving by name and
+/// producing `BTreeSet::as_ref`) reached `main` in the reference backend.
+///
+/// `--all-targets` is essential and is the second half of that gap: plain
+/// `cargo check` does not compile `#[test]` bodies at all, so `tests.rs` — the
+/// file where these defects land — was never type-checked by
+/// `rust_self_hosted_crate_compiles`.
+#[test]
+#[ignore]
+fn rust_adversarial_models_compile() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        ("shared_field_name_differing_multiplicity",
+         "sig Page {}\nsig Node { next: lone Page }\nsig Cursor { next: set Page }\n\
+          fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }",
+         "c.next.contains(&p)"),
+        ("shared_field_name_reverse_declaration_order",
+         "sig Page {}\nsig Cursor { next: set Page }\nsig Node { next: lone Page }\n\
+          fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }",
+         "n.next.as_ref() == Some(&p)"),
+        ("shared_field_name_in_a_comparison",
+         "sig Page {}\nsig Node { next: lone Page }\nsig Cursor { next: set Page }\n\
+          fact SameCount { all n: Node | all c: Cursor | #c.next = #c.next }",
+         "c.next.len()"),
+        // NOT COVERED: a field whose target is a variant of an abstract sig
+        // (`sig Holder { child: one Child }` where `Child extends Parent`)
+        // generates `pub child: Child` — a type that does not exist, because
+        // the variant was folded into the parent enum. That is #93, not a
+        // resolution defect, and it blocks the inherited-field-through-chained-
+        // access case from being pinned here. Add it when #93 lands; the
+        // translation itself is already correct (`h.child.items.contains(&i)`).
+        ("dependent_bindings",
+         "sig Item {}\nsig Box { items: set Item }\n\
+          fact R { all b: Box, x: b.items | x = x }",
+         "b.items"),
+        ("operation_parameter_scope",
+         "sig Cap {}\nsig Account { cap: one Cap }\n\
+          pred withinCap[a: one Account, c: one Cap] { a.cap = c }",
+         "a.cap == (*c)"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join(format!("adversarial_{name}"));
+        let crate_dir = crate_dir.to_str().unwrap();
+        write_rust_crate(&lowered, crate_dir);
+
+        let all: String = rust::generate(&lowered)
+            .iter()
+            .map(|f| f.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // `--all-targets` so `#[test]` bodies are type-checked too. Without it
+        // `tests.rs` is not compiled at all and this table proves nothing.
+        let out = std::process::Command::new("cargo")
+            .args(["check", "--all-targets"])
+            .current_dir(crate_dir)
+            .output()
+            .expect("failed to run cargo check");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{name}: generated Rust does not compile\nstderr:\n{stderr}\n--- generated ---\n{all}"
+        );
+        // A clean build alone would also pass for a translation that is merely
+        // multiplicity-agnostic, so pin the fragment that proves the resolution.
+        assert!(
+            all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated Rust — \
+             a clean build with a wrong translation:\n{all}"
+        );
+    }
+}
+
 /// Generate a complete crate from oxidtr.als and verify it type-checks.
 #[test]
 #[ignore]

@@ -1074,8 +1074,9 @@ fn emit_operation_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR, inde
             .filter(|p| p.mult == Multiplicity::One)
             .map(|p| p.name.clone())
             .collect();
+        let op_env = expr_translator::operation_env(op);
         let conjuncts: Vec<String> = op.body.iter()
-            .map(|expr| expr_translator::translate_operation_clause(expr, ir, &one_mult_params))
+            .map(|expr| expr_translator::translate_operation_clause(expr, ir, &one_mult_params, &op_env))
             .collect();
         writeln!(out, "{indent}{}", conjuncts.join(" && ")).unwrap();
     }
@@ -1570,7 +1571,17 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let mut visiting = HashSet::new();
             let literals = diverse_fixture_literals(ir, &chain.group_sig, &cyclic, &mut visiting);
             let snake = to_snake_case(&chain.group_sig);
-            let inner_str = expr_translator::translate_with_ir(inner_body, ir);
+            // The quantifier chain has already been peeled off, so its binders
+            // are no longer in the expression — rebuild the scope from the chain
+            // or every field access in the body types as unknown (#128).
+            let mut chain_env = crate::backend::type_env::TypeEnv::new();
+            for (var, sig) in &chain.context_vars {
+                chain_env.bind(var, sig);
+            }
+            for var in &chain.group_vars {
+                chain_env.bind(var, &chain.group_sig);
+            }
+            let inner_str = expr_translator::translate_with_env(inner_body, ir, &chain_env);
             if literals.len() < 2 {
                 writeln!(out, "    // @coverage single-point check: no fixture diversity found for `{}`;", chain.group_sig).unwrap();
                 writeln!(out, "    // all {} quantified variables below share one value.", chain.group_vars.len()).unwrap();
@@ -2560,6 +2571,12 @@ pub fn find_cyclic_fields(ir: &OxidtrIR) -> HashSet<(String, String)> {
 /// Translate an Alloy expression to Rust for single-instance validator context.
 fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> String {
     use crate::parser::ast::{LogicOp, QuantKind};
+    // A validator body names its sig directly (`Sig.field`), which the sig-name
+    // set already resolves; there are no quantifier binders to carry here, and
+    // an unresolvable base correctly yields "not a lone field" rather than a
+    // guess from the first sig that happens to declare the name.
+    let sig_names = crate::backend::type_env::collect_sig_names(ir);
+    let env = crate::backend::type_env::TypeEnv::new();
     match expr {
         Expr::VarRef(name) => {
             if name == sig_name { return "value".to_string(); }
@@ -2588,16 +2605,16 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
             let o = match op {
                 CompareOp::Eq | CompareOp::NotEq => {
                     let op_str = if matches!(op, CompareOp::Eq) { "==" } else { "!=" };
-                    if let Expr::FieldAccess { field: l_field, .. } = left.as_ref() {
-                        if expr_translator::is_lone_field(l_field, ir) {
+                    if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
+                        if expr_translator::is_lone_field(l_base, l_field, &sig_names, ir, &env) {
                             if let Expr::IntLiteral(n) = right.as_ref() {
                                 return format!("{l} {op_str} Some({n}i64)");
                             }
                             return format!("{l}.as_ref() {op_str} Some(&{r})");
                         }
                     }
-                    if let Expr::FieldAccess { field: r_field, .. } = right.as_ref() {
-                        if expr_translator::is_lone_field(r_field, ir) {
+                    if let Expr::FieldAccess { base: r_base, field: r_field } = right.as_ref() {
+                        if expr_translator::is_lone_field(r_base, r_field, &sig_names, ir, &env) {
                             if let Expr::IntLiteral(n) = left.as_ref() {
                                 return format!("Some({n}i64) {op_str} {r}");
                             }
@@ -2610,7 +2627,7 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
                     // `set_a in set_b` is a subset test; `.contains()`
                     // takes an element reference and would type-mismatch
                     // on a set-valued LHS.
-                    if expr_translator::is_set_expr(left, ir) {
+                    if expr_translator::is_set_expr(left, &sig_names, ir, &env) {
                         return format!("{l}.is_subset(&{r})");
                     }
                     return format!("{r}.contains(&{l})");
@@ -2623,13 +2640,13 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
                         CompareOp::Gte => ">=",
                         _ => unreachable!(),
                     };
-                    if let Expr::FieldAccess { field: l_field, .. } = left.as_ref() {
-                        if expr_translator::is_lone_field(l_field, ir) {
+                    if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
+                        if expr_translator::is_lone_field(l_base, l_field, &sig_names, ir, &env) {
                             return format!("{l}.is_none_or(|v| v {op_str} {r})");
                         }
                     }
-                    if let Expr::FieldAccess { field: r_field, .. } = right.as_ref() {
-                        if expr_translator::is_lone_field(r_field, ir) {
+                    if let Expr::FieldAccess { base: r_base, field: r_field } = right.as_ref() {
+                        if expr_translator::is_lone_field(r_base, r_field, &sig_names, ir, &env) {
                             return format!("{r}.is_none_or(|v| {l} {op_str} v)");
                         }
                     }
@@ -2653,7 +2670,7 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
             let e = translate_validator_expr_rust(inner, sig_name, ir);
             // For set/seq-valued inner expressions use `.is_empty()`;
             // `.is_some()` / `.is_none()` belong to Option, not BTreeSet / Vec.
-            let collection = expr_translator::is_collection_expr(inner, ir);
+            let collection = expr_translator::is_collection_expr(inner, &sig_names, ir, &env);
             match kind {
                 QuantKind::Some if collection => format!("!{e}.is_empty()"),
                 QuantKind::No   if collection => format!("{e}.is_empty()"),
@@ -2682,10 +2699,13 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
     writeln!(out, "#[allow(unused_imports)]").unwrap();
     writeln!(out, "use super::models::*;").unwrap();
 
-    // Check if any fixture needs BTreeSet
+    // Any Set field anywhere reaches a fixture: a variant's fixture also
+    // initialises the fields it inherits from its abstract parent, so excluding
+    // enums and variants here left `items: BTreeSet::new()` with no import
+    // (E0433). The import carries `allow(unused_imports)`, so being generous is
+    // free; being narrow was not.
     let needs_btreeset = ir.structures.iter().any(|s| {
-        !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
-            && s.fields.iter().any(|f| f.mult == Multiplicity::Set)
+        s.fields.iter().any(|f| f.mult == Multiplicity::Set)
     });
     if needs_btreeset {
         writeln!(out, "#[allow(unused_imports)]").unwrap();

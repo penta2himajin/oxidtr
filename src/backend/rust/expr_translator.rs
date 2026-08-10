@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::type_env::{TypeEnv, resolve_field_owner};
 use crate::naming::fn_name_for_op;
 use std::collections::{HashSet, BTreeSet};
 
@@ -352,7 +353,9 @@ fn collect_quant_vars_ir(
     bindings: &[QuantBinding],
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> Vec<(String, String, bool, bool)> {
+    let mut scope = env.clone();
     let mut vars = Vec::new();
     for b in bindings {
         let is_singleton = match &b.domain {
@@ -364,8 +367,11 @@ fn collect_quant_vars_ir(
         let domain_str = match &b.domain {
             Expr::VarRef(name) if sig_names.contains(name) => to_snake_plural(name),
             Expr::VarRef(name) => name.clone(),
-            _ => translate_inner_ir(&b.domain, false, sig_names, ir),
+            _ => translate_inner_ir(&b.domain, false, sig_names, ir, &scope),
         };
+        // Sequential bindings: an earlier binder must be in scope before a
+        // later domain that refers to it is rendered.
+        scope = scope.extended(std::slice::from_ref(b), sig_names, ir);
         for v in &b.vars {
             vars.push((v.clone(), domain_str.clone(), b.disj, is_singleton));
         }
@@ -543,7 +549,18 @@ fn to_snake_plural(name: &str) -> String {
 /// Unlike `translate_ctx`, this can distinguish `Option<T>` vs `Vec<T>` fields
 /// in `In` comparisons, generating the correct Rust accessor.
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
-    translate_inner_ir(expr, false, &collect_sig_names_set(ir), ir)
+    translate_with_env(expr, ir, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope.
+///
+/// A field access is typed through the binding of its base, so a caller holding
+/// free variables — an operation's parameters, a trace checker's lambda
+/// arguments — has to say what they range over. Without that, `x.f` resolves to
+/// nothing and the translator falls back to its multiplicity-agnostic form
+/// rather than guessing from the first sig that declares `f` (#128).
+pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
+    translate_inner_ir(expr, false, &collect_sig_names_set(ir), ir, env)
 }
 
 /// Translate one top-level conjunct of an OPERATION's body. Delegates to
@@ -561,23 +578,43 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
 ///
 /// This is intentionally NOT folded into `translate_with_ir`/`lone_comparison`
 /// itself: `translate_with_ir` has ~10 other call sites (tests.rs,
+/// The scope an operation body is translated in: its parameters bound to their
+/// declared sigs, plus Alloy's implicit `this` for a receiver operation. Without
+/// it a field access through a parameter cannot be typed at all, and boxing and
+/// One-multiplicity deref decisions silently fall back to "unknown".
+pub fn operation_env(op: &crate::ir::nodes::OperationNode) -> TypeEnv {
+    let mut env = TypeEnv::new();
+    if let Some(sig) = &op.receiver_sig {
+        env.bind("this", sig);
+    }
+    for p in &op.params {
+        env.bind(&p.name, &p.type_name);
+    }
+    env
+}
+
 /// invariants.rs, newtypes.rs, …) where a bare `VarRef` may not be a
 /// reference at all (e.g. an owned loop variable) — deref'ing it there would
 /// be wrong. The extra parameter-name context that makes this safe only
 /// exists at the operation-body call site.
-pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &HashSet<String>) -> String {
+pub fn translate_operation_clause(
+    expr: &Expr,
+    ir: &OxidtrIR,
+    one_mult_params: &HashSet<String>,
+    env: &TypeEnv,
+) -> String {
     if let Expr::Comparison { op: cmp_op @ (CompareOp::Eq | CompareOp::NotEq), left, right } = expr {
         let op_str = if matches!(cmp_op, CompareOp::Eq) { "==" } else { "!=" };
         let sig_names = collect_sig_names_set(ir);
-        let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, &sig_names, ir);
-        if is_one_mult_field_access(left, ir) {
+        let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, &sig_names, ir, env);
+        if is_one_mult_field_access(left, &sig_names, ir, env) {
             if let Expr::VarRef(name) = right.as_ref() {
                 if one_mult_params.contains(name) {
                     return format!("{} {op_str} (*{name})", ti(left, false));
                 }
             }
         }
-        if is_one_mult_field_access(right, ir) {
+        if is_one_mult_field_access(right, &sig_names, ir, env) {
             if let Expr::VarRef(name) = left.as_ref() {
                 if one_mult_params.contains(name) {
                     return format!("(*{name}) {op_str} {}", ti(right, false));
@@ -604,7 +641,7 @@ pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &
             CompareOp::Gt => ">",
             CompareOp::Lte => "<=",
             CompareOp::Gte => ">=",
-            CompareOp::In => return translate_with_ir(expr, ir),
+            CompareOp::In => return translate_with_env(expr, ir, env),
         };
         let render = |e: &Expr| match e {
             Expr::VarRef(name) if one_mult_params.contains(name) => Some(format!("(*{name})")),
@@ -620,7 +657,7 @@ pub fn translate_operation_clause(expr: &Expr, ir: &OxidtrIR, one_mult_params: &
         }
     }
 
-    translate_with_ir(expr, ir)
+    translate_with_env(expr, ir, env)
 }
 
 /// Translate a derived-field (`fun`) body — the VALUE an operation returns,
@@ -654,10 +691,15 @@ fn collect_sig_names_set(ir: &OxidtrIR) -> HashSet<String> {
 /// `seq` — i.e. lowers to a Rust collection (`BTreeSet` / `Vec`) where
 /// "non-empty" and "empty" are spelled `.is_empty()`, not `.is_some()` /
 /// `.is_none()`.
-pub(super) fn is_collection_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
-    if let Expr::FieldAccess { field, .. } = expr {
+pub(super) fn is_collection_expr(
+    expr: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> bool {
+    if let Expr::FieldAccess { base, field } = expr {
         matches!(
-            field_mult(field, ir),
+            field_mult(base, field, sig_names, ir, env),
             Some((Multiplicity::Set, _)) | Some((Multiplicity::Seq, _))
         )
     } else {
@@ -667,9 +709,14 @@ pub(super) fn is_collection_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
 
 /// Stronger check: field access whose multiplicity is specifically `set`
 /// (not `seq`). Only `BTreeSet` has `.is_subset()`.
-pub(super) fn is_set_expr(expr: &Expr, ir: &OxidtrIR) -> bool {
-    if let Expr::FieldAccess { field, .. } = expr {
-        matches!(field_mult(field, ir), Some((Multiplicity::Set, _)))
+pub(super) fn is_set_expr(
+    expr: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> bool {
+    if let Expr::FieldAccess { base, field } = expr {
+        matches!(field_mult(base, field, sig_names, ir, env), Some((Multiplicity::Set, _)))
     } else {
         false
     }
@@ -696,19 +743,22 @@ pub(super) fn is_bare_sig_self_reference(expr: &Expr, ir: &OxidtrIR) -> bool {
     false
 }
 
-/// Look up the multiplicity and boxing info of a named field.
-/// Returns (multiplicity, needs_box) where needs_box is true for self-ref or cyclic-ref fields.
-fn field_mult(field_name: &str, ir: &OxidtrIR) -> Option<(Multiplicity, bool)> {
+/// Multiplicity and boxing of `base.field`, resolved through `base`'s binding.
+///
+/// Boxing is recorded per (declaring sig, field), so the *owner* is what the
+/// cyclic-field lookup must be keyed on — for an inherited field that is the
+/// abstract parent, not the child the expression went through.
+fn field_mult(
+    base: &Expr,
+    field: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> Option<(Multiplicity, bool)> {
+    let (owner, f) = resolve_field_owner(base, field, sig_names, ir, env)?;
     let cyclic = super::find_cyclic_fields(ir);
-    for s in &ir.structures {
-        for f in &s.fields {
-            if f.name == field_name {
-                let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                return Some((f.mult.clone(), is_boxed));
-            }
-        }
-    }
-    None
+    let is_boxed = cyclic.contains(&(owner, f.name.clone()));
+    Some((f.mult.clone(), is_boxed))
 }
 
 /// Check if a field name is a const method on a unit-variant enum.
@@ -738,9 +788,19 @@ pub fn is_const_method_field(field_name: &str, ir: &OxidtrIR) -> bool {
     false
 }
 
-/// Check if a field is a `lone` (Option<T>) field.
-pub fn is_lone_field(field_name: &str, ir: &OxidtrIR) -> bool {
-    matches!(field_mult(field_name, ir), Some((Multiplicity::Lone, _)))
+/// Check if `base.field` is a `lone` (`Option<T>`) field.
+///
+/// Takes the base expression, not just the name: two sigs may declare the same
+/// field with different multiplicities, and only the binding of `base` says
+/// which one is meant (#95/#128).
+pub fn is_lone_field(
+    base: &Expr,
+    field: &str,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> bool {
+    matches!(field_mult(base, field, sig_names, ir, env), Some((Multiplicity::Lone, _)))
 }
 
 /// True when `name` is a nullary fun — a fun with no params and no receiver,
@@ -759,8 +819,9 @@ fn translate_inner_ir(
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner_ir(e, p, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -792,7 +853,7 @@ fn translate_inner_ir(
         Expr::FieldAccess { base, field } => {
             let base_str = ti(base, false);
             // Box<T> one-fields need deref for comparisons to work
-            if let Some((Multiplicity::One, true)) = field_mult(field, ir) {
+            if let Some((Multiplicity::One, true)) = field_mult(base, field, sig_names, ir, env) {
                 format!("(*{base_str}.{field})")
             } else if is_const_method_field(field, ir) {
                 format!("{base_str}.{field}()")
@@ -822,10 +883,10 @@ fn translate_inner_ir(
         Expr::Comparison { op, left, right } => {
             match op {
                 CompareOp::Eq => {
-                    lone_comparison(left, right, "==", ir, &|e, p| ti(e, p))
+                    lone_comparison(left, right, "==", sig_names, ir, env, &|e, p| ti(e, p))
                 }
                 CompareOp::NotEq => {
-                    lone_comparison(left, right, "!=", ir, &|e, p| ti(e, p))
+                    lone_comparison(left, right, "!=", sig_names, ir, env, &|e, p| ti(e, p))
                 }
                 CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte => {
                     let op_str = match op {
@@ -836,14 +897,14 @@ fn translate_inner_ir(
                         _ => unreachable!(),
                     };
                     if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
-                        if let Some((Multiplicity::Lone, _)) = field_mult(l_field, ir) {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(l_base, l_field, sig_names, ir, env) {
                             let base_str = ti(l_base, false);
                             let r = ti(right, false);
                             return format!("{base_str}.{l_field}.is_none_or(|v| v {op_str} {r})");
                         }
                     }
                     if let Expr::FieldAccess { base: r_base, field: r_field } = right.as_ref() {
-                        if let Some((Multiplicity::Lone, _)) = field_mult(r_field, ir) {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(r_base, r_field, sig_names, ir, env) {
                             let l = ti(left, false);
                             let base_str = ti(r_base, false);
                             return format!("{base_str}.{r_field}.is_none_or(|v| {l} {op_str} v)");
@@ -857,7 +918,7 @@ fn translate_inner_ir(
                     // Generate: `base.field.as_ref().map_or(true, |s| set.contains(s))`
                     // (lone = 0 or 1; None satisfies "activeState in states" vacuously)
                     if let Expr::FieldAccess { base: l_base, field: l_field } = left.as_ref() {
-                        if let Some((Multiplicity::Lone, _)) = field_mult(l_field, ir) {
+                        if let Some((Multiplicity::Lone, _)) = field_mult(l_base, l_field, sig_names, ir, env) {
                             let base_str = ti(l_base, false);
                             let r = ti(right, false);
                             return format!(
@@ -869,7 +930,7 @@ fn translate_inner_ir(
                     // Check if RIGHT side is a field access to a lone field
                     if let Expr::FieldAccess { base, field } = right.as_ref() {
                         let r_base = ti(base, false);
-                        if let Some((Multiplicity::Lone, is_self_ref)) = field_mult(field, ir) {
+                        if let Some((Multiplicity::Lone, is_self_ref)) = field_mult(base, field, sig_names, ir, env) {
                             return if is_self_ref {
                                 format!("{r_base}.{field}.as_deref() == Some(&{l})")
                             } else {
@@ -880,7 +941,7 @@ fn translate_inner_ir(
                     // If LHS is itself a set-typed expression, `A in B`
                     // is a subset test, not an element-containment test —
                     // BTreeSet::contains expects `&T`, not `&BTreeSet<T>`.
-                    if is_set_expr(left, ir) {
+                    if is_set_expr(left, sig_names, ir, env) {
                         let r = ti(right, false);
                         return format!("{l}.is_subset(&{r})");
                     }
@@ -904,8 +965,9 @@ fn translate_inner_ir(
         }
 
         Expr::Quantifier { kind, bindings, body } => {
-            let vars = collect_quant_vars_ir(bindings, sig_names, ir);
-            let b = ti(body, false);
+            let vars = collect_quant_vars_ir(bindings, sig_names, ir, env);
+            let inner = env.extended(bindings, sig_names, ir);
+            let b = translate_inner_ir(body, false, sig_names, ir, &inner);
             build_nested_quantifier(kind, &vars, &b, true)
         }
 
@@ -930,7 +992,7 @@ fn translate_inner_ir(
             // For set/seq-valued inner expressions, `some X` / `no X`
             // lower to `.is_empty()`-based checks — `.is_some()` /
             // `.is_none()` belong to Option, not BTreeSet / Vec.
-            let collection = is_collection_expr(expr, ir);
+            let collection = is_collection_expr(expr, sig_names, ir, env);
             match kind {
                 QuantKind::Some if collection => format!("!{inner}.is_empty()"),
                 QuantKind::No   if collection => format!("{inner}.is_empty()"),
@@ -997,14 +1059,16 @@ fn lone_comparison<F>(
     left: &Expr,
     right: &Expr,
     op: &str,
+    sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
     ti: &F,
 ) -> String
 where
     F: Fn(&Expr, bool) -> String,
 {
-    let left_lone  = lone_field_info(left, ir);
-    let right_lone = lone_field_info(right, ir);
+    let left_lone  = lone_field_info(left, sig_names, ir, env);
+    let right_lone = lone_field_info(right, sig_names, ir, env);
 
     match (left_lone, right_lone) {
         // Both sides are lone → compare Option<T> directly
@@ -1042,9 +1106,17 @@ where
 /// field — always translates to an owned-`T` place (a Box-deref `(*base.field)`
 /// when the field is self-referential/cyclic, a plain `base.field` otherwise),
 /// never a borrowed `&T`. See `translate_operation_clause`.
-fn is_one_mult_field_access(expr: &Expr, ir: &OxidtrIR) -> bool {
+fn is_one_mult_field_access(
+    expr: &Expr,
+    sig_names: &HashSet<String>,
+    ir: &OxidtrIR,
+    env: &TypeEnv,
+) -> bool {
     match expr {
-        Expr::FieldAccess { field, .. } => matches!(field_mult(field, ir), Some((Multiplicity::One, _))),
+        Expr::FieldAccess { base, field } => matches!(
+            field_mult(base, field, sig_names, ir, env),
+            Some((Multiplicity::One, _))
+        ),
         _ => false,
     }
 }
@@ -1052,10 +1124,14 @@ fn is_one_mult_field_access(expr: &Expr, ir: &OxidtrIR) -> bool {
 /// If expr is a FieldAccess to a lone field, return (field_name, base_expr, is_self_ref).
 fn lone_field_info<'a>(
     expr: &'a Expr,
+    sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> Option<(&'a str, &'a Expr, bool)> {
     if let Expr::FieldAccess { base, field } = expr {
-        if let Some((Multiplicity::Lone, is_self_ref)) = field_mult(field, ir) {
+        if let Some((Multiplicity::Lone, is_self_ref)) =
+            field_mult(base, field, sig_names, ir, env)
+        {
             return Some((field.as_str(), base.as_ref(), is_self_ref));
         }
     }
