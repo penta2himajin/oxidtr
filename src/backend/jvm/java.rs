@@ -656,7 +656,10 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             // passes whatever the implementation does (#81). Seed it from the
             // fixture wherever one exists, and disclose it where one does not.
             if fixture_types.contains(tname) {
-                writeln!(out, "        List<{tname}> {pname} = List.of(default{tname}());").unwrap();
+                // Java fixtures are static methods on `Fixtures`, unlike
+                // Kotlin's and Swift's top-level functions — an unqualified
+                // call does not resolve from inside `PropertyTests`.
+                writeln!(out, "        List<{tname}> {pname} = List.of(Fixtures.default{tname}());").unwrap();
             } else {
                 writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
                 writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();

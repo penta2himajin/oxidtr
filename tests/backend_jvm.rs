@@ -665,8 +665,9 @@ fn java_assert_domain_is_seeded_from_the_fixture() {
     let src = find_file(&files, "Tests.java");
 
     assert!(
-        src.contains("List.of(defaultPerson())"),
-        "the assert domain must contain an instance. got:\n{src}"
+        src.contains("List.of(Fixtures.defaultPerson())"),
+        "the assert domain must contain an instance, qualified so it resolves \
+         from inside PropertyTests. got:\n{src}"
     );
     assert!(
         !src.contains("List<Person> persons = List.of();"),
