@@ -714,6 +714,7 @@ fn unrenderable_case_ref(body: &str, refs: &[String]) -> Option<String> {
 
 fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
     let mut out = String::new();
+    let fixture_types = crate::backend::collect_fixture_types(ir);
     let sig_names = expr_translator::collect_sig_names(ir);
     let case_refs = expr_translator::payload_case_refs(ir);
 
@@ -735,7 +736,16 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
 
         writeln!(out, "    func test_{}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
+            // An empty domain makes `allSatisfy` vacuously true, so the test
+            // passes whatever the implementation does (#81). Seed it from the
+            // fixture wherever one exists, and disclose it where one does not.
+            if fixture_types.contains(tname) {
+                writeln!(out, "        let {pname}: [{tname}] = [default{tname}()]").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
+            }
         }
         writeln!(out, "        XCTAssertTrue({body})").unwrap();
         writeln!(out, "    }}").unwrap();

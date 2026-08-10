@@ -633,6 +633,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
+    let fixture_types = crate::backend::collect_fixture_types(ir);
     let sig_names = expr_translator::collect_sig_names(ir);
     let lang = JavaLang;
 
@@ -651,7 +652,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+            // An empty domain makes `allMatch` vacuously true, so the test
+            // passes whatever the implementation does (#81). Seed it from the
+            // fixture wherever one exists, and disclose it where one does not.
+            if fixture_types.contains(tname) {
+                writeln!(out, "        List<{tname}> {pname} = List.of(default{tname}());").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+            }
         }
         writeln!(out, "        assertTrue({body});").unwrap();
         writeln!(out, "    }}").unwrap();

@@ -672,3 +672,39 @@ fn go_set_in_set_is_subset_not_element_membership() {
         "must not treat a whole set as a single element:\n{tests}"
     );
 }
+
+// ── Assert domains must not be empty (#81) ─────────────────────────────────
+
+/// An `assert` test whose quantified domain is initialised empty passes
+/// regardless of the model or the implementation — the failure #74/#75 fixed on
+/// the Rust `fact` path, still live on the `assert` path here.
+#[test]
+fn go_assert_domain_is_seeded_from_the_fixture() {
+    let files = generate_go(
+        "sig Person { age: one Int }\nassert AllAdults { all p: Person | p.age >= 0 }",
+    );
+    let src = find_file(&files, "models_test.go");
+
+    assert!(
+        src.contains("[]Person{DefaultPerson()}"),
+        "the assert domain must contain an instance. got:\n{src}"
+    );
+    assert!(
+        !src.contains("persons := []Person{}"),
+        "an empty domain makes the quantifier vacuously true. got:\n{src}"
+    );
+}
+
+/// A domain with no fixture stays empty but says so — the "single-point check"
+/// disclosure precedent from #74.
+#[test]
+fn go_discloses_an_empty_assert_domain() {
+    let files = generate_go(
+        "abstract sig Shape {}\nsig Circle extends Shape {}\nsig Person { age: one Int }\n\
+         assert Mixed { all s: Shape | all p: Person | p.age >= 0 }",
+    );
+    let src = find_file(&files, "models_test.go");
+
+    assert!(src.contains("[]Person{DefaultPerson()}"), "got:\n{src}");
+    assert!(src.contains("@coverage"), "an empty domain must be disclosed. got:\n{src}");
+}

@@ -756,3 +756,39 @@ fn shared_field_name_no_longer_drops_the_constraint() {
         "the ambiguity workaround should be gone:\n{src}"
     );
 }
+
+// ── Assert domains must not be empty (#81) ─────────────────────────────────
+
+/// An `assert` test whose quantified domain is initialised empty passes
+/// regardless of the model or the implementation — the failure #74/#75 fixed on
+/// the Rust `fact` path, still live on the `assert` path here.
+#[test]
+fn swift_assert_domain_is_seeded_from_the_fixture() {
+    let files = generate_swift(
+        "sig Person { age: one Int }\nassert AllAdults { all p: Person | p.age >= 0 }",
+    );
+    let src = find_file(&files, "Tests.swift");
+
+    assert!(
+        src.contains("[defaultPerson()]"),
+        "the assert domain must contain an instance. got:\n{src}"
+    );
+    assert!(
+        !src.contains("let persons: [Person] = []"),
+        "an empty domain makes `allSatisfy` vacuously true. got:\n{src}"
+    );
+}
+
+/// A domain with no fixture stays empty but says so, rather than looking like a
+/// real check — the "single-point check" disclosure precedent from #74.
+#[test]
+fn swift_discloses_an_empty_assert_domain() {
+    let files = generate_swift(
+        "abstract sig Shape {}\nsig Circle extends Shape {}\nsig Person { age: one Int }\n\
+         assert Mixed { all s: Shape | all p: Person | p.age >= 0 }",
+    );
+    let src = find_file(&files, "Tests.swift");
+
+    assert!(src.contains("[defaultPerson()]"), "got:\n{src}");
+    assert!(src.contains("@coverage"), "an empty domain must be disclosed. got:\n{src}");
+}
