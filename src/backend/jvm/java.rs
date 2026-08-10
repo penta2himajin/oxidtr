@@ -48,8 +48,14 @@ impl JvmLang for JavaLang {
     // Java has no extension methods: the value arrives as a leading parameter.
     fn receiver_expr(&self) -> &str { "self" }
     fn neq_op(&self) -> &str { "!=" }
-    fn field_access(&self, base: &str, field: &str) -> String {
-        format!("{base}.{field}()")
+    fn field_access(&self, base: &str, field: &str, mutable_owner: bool) -> String {
+        if mutable_owner {
+            // A sig with a `var` field is emitted as a mutable class, whose
+            // fields are plain — `.field()` names no method there.
+            format!("{base}.{field}")
+        } else {
+            format!("{base}.{field}()")
+        }
     }
 }
 
@@ -686,6 +692,39 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them (#78).
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            let label = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => "binary temporal",
+                _ => "liveness",
+            };
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    void {}() {{", prop.name).unwrap();
+            writeln!(out, "        // {label}: full verification needs a trace; an empty trace").unwrap();
+            writeln!(out, "        // can never satisfy it, which at least exercises the checker.").unwrap();
+            match temporal_checker_name(&prop.name, &prop.expr, temporal_kind) {
+                Some(checker) => {
+                    let tname = params.first().map(|(_, t)| t.as_str()).unwrap_or("Object");
+                    writeln!(out, "        List<List<{tname}>> trace = List.of();").unwrap();
+                    writeln!(out, "        assertFalse({checker}(trace));").unwrap();
+                }
+                None => {
+                    writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -923,7 +962,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "    @Test").unwrap();
                         writeln!(out, "    void anomaly_{sig_name}_{field_name}_unconstrained() {{").unwrap();
                         writeln!(out, "        var instance = Fixtures.default{sig_name}();").unwrap();
-                        writeln!(out, "        instance.{camel}(); // unconstrained field access").unwrap();
+                        writeln!(out, "        {} // unconstrained field access",
+                            java_field_touch(ir, sig_name, &camel)).unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -932,7 +972,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "    @Test").unwrap();
                         writeln!(out, "    void anomaly_{sig_name}_{field_name}_empty() {{").unwrap();
                         writeln!(out, "        var instance = Fixtures.anomalyEmpty{sig_name}();").unwrap();
-                        writeln!(out, "        instance.{camel}(); // empty edge case").unwrap();
+                        writeln!(out, "        {} // empty edge case",
+                            java_field_touch(ir, sig_name, &camel)).unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
                     }
@@ -1317,7 +1358,39 @@ fn java_default_value(target: &str, mult: &Multiplicity) -> String {
     java_default_value_inner(target, mult, &HashSet::new())
 }
 
+/// The zero value for an Alloy marker sig, which has no generated factory:
+/// `defaultInt()` names no method, so every fixture holding such a field failed
+/// to compile.
+/// A statement that reads a field of `sig`, for an anomaly test whose point is
+/// simply to touch it.
+///
+/// A sig with a `var` field is emitted as a mutable class with plain fields, so
+/// the record accessor does not exist — and a bare field read is not a
+/// statement in Java the way a method call is, so it has to be assigned.
+fn java_field_touch(ir: &OxidtrIR, sig: &str, field: &str) -> String {
+    let mutable = ir.structures.iter()
+        .any(|s| s.name == sig && s.fields.iter().any(|f| f.is_var));
+    if mutable {
+        format!("var touched_{field} = instance.{field};")
+    } else {
+        format!("instance.{field}();")
+    }
+}
+
+fn java_native_zero(target: &str) -> Option<&'static str> {
+    match target {
+        "Int" => Some("0L"),
+        "Str" => Some("\"\""),
+        "Bool" => Some("false"),
+        "Float" => Some("0.0"),
+        _ => None,
+    }
+}
+
 fn java_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    if let (Multiplicity::One, Some(zero)) = (mult, java_native_zero(target)) {
+        return zero.to_string();
+    }
     match mult {
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set => {
@@ -1549,4 +1622,28 @@ fn emit_temporal_trace_checkers(
 /// Adapter so the extracted block keeps reading `constraint.expr`.
 struct TemporalSource<'a> {
     expr: &'a crate::parser::ast::Expr,
+}
+
+/// The name `emit_temporal_trace_checkers` will give this constraint's checker,
+/// so the generated test can call it rather than leaving it unreferenced.
+fn temporal_checker_name(
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    kind: Option<analyze::TemporalKind>,
+) -> Option<String> {
+    match kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let (op, _, _, _) = analyze::find_temporal_binary_with_bindings(expr)?;
+            let op_name = match op {
+                TemporalBinaryOp::Until => "Until",
+                TemporalBinaryOp::Since => "Since",
+                TemporalBinaryOp::Release => "Release",
+                TemporalBinaryOp::Triggered => "Triggered",
+            };
+            Some(format!("check{op_name}{name}"))
+        }
+        Some(analyze::TemporalKind::PastLiveness) => Some(format!("checkPastLiveness{name}")),
+        Some(analyze::TemporalKind::Liveness) => Some(format!("checkLiveness{name}")),
+        _ => None,
+    }
 }
