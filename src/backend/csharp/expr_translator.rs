@@ -165,6 +165,17 @@ pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
     translate_inner(expr, false, &sig_names, ir, env)
 }
 
+/// Translate a temporal constraint for a trace-checker body: strip the temporal
+/// wrapper and translate what it quantifies over, since each trace element is
+/// already the collection the quantifier ranges across.
+pub fn translate_trace_body(expr: &Expr, ir: &OxidtrIR) -> String {
+    let inner = match expr {
+        Expr::TemporalUnary { expr, .. } => expr.as_ref(),
+        _ => expr,
+    };
+    translate_with_ir(inner, ir)
+}
+
 /// Finalise the synthesized `next_x` post-state names that
 /// `analyze::rewrite_prime_as_post_state` bakes into an AST into this
 /// backend's own composed identifier (`nextX`).

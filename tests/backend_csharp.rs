@@ -245,3 +245,35 @@ fn cs_no_formula_stays_a_null_check_for_a_lone_field() {
         "`no` over a lone field is a null test. got:\n{src}"
     );
 }
+
+// ── Temporal operators must not be erased (#78) ────────────────────────────
+
+const CS_TEMPORAL_MODEL: &str = "\
+sig Counter { var n: one Int }
+fact Live { eventually (all c: Counter | c.n > 0) }
+assert Ordered { (all c: Counter | c.n > 0) until (all c: Counter | c.n > 5) }
+";
+
+/// C# used the temporal classification for the test *name* only and translated
+/// the erased operand, on both the fact and assert paths — it is the one
+/// backend with no trace-checker machinery at all.
+#[test]
+fn cs_temporal_fact_gets_a_trace_checker() {
+    let files = generate_cs(CS_TEMPORAL_MODEL);
+    let src = find_file(&files, "Tests.cs");
+
+    assert!(src.contains("CheckLivenessLive"), "eventually needs a trace checker:\n{src}");
+    assert!(src.contains(".Any("), "liveness holds in at least one state:\n{src}");
+}
+
+#[test]
+fn cs_temporal_assert_gets_a_trace_checker() {
+    let files = generate_cs(CS_TEMPORAL_MODEL);
+    let src = find_file(&files, "Tests.cs");
+
+    assert!(src.contains("CheckUntilOrdered"), "until needs a trace checker:\n{src}");
+    assert!(
+        src.contains("FindIndex("),
+        "until is a position search, not a conjunction:\n{src}"
+    );
+}
