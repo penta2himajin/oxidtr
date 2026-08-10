@@ -856,6 +856,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them (#78).
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            emit_temporal_test_and_checker(&mut out, &test_name, &prop.name, &prop.expr, &params, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "    [Fact]").unwrap();
         writeln!(out, "    public void {test_name}()").unwrap();
         writeln!(out, "    {{").unwrap();
