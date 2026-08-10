@@ -36,6 +36,9 @@ impl JvmLang for KotlinLang {
     }
     fn eq_op(&self) -> &str { "==" }
     fn neq_op(&self) -> &str { "!=" }
+    // Kotlin's `==` is `equals()`, so value equality needs nothing special.
+    fn value_eq(&self, l: &str, r: &str) -> String { format!("{l} == {r}") }
+    fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
 }
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
@@ -567,6 +570,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
+    let fixture_types = crate::backend::collect_fixture_types(ir);
     let sig_names = expr_translator::collect_sig_names(ir);
     let lang = KotlinLang;
 
@@ -593,7 +597,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+            // An empty domain makes `all` vacuously true, so the test passes
+            // whatever the implementation does (#81). Seed it from the fixture
+            // wherever one exists, and disclose it where one does not.
+            if fixture_types.contains(tname) {
+                writeln!(out, "        val {pname}: List<{tname}> = listOf(default{tname}())").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+            }
         }
         writeln!(out, "        assertTrue({body})").unwrap();
         writeln!(out, "    }}").unwrap();

@@ -740,6 +740,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 fn generate_tests(ir: &OxidtrIR) -> String {
     let mut out = String::new();
+    let fixture_types = crate::backend::collect_fixture_types(ir);
     let sig_names = expr_translator::collect_sig_names(ir);
 
     writeln!(out, "package models").unwrap();
@@ -753,7 +754,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         writeln!(out, "func Test_{}(t *testing.T) {{", to_snake_case(&prop.name)).unwrap();
         for (pname, tname) in &params {
-            writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+            // An empty domain makes the quantifier vacuously true, so the test
+            // passes whatever the implementation does (#81). Seed it from the
+            // fixture wherever one exists, and disclose it where one does not.
+            if fixture_types.contains(tname) {
+                writeln!(out, "\t{pname} := []{tname}{{Default{tname}()}}").unwrap();
+            } else {
+                writeln!(out, "\t// @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "\t// this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+            }
         }
         writeln!(out, "\tif !({body}) {{").unwrap();
         writeln!(out, "\t\tt.Error(\"property {} violated\")", prop.name).unwrap();

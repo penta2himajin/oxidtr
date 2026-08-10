@@ -15,6 +15,14 @@ pub trait JvmLang {
     fn rtc_call(&self, field: &str, base: &str) -> String;
     fn eq_op(&self) -> &str;
     fn neq_op(&self) -> &str;
+    /// Equality between two *values*, as distinct from `eq_op`.
+    ///
+    /// Kotlin's `==` already means `equals()`, but Java's compares references,
+    /// so a sig atom rebuilt from a fixture never equals a structurally
+    /// identical one. `eq_op` stays for boolean `iff`, where `==` is right in
+    /// both languages.
+    fn value_eq(&self, left: &str, right: &str) -> String;
+    fn value_neq(&self, left: &str, right: &str) -> String;
     /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`
     fn field_access(&self, base: &str, field: &str) -> String {
         format!("{base}.{field}")
@@ -234,8 +242,8 @@ fn translate_inner(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => format!("{} {} {}", ti(left, false), lang.eq_op(), ti(right, false)),
-                CompareOp::NotEq => format!("{} {} {}", ti(left, false), lang.neq_op(), ti(right, false)),
+                CompareOp::Eq => lang.value_eq(&ti(left, false), &ti(right, false)),
+                CompareOp::NotEq => lang.value_neq(&ti(left, false), &ti(right, false)),
                 CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
                 CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
                 CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
@@ -365,7 +373,7 @@ fn build_nested_quantifier_jvm(
             while i < vars.len() && vars[i].2 && vars[i].1 == *domain { i += 1; }
             for a in start..i {
                 for b_idx in (a+1)..i {
-                    disj_checks.push(format!("{} {} {}", vars[a].0, lang.neq_op(), vars[b_idx].0));
+                    disj_checks.push(lang.value_neq(&vars[a].0, &vars[b_idx].0));
                 }
             }
         } else { i += 1; }

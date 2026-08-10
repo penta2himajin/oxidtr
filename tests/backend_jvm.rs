@@ -631,3 +631,71 @@ fn java_shared_field_name_uses_contains_for_a_set_field() {
         "a collection is never equal to one of its elements. got:\n{src}"
     );
 }
+
+// ── Assert domains must not be empty (#81) ─────────────────────────────────
+
+/// An `assert` test that initialises its quantified domain to an empty list
+/// passes no matter what the model says or the implementation does — the exact
+/// failure #74/#75 fixed on the Rust `fact` path, still live on the `assert`
+/// path here. Rust, TypeScript and C# already seed the domain from the fixture.
+const VACUOUS_ASSERT_MODEL: &str = "\
+sig Person { age: one Int }
+assert AllAdults { all p: Person | p.age >= 0 }
+";
+
+#[test]
+fn kotlin_assert_domain_is_seeded_from_the_fixture() {
+    let files = generate_kt(VACUOUS_ASSERT_MODEL);
+    let src = find_file(&files, "Tests.kt");
+
+    assert!(
+        src.contains("listOf(defaultPerson())"),
+        "the assert domain must contain an instance, or the test asserts \
+         nothing. got:\n{src}"
+    );
+    assert!(
+        !src.contains("val persons: List<Person> = emptyList()"),
+        "an empty domain makes `persons.all {{ .. }}` vacuously true. got:\n{src}"
+    );
+}
+
+#[test]
+fn java_assert_domain_is_seeded_from_the_fixture() {
+    let files = generate_java(VACUOUS_ASSERT_MODEL);
+    let src = find_file(&files, "Tests.java");
+
+    assert!(
+        src.contains("List.of(Fixtures.defaultPerson())"),
+        "the assert domain must contain an instance, qualified so it resolves \
+         from inside PropertyTests. got:\n{src}"
+    );
+    assert!(
+        !src.contains("List<Person> persons = List.of();"),
+        "an empty domain makes `allMatch` vacuously true. got:\n{src}"
+    );
+}
+
+/// A sig with no fixture keeps its empty domain — but says so, rather than
+/// looking like a real check. This mirrors the "single-point check" disclosure
+/// added in #74.
+const NO_FIXTURE_MODEL: &str = "\
+abstract sig Shape {}
+sig Circle extends Shape {}
+sig Person { age: one Int }
+assert Mixed { all s: Shape | all p: Person | p.age >= 0 }
+";
+
+#[test]
+fn kotlin_discloses_an_empty_assert_domain() {
+    let files = generate_kt(NO_FIXTURE_MODEL);
+    let src = find_file(&files, "Tests.kt");
+
+    assert!(
+        src.contains("listOf(defaultPerson())"),
+        "the sig that has a fixture must still be seeded. got:\n{src}"
+    );
+    assert!(
+        src.contains("@coverage"),
+        "an empty domain must be disclosed in the generated test. got:\n{src}"
+    );
+}
