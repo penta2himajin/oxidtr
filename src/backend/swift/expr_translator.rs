@@ -150,6 +150,27 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     Some(to_camel_plural(name))
 }
 
+/// `Sig.field`, as the union of `field` over every atom of `Sig`.
+///
+/// Alloy's `Schedule.morning` is the *relational image*, not member access on
+/// a type — `Schedule` is a Swift type, so the receiver form does not resolve.
+/// #105 rendered a sig name as its materialised extent wherever the name
+/// stands alone; this is the position it left out (#142).
+fn relational_image(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    let Expr::FieldAccess { base, field } = expr else { return None };
+    let extent = whole_sig_extent_in(base, sig_names, ir, env)?;
+    let f = resolve_field(base, field, sig_names, ir, env)?;
+    let name = to_swift_field_name(field);
+    Some(match f.mult {
+        Multiplicity::Set | Multiplicity::Seq => format!("{extent}.flatMap {{ $0.{name} }}"),
+        // `compactMap` is exactly "map, then drop the nils".
+        Multiplicity::Lone => format!("{extent}.compactMap {{ $0.{name} }}"),
+        Multiplicity::One => format!("{extent}.map {{ $0.{name} }}"),
+    })
+}
+
 /// `whole_sig_extent`, but also refusing a name a binder has shadowed.
 fn whole_sig_extent_in(
     expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
@@ -212,7 +233,12 @@ fn collect_params(
         Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_params(inner, sig_names, ir, params);
         }
-        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, ir, params),
+        Expr::FieldAccess { base, .. } => {
+            // The image reads the field across the sig's extent, so the domain
+            // has to be declared here as well (#142).
+            extent(base, params);
+            collect_params(base, sig_names, ir, params);
+        }
         Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
@@ -330,6 +356,11 @@ fn translate_inner(
             Some(enum_name) => format!("{enum_name}.{}", enum_case_name(name)),
             None => name.clone(),
         },
+
+        // `Schedule.morning` reads a field across every atom of the sig (#142).
+        Expr::FieldAccess { .. } if relational_image(expr, sig_names, ir, env).is_some() => {
+            relational_image(expr, sig_names, ir, env).unwrap()
+        }
 
         Expr::FieldAccess { base, field } => {
             format!("{}.{}", ti(base, false), to_swift_field_name(field))
@@ -449,9 +480,19 @@ fn translate_inner(
         }
 
         Expr::MultFormula { kind, expr } => {
-            // `some Person` is about the sig's extent, which is an array — not
-            // an Optional (#105).
-            if let Some(e) = whole_sig_extent_in(expr, sig_names, ir, env) {
+            // Emptiness, not nil-ness, whenever the operand is a collection: a
+            // sig's extent (#105), a relational image (#142), or a `set`/`seq`
+            // field, which is never nil. Only a `lone` field is an Optional.
+            let collection = whole_sig_extent_in(expr, sig_names, ir, env)
+                .or_else(|| relational_image(expr, sig_names, ir, env))
+                .or_else(|| match expr.as_ref() {
+                    Expr::FieldAccess { base, field } => matches!(
+                        resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+                        Some(Multiplicity::Set) | Some(Multiplicity::Seq)
+                    ).then(|| ti(expr, false)),
+                    _ => None,
+                });
+            if let Some(e) = collection {
                 return match kind {
                     QuantKind::Some => format!("!{e}.isEmpty"),
                     QuantKind::No => format!("{e}.isEmpty"),

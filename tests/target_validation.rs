@@ -1185,6 +1185,16 @@ fn swift_adversarial_models_compile() {
          "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
           sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
          "!n.level.isLow"),
+        // `Schedule.morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.flatMap { $0.morning }.isEmpty"),
+        ("relational_image_of_a_lone_field_compacts",
+         "sig Task {}\nsig Schedule { chief: lone Task }\n\
+          assert R { no Schedule.chief }\ncheck R for 3",
+         "schedules.compactMap { $0.chief }.isEmpty"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
          "func boundaryBox() -> Box {\n    Box(\n        marks: Set([0, 1])"),
