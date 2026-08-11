@@ -606,6 +606,13 @@ sig Item { tag: one Int }
 sig Bag { items: set Item, tags: set Int }
 fact ExactlyTwo { all b: Bag | #b.items = 2 }
 fact AlsoTwo { all b: Bag | #b.tags = 2 }
+
+sig Task {}
+sig Schedule { morning: set Task, chief: one Task }
+assert NoMorning { no Schedule.morning }
+check NoMorning for 3
+assert NoChief { no Schedule.chief }
+check NoChief for 3
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -617,6 +624,9 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     // A boundary fixture used to repeat `default{T}()`, which for a native
     // element is `defaultInt()` — a factory that does not exist (#96).
     ("boundary_native_elements_are_distinct", "0L, 1L"),
+    // `Schedule.morning` is the union of `morning` over every `Schedule` atom,
+    // not member access on a type (#142).
+    ("relational_image_flat_maps_the_extent", "schedules"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig

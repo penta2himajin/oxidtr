@@ -23,6 +23,10 @@ pub trait JvmLang {
     /// both languages.
     fn value_eq(&self, left: &str, right: &str) -> String;
     fn value_neq(&self, left: &str, right: &str) -> String;
+    /// The union of a field over every atom of a sig — `s` names the atom in
+    /// the reader expression. Kotlin has `flatMap`/`map` on a `List`; Java
+    /// needs a `stream()` and a collector (#142).
+    fn relational_image(&self, extent: &str, read: &str, mult: &Multiplicity) -> String;
     /// An Alloy `Int` literal. Alloy's `Int` is `Long` on both languages, but
     /// Kotlin will not compare a `Long` with an `Int` — `#items = 2` emitted
     /// `size.toLong() == 2` and did not compile. Java widens silently.
@@ -83,6 +87,27 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     if crate::backend::is_native_type_alias(name) { return None; }
     if crate::backend::variant_parent(ir, name).is_some() { return None; }
     Some(to_camel_plural(name))
+}
+
+/// `Sig.field`, as the union of `field` over every atom of `Sig`.
+///
+/// Alloy's `Schedule.morning` is the *relational image*, not member access on
+/// a type — `Schedule` is a type in both languages, so the receiver form does
+/// not resolve. #105 rendered a sig name as its materialised extent wherever
+/// the name stands alone; this is the position it left out (#142).
+fn relational_image(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, lang: &dyn JvmLang, env: &TypeEnv,
+) -> Option<String> {
+    let Expr::FieldAccess { base, field } = expr else { return None };
+    let extent = whole_sig_extent_in(base, sig_names, ir, env)?;
+    let f = resolve_field(base, field, sig_names, ir, env)?;
+    let mutable_owner = resolve_field_owner(base, field, sig_names, ir, env)
+        .map(|(owner, _)| {
+            ir.structures.iter().any(|s| s.name == owner && s.fields.iter().any(|f| f.is_var))
+        })
+        .unwrap_or(false);
+    let read = lang.field_access("s", field, mutable_owner);
+    Some(lang.relational_image(&extent, &read, &f.mult))
 }
 
 /// `whole_sig_extent`, but also refusing a name a binder has shadowed.
@@ -306,7 +331,12 @@ fn collect_params(
         Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_params(inner, sig_names, ir, params);
         }
-        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, ir, params),
+        Expr::FieldAccess { base, .. } => {
+            // The image reads the field across the sig's extent, so the domain
+            // has to be declared here as well (#142).
+            extent(base, params);
+            collect_params(base, sig_names, ir, params);
+        }
         Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
@@ -337,6 +367,11 @@ fn translate_inner(
         Expr::VarRef(name) if name == "this" => lang.receiver_expr().to_string(),
 
         Expr::VarRef(name) => name.clone(),
+
+        // `Schedule.morning` reads a field across every atom of the sig (#142).
+        Expr::FieldAccess { .. } if relational_image(expr, sig_names, ir, lang, env).is_some() => {
+            relational_image(expr, sig_names, ir, lang, env).unwrap()
+        }
 
         Expr::FieldAccess { base, field } => {
             // A `var` field makes Java emit a class, not a record, so the
@@ -439,9 +474,20 @@ fn translate_inner(
         }
 
         Expr::MultFormula { kind, expr } => {
-            // `some Person` is about the sig's extent, which is a list — not a
-            // nullable reference (#105).
-            if let Some(e) = whole_sig_extent_in(expr, sig_names, ir, env) {
+            // Emptiness, not nullability, whenever the operand is a collection:
+            // a sig's extent (#105), a relational image (#142), and a `set`/
+            // `seq` field, which is never null in the first place. Only a
+            // `lone` field is a nullable reference.
+            let collection = whole_sig_extent_in(expr, sig_names, ir, env)
+                .or_else(|| relational_image(expr, sig_names, ir, lang, env))
+                .or_else(|| match expr.as_ref() {
+                    Expr::FieldAccess { base, field } => matches!(
+                        resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+                        Some(Multiplicity::Set) | Some(Multiplicity::Seq)
+                    ).then(|| ti(expr, false)),
+                    _ => None,
+                });
+            if let Some(e) = collection {
                 return match kind {
                     QuantKind::Some => format!("!{e}.isEmpty()"),
                     QuantKind::No => format!("{e}.isEmpty()"),

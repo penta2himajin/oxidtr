@@ -43,6 +43,14 @@ impl JvmLang for KotlinLang {
     fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
     // Alloy's `Int` is `Long` here, and Kotlin will not compare the two.
     fn int_literal(&self, n: i64) -> String { format!("{n}L") }
+    // `List` has `flatMap`/`map` directly.
+    fn relational_image(&self, extent: &str, read: &str, mult: &Multiplicity) -> String {
+        match mult {
+            Multiplicity::Set | Multiplicity::Seq => format!("{extent}.flatMap {{ s -> {read} }}"),
+            Multiplicity::Lone => format!("{extent}.mapNotNull {{ s -> {read} }}"),
+            Multiplicity::One => format!("{extent}.map {{ s -> {read} }}"),
+        }
+    }
     // A sealed class hierarchy: the case is a smart-castable type test.
     fn is_variant(&self, subject: &str, variant: &str) -> String {
         format!("{subject} is {variant}")

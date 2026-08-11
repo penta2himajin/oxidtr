@@ -804,3 +804,50 @@ fn jvm_field_less_sig_gets_a_factory() {
     assert!(java.contains("return new Person();"),
         "a field-less sig is an empty record:\n{java}");
 }
+
+/// Alloy's `Schedule.morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type — `Schedule` is a type in both
+/// languages, so the receiver form does not resolve (#142).
+#[test]
+fn jvm_relational_image_flat_maps_the_extent() {
+    const MODEL: &str = "sig Task {}\nsig Schedule { morning: set Task, chief: one Task }\n\
+                         assert R { no Schedule.morning }\ncheck R for 3";
+
+    let kt = find_file(&generate_kt(MODEL), "Tests.kt").to_string();
+    assert!(kt.contains("schedules.flatMap { s -> s.morning }.isEmpty()"),
+        "Kotlin flat-maps the extent, and a List is empty rather than null:\n{kt}");
+
+    let java = find_file(&generate_java(MODEL), "Tests.java").to_string();
+    assert!(
+        java.contains("schedules.stream().flatMap(s -> s.morning().stream()).toList().isEmpty()"),
+        "Java needs a stream and a collector:\n{java}"
+    );
+}
+
+/// A `one` field is one element *per atom*, so the image is still a collection.
+#[test]
+fn jvm_relational_image_of_a_one_field_is_lifted() {
+    const MODEL: &str = "sig Task {}\nsig Schedule { chief: one Task }\n\
+                         assert R { no Schedule.chief }\ncheck R for 3";
+
+    let kt = find_file(&generate_kt(MODEL), "Tests.kt").to_string();
+    assert!(kt.contains("schedules.map { s -> s.chief }.isEmpty()"), "one per atom:\n{kt}");
+
+    let java = find_file(&generate_java(MODEL), "Tests.java").to_string();
+    assert!(java.contains("schedules.stream().map(s -> s.chief()).toList().isEmpty()"),
+        "and the same in Java:\n{java}");
+}
+
+/// `some`/`no` over a plain `set` field is emptiness too — a `List` is never
+/// null, so `!= null` was both wrong and always true.
+#[test]
+fn jvm_presence_of_a_set_field_is_emptiness() {
+    const MODEL: &str = "sig Task {}\nsig Schedule { morning: set Task }\n\
+                         pred busy[s: Schedule] { some s.morning }";
+
+    let kt = find_file(&generate_kt(MODEL), "Operations.kt").to_string();
+    assert!(kt.contains("!s.morning.isEmpty()"), "a List is empty, not null:\n{kt}");
+
+    let java = find_file(&generate_java(MODEL), "Operations.java").to_string();
+    assert!(java.contains("!s.morning().isEmpty()"), "and in Java:\n{java}");
+}
