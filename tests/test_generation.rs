@@ -571,3 +571,67 @@ fn validator_implication_disjunctive_antecedent_is_parenthesized() {
         "validator must parenthesize disjunctive antecedent of implies:\n{newtypes}"
     );
 }
+
+// ── Multi-binding transitions decline rather than emit free variables (#110) ──
+
+/// A transition with two binders has no pre/post pairing to walk: two binders
+/// over one domain leave it ambiguous which side of the transition each names.
+/// Every backend but Rust emitted the body with *nothing bound*, so the
+/// generated test referenced free identifiers — `next_a` and `b` — and did not
+/// compile. Rust already declined this shape and said so; the rest now match.
+#[test]
+fn multi_binding_transition_is_skipped_in_every_backend() {
+    const MODEL: &str = "sig Foo { var tag: one Int }\n\
+                         fact R { always all a, b: Foo | a.tag' = b.tag }";
+    let model = oxidtr::parser::parse(MODEL).expect("parse");
+    let ir = oxidtr::ir::lower(&model).expect("lower");
+
+    let all: Vec<(&str, Vec<oxidtr::backend::GeneratedFile>)> = vec![
+        ("typescript", oxidtr::backend::typescript::generate(&ir)),
+        ("kotlin", oxidtr::backend::jvm::kotlin::generate(&ir)),
+        ("java", oxidtr::backend::jvm::java::generate(&ir)),
+        ("swift", oxidtr::backend::swift::generate(&ir)),
+        ("go", oxidtr::backend::go::generate(&ir)),
+        ("csharp", oxidtr::backend::csharp::generate(&ir)),
+    ];
+
+    for (lang, files) in &all {
+        let joined: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains("oxidtr: skipped — a transition over 2 binding(s)"),
+            "{lang}: the shape must be declined, with the reason stated:\n{joined}"
+        );
+        assert!(
+            !joined.contains("next_a") && !joined.contains("nextA"),
+            "{lang}: a free post-state identifier survived:\n{joined}"
+        );
+    }
+}
+
+/// The pre/post pair is walked over the binding's own domain. `params[0]` is
+/// whichever sig sorted first, so `all f: Foo` iterated `auxs` — inferring
+/// `f` as an `Aux` and failing on every field access.
+#[test]
+fn transition_walks_the_bindings_own_domain_in_every_backend() {
+    const MODEL: &str = "sig Aux {}\nsig Foo { var tag: one Int }\n\
+                         fact R { always all f: Foo | f.tag' = f.tag and (all a: Aux | a = a) }";
+    let model = oxidtr::parser::parse(MODEL).expect("parse");
+    let ir = oxidtr::ir::lower(&model).expect("lower");
+
+    let cases: Vec<(&str, Vec<oxidtr::backend::GeneratedFile>, &str)> = vec![
+        ("typescript", oxidtr::backend::typescript::generate(&ir), "foos.forEach"),
+        ("kotlin", oxidtr::backend::jvm::kotlin::generate(&ir), "foos.zip"),
+        ("java", oxidtr::backend::jvm::java::generate(&ir), "i < foos.size()"),
+        ("swift", oxidtr::backend::swift::generate(&ir), "foos.enumerated()"),
+        ("go", oxidtr::backend::go::generate(&ir), "for i, f := range foos"),
+        ("csharp", oxidtr::backend::csharp::generate(&ir), "foos.Zip(nextFoos)"),
+    ];
+
+    for (lang, files, expected) in &cases {
+        let joined: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains(expected),
+            "{lang}: expected {expected:?} — the binder's own domain, not the first sorted one:\n{joined}"
+        );
+    }
+}
