@@ -509,9 +509,184 @@ rootProject.name = "oxidtr-kt-test"
     );
 }
 
+/// The shapes `models/oxidtr.als` does not exercise, in one model so that a
+/// single compile covers them all. Every name is distinct, so the sigs never
+/// collide even though the facts are unrelated (#105).
+const JVM_ADVERSARIAL_MODEL: &str = "\
+one sig P { x: one Int }
+fact CardOne { all p: P | p.x = #P }
+
+one sig Config { limit: one Int }
+sig N { c: one Config }
+fact UsesConfig { all n: N | n.c = Config }
+
+abstract sig L { tag: one Int }
+one sig High extends L {}
+one sig Low extends L {}
+sig Level { level: one L }
+fact NotLow { all v: Level | v.level != Low }
+
+sig Person {}
+sig Team { lead: one Person }
+fact LeadIsAPerson { all t: Team | t.lead in Person }
+";
+
+/// The fragments that prove the resolution, not merely a clean build.
+const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
+    ("whole_sig_cardinality", "ps.size"),
+    ("equality_with_a_singleton_sig", "configs.contains("),
+    ("comparison_with_a_payload_carrying_variant", "Low)"),
+    ("membership_in_a_whole_sig", "persons.contains("),
+];
+
+/// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
+/// name in value position, so `#P`, `n.c = Config` and `v.level != Low` — each
+/// a *type* where a value belongs — were never compiled (#105).
+#[test]
+#[ignore]
+fn kotlin_adversarial_models_compile() {
+    let parsed = parser::parse(JVM_ADVERSARIAL_MODEL).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+    let files = kotlin::generate(&lowered);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let src_main = dir.join("src/main/kotlin");
+    let src_test = dir.join("src/test/kotlin");
+    std::fs::create_dir_all(&src_main).unwrap();
+    std::fs::create_dir_all(&src_test).unwrap();
+
+    std::fs::write(dir.join("build.gradle.kts"), r#"
+plugins { kotlin("jvm") version "2.1.20" }
+repositories { mavenCentral() }
+dependencies {
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+tasks.test { useJUnitPlatform() }
+kotlin { jvmToolchain(21) }
+"#).unwrap();
+    std::fs::write(dir.join("settings.gradle.kts"), r#"
+pluginManagement { repositories { mavenCentral(); gradlePluginPortal() } }
+rootProject.name = "oxidtr-kt-adversarial"
+"#).unwrap();
+
+    for file in &files {
+        let dest = if file.path == "Tests.kt" { &src_test } else { &src_main };
+        std::fs::write(dest.join(&file.path), &file.content).unwrap();
+    }
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    // Compiling the test source set is the point: `Tests.kt` is where these
+    // defects land, and `compileKotlin` alone never reaches it.
+    let out = std::process::Command::new("gradle")
+        .args(["compileTestKotlin", "--no-daemon", "-q"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run gradle (is gradle installed?)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "generated Kotlin does not compile\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+         --- generated ---\n{all}"
+    );
+    for (name, expected) in JVM_ADVERSARIAL_EXPECTED {
+        assert!(all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated Kotlin:\n{all}");
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Java — gradle test
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// The Java half of `kotlin_adversarial_models_compile`. `javac` needs only the
+/// JUnit annotations the generated tests name, so this compiles in a second
+/// rather than waiting on gradle to resolve a test runtime.
+#[test]
+#[ignore]
+fn java_adversarial_models_compile() {
+    let parsed = parser::parse(JVM_ADVERSARIAL_MODEL).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+    let files = java::generate(&lowered);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let junit = dir.join("org/junit/jupiter/api");
+    std::fs::create_dir_all(&junit).unwrap();
+    for (path, content) in JUNIT_STUBS {
+        std::fs::write(junit.join(path), content).unwrap();
+    }
+    for file in &files {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    let sources: Vec<String> = walk_java(dir);
+    let out = std::process::Command::new("javac")
+        .args(["-nowarn", "-d"]).arg(dir.join("classes"))
+        .args(&sources)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run javac (is a JDK installed?)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "generated Java does not compile\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+         --- generated ---\n{all}"
+    );
+    for (name, expected) in JVM_ADVERSARIAL_EXPECTED {
+        let expected = match *name {
+            "whole_sig_cardinality" => "ps.size()",
+            "comparison_with_a_payload_carrying_variant" => "instanceof Low",
+            _ => expected,
+        };
+        assert!(all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated Java:\n{all}");
+    }
+}
+
+/// Just enough of JUnit 5 for the generated tests to name: this gate is about
+/// whether the *translation* compiles, not about running anything.
+const JUNIT_STUBS: &[(&str, &str)] = &[
+    ("Test.java", "package org.junit.jupiter.api;\npublic @interface Test {}\n"),
+    ("Disabled.java",
+     "package org.junit.jupiter.api;\npublic @interface Disabled { String value() default \"\"; }\n"),
+    ("Assertions.java", "\
+package org.junit.jupiter.api;
+public class Assertions {
+    public static void assertTrue(boolean c) {}
+    public static void assertTrue(boolean c, String m) {}
+    public static void assertFalse(boolean c) {}
+    public static void assertFalse(boolean c, String m) {}
+    public static void assertEquals(Object a, Object b) {}
+    public static void assertEquals(Object a, Object b, String m) {}
+    public static void assertNotNull(Object a) {}
+    public static void assertNotNull(Object a, String m) {}
+    public static void assertNull(Object a) {}
+    public static void fail(String m) {}
+}
+"),
+];
+
+fn walk_java(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|e| e == "java") {
+                out.push(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out.sort();
+    out
+}
 
 /// Generate Java code from oxidtr.als and run gradle test.
 #[test]
