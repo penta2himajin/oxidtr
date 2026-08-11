@@ -310,6 +310,56 @@ fn rust_self_hosted_tests_pass() {
     );
 }
 
+/// A boundary fixture must actually reach the cardinality it is named for.
+///
+/// `boundary_box()` emitted `BTreeSet::from([default_item(), default_item()])`
+/// — two structurally identical `Item`s, which a set deduplicates to one. The
+/// generated `boundary_*` test then asserts the very bound the fixture was
+/// built to hit and fails, while `invalid_*` passes for the wrong reason
+/// (#96).
+///
+/// The generated tests *are* the gate here: nothing else notices, because the
+/// crate compiles perfectly.
+#[test]
+#[ignore]
+fn rust_boundary_fixtures_reach_their_cardinality() {
+    let model = "sig Item { tag: one Int }\nsig Box { items: set Item }\n                 fact ExactlyTwo { all b: Box | #b.items = 2 }";
+    let parsed = parser::parse(model).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("boundary_crate");
+    let crate_dir = crate_dir.to_str().unwrap();
+    write_rust_crate(&lowered, crate_dir);
+
+    let all: String = rust::generate(&lowered).iter()
+        .map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    // `invariant_*` is skipped: it runs against `default_box()`, which
+    // populates a set with one element whatever the bound says, so it fails
+    // for a reason of its own that this fixture change does not touch.
+    let out = std::process::Command::new("cargo")
+        .args(["test", "--", "--skip", "invariant_"])
+        .current_dir(crate_dir)
+        .output()
+        .expect("failed to run cargo test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "the generated boundary/invalid tests do not pass — the fixtures do not \
+         reach their cardinality\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+         --- generated ---\n{all}"
+    );
+    // A clean run alone would pass for a fixture that merely got luckier, so
+    // pin that the elements are told apart rather than repeated.
+    assert!(
+        all.contains("BTreeSet::from([Item { tag: 0i64, ..default_item() }, \
+                      Item { tag: 1i64, ..default_item() }])"),
+        "the boundary elements must be distinct:\n{all}"
+    );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TypeScript — bun test
 // ═══════════════════════════════════════════════════════════════════════════════

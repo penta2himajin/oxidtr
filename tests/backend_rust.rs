@@ -2260,3 +2260,63 @@ fn rust_one_sig_domain_is_not_empty() {
         "the singleton is the domain, via the factory that already exists for it:\n{tests}"
     );
 }
+
+// ── Boundary fixtures reach their cardinality (#96) ───────────────────────
+
+/// `boundary_box()` emitted the same `default_item()` twice, and a `BTreeSet`
+/// deduplicates structurally identical elements straight back down to one — so
+/// the fixture never reached the cardinality it was named for, and the
+/// generated `boundary_*` test failed against its own bound.
+#[test]
+fn rust_boundary_set_elements_are_distinct() {
+    let files = generate_from(
+        "sig Item { tag: one Int }\nsig Box { items: set Item }\n\
+         fact ExactlyTwo { all b: Box | #b.items = 2 }",
+    );
+    let fixtures = find_file(&files, "fixtures.rs");
+
+    assert!(
+        !fixtures.contains("BTreeSet::from([default_item(), default_item()])"),
+        "two identical elements collapse to one:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("BTreeSet::from([Item { tag: 0i64, ..default_item() }, \
+                           Item { tag: 1i64, ..default_item() }])"),
+        "the boundary fixture needs two elements a set can tell apart:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("Item { tag: 2i64, ..default_item() }"),
+        "and the invalid fixture a third:\n{fixtures}"
+    );
+}
+
+/// A native-element set varies the scalar directly.
+#[test]
+fn rust_boundary_native_elements_are_distinct() {
+    let files = generate_from(
+        "sig Box { tags: set Int }\nfact ExactlyTwo { all b: Box | #b.tags = 2 }",
+    );
+    let fixtures = find_file(&files, "fixtures.rs");
+
+    assert!(
+        fixtures.contains("BTreeSet::from([0i64, 1i64])"),
+        "an Int set varies the literal:\n{fixtures}"
+    );
+}
+
+/// A sig with no scalar anywhere beneath it has nothing to vary. Repeating the
+/// default is then the only option — the fixture cannot invent a field the sig
+/// does not have — and that must not be mistaken for a crash.
+#[test]
+fn rust_boundary_without_a_diversity_source_still_generates() {
+    let files = generate_from(
+        "sig Leaf {}\nsig Box { items: set Leaf }\n\
+         fact ExactlyTwo { all b: Box | #b.items = 2 }",
+    );
+    let fixtures = find_file(&files, "fixtures.rs");
+
+    assert!(
+        fixtures.contains("pub fn boundary_box()"),
+        "the factory is still emitted:\n{fixtures}"
+    );
+}
