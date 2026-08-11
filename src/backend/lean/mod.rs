@@ -150,6 +150,16 @@ struct DeclGroup {
     /// the property is *transitive*: a plain `structure` holding a recursive
     /// type cannot derive it either, because the field's own instance is missing.
     decidable_eq: bool,
+    /// Whether anything derives. A `one` field is stored *by value*, so
+    /// `structure Node where next : Node` is infinitely sized: nothing can
+    /// construct it and `Repr`/`BEq` cannot be derived. The gap is transitive
+    /// the same way `DecidableEq`'s is — a holder inherits it through a
+    /// container as readily as through a bare field (#122).
+    inhabited: bool,
+    /// Whether these types have a finite value of their own, as distinct from
+    /// merely holding something that has none. Only the wording of the emitted
+    /// note differs; both suppress `deriving`.
+    has_finite_value: bool,
 }
 
 /// Emitted declarations grouped into strongly-connected components and ordered
@@ -195,6 +205,13 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
     let on_cycle: HashSet<&str> = emitted.iter()
         .map(|n| n.as_str()).filter(|n| reaches(n, n)).collect();
 
+    // Types with no finite value: every one of their `one` fields leads back to
+    // them, and a `one` field is stored by value. `terminating_types` is the
+    // same least fixed point the fixture factories use (#109, #122).
+    let (terminating, _) = crate::backend::terminating_types(ir);
+    let uninhabited: HashSet<&str> = emitted.iter()
+        .map(|n| n.as_str()).filter(|n| !terminating.contains(*n)).collect();
+
     // Group by mutual reachability, keeping model order so output is deterministic.
     let mut groups: Vec<DeclGroup> = Vec::new();
     let mut placed: HashSet<&str> = HashSet::new();
@@ -211,7 +228,10 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
         }
         let decidable_eq = !on_cycle.contains(name.as_str())
             && !emitted.iter().any(|t| on_cycle.contains(t.as_str()) && reaches(name, t));
-        groups.push(DeclGroup { names, decidable_eq });
+        let has_finite_value = !uninhabited.contains(name.as_str());
+        let inhabited = has_finite_value
+            && !emitted.iter().any(|t| uninhabited.contains(t.as_str()) && reaches(name, t));
+        groups.push(DeclGroup { names, decidable_eq, inhabited, has_finite_value });
     }
 
     // Topological order over the groups: emit one whose remaining dependencies
@@ -262,9 +282,11 @@ fn generate_types(ir: &OxidtrIR, ctx: &LeanContext) -> String {
             }
 
             if s.is_enum {
-                generate_inductive(&mut out, s, ir, ctx, group.decidable_eq);
+                generate_inductive(&mut out, s, ir, ctx, group.decidable_eq,
+                    group.inhabited, group.has_finite_value);
             } else {
-                generate_structure(&mut out, s, ir, ctx, group.decidable_eq);
+                generate_structure(&mut out, s, ir, ctx, group.decidable_eq,
+                    group.inhabited, group.has_finite_value);
                 if s.sig_multiplicity == SigMultiplicity::One {
                     singletons.push(s);
                 }
@@ -290,14 +312,22 @@ fn generate_types(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
 /// `DecidableEq` derives only for a non-recursive type: Lean's handler has no
 /// case for a (nested-)recursive one, and `List T`/`Option T` count as nested.
-fn deriving_clause(decidable_eq: bool) -> &'static str {
-    if decidable_eq { "  deriving Repr, BEq, DecidableEq" } else { "  deriving Repr, BEq" }
+///
+/// Nothing derives for an uninhabited type, or for anything that holds one:
+/// the instance would have to inspect a value that cannot exist (#122).
+fn deriving_clause(decidable_eq: bool, inhabited: bool) -> Option<&'static str> {
+    if !inhabited { return None; }
+    Some(if decidable_eq { "  deriving Repr, BEq, DecidableEq" } else { "  deriving Repr, BEq" })
 }
 
-fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext, decidable_eq: bool) {
+fn generate_structure(
+    out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext,
+    decidable_eq: bool, inhabited: bool, has_finite_value: bool,
+) {
     if s.is_var {
         writeln!(out, "-- Alloy var sig: instances change across state transitions").unwrap();
     }
+    write_uninhabited_note(out, &s.name, inhabited, has_finite_value);
 
     writeln!(out, "structure {} where", lean_ident(&s.name)).unwrap();
     if s.fields.is_empty() {
@@ -311,7 +341,9 @@ fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             writeln!(out, "  {} : {}", lean_field(&f.name), type_str).unwrap();
         }
     }
-    writeln!(out, "{}", deriving_clause(decidable_eq)).unwrap();
+    if let Some(clause) = deriving_clause(decidable_eq, inhabited) {
+        writeln!(out, "{clause}").unwrap();
+    }
 }
 
 fn generate_singleton_instance(out: &mut String, s: &StructureNode) {
@@ -347,7 +379,25 @@ fn generate_singleton_instance(out: &mut String, s: &StructureNode) {
     writeln!(out).unwrap();
 }
 
-fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext, decidable_eq: bool) {
+/// Say why nothing derives, where nothing does. A `one` field is stored by
+/// value, so a type every path out of which leads back to it is infinitely
+/// sized — and no instance can be synthesised for it, nor for anything holding
+/// one. Emitting the `deriving` line anyway was a hard error (#122).
+fn write_uninhabited_note(out: &mut String, name: &str, inhabited: bool, has_finite_value: bool) {
+    if inhabited { return; }
+    if has_finite_value {
+        writeln!(out, "-- oxidtr: nothing derives for {name} — it holds a type with no finite value").unwrap();
+    } else {
+        writeln!(out, "-- oxidtr: no finite value of {name} exists — a `one` field is stored by \
+            value, and every path out of this type leads back to it").unwrap();
+    }
+}
+
+fn generate_inductive(
+    out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext,
+    decidable_eq: bool, inhabited: bool, has_finite_value: bool,
+) {
+    write_uninhabited_note(out, &s.name, inhabited, has_finite_value);
     let kids = ctx.children.get(&s.name);
     let kid_list = match kids {
         Some(v) => v.clone(),
@@ -388,7 +438,9 @@ fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             }
         }
     }
-    writeln!(out, "{}", deriving_clause(decidable_eq)).unwrap();
+    if let Some(clause) = deriving_clause(decidable_eq, inhabited) {
+        writeln!(out, "{clause}").unwrap();
+    }
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
@@ -421,19 +473,24 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 /// The body of a `def` lowered from a pred/fun, or `sorry` where the encoding
 /// has no term for what the Alloy expression names.
 fn write_op_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
-    let Some(body_expr) = op.body.last() else {
+    if op.body.is_empty() {
         writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
         return;
-    };
+    }
     // A sig name outside a quantifier domain is the set of its atoms, and this
     // encoding gives a sig a Lean *type* and no term for its extent. Emitting
     // the type name where a value belongs does not elaborate (#105).
-    if expr_translator::mentions_whole_sig_as_value(body_expr, ir) {
+    if op.body.iter().any(|b| expr_translator::mentions_whole_sig_as_value(b, ir)) {
         writeln!(out, "  sorry -- oxidtr: {} reads a sig's extent, which has no term in this encoding",
             op.name).unwrap();
         return;
     }
-    writeln!(out, "  {}", expr_translator::translate_with_ir(body_expr, ir)).unwrap();
+    // A pred's clauses are conjoined in Alloy. Taking the last one dropped the
+    // rest silently, since what remained still elaborated (#118).
+    let clauses: Vec<String> = op.body.iter()
+        .map(|b| expr_translator::translate_with_ir(b, ir))
+        .collect();
+    writeln!(out, "  {}", clauses.join(" ∧ ")).unwrap();
 }
 
 fn field_type_str(f: &IRField, ctx: &LeanContext) -> String {
@@ -503,6 +560,72 @@ fn write_fact_sorry(out: &mut String) {
 /// to a Lean type, so `x ∈ Circle` is a membership test against a `Type` and
 /// never elaborates; the variant test is a pattern match. Falls back to `∈` for
 /// a category that is not a variant (a genuine set-valued expression).
+/// The variable every constraint theorem binds. `analyze` has already stripped
+/// the `all a: Sig |` prefix, so the theorem re-introduces one of its own.
+const THEOREM_BINDER: &str = "x";
+
+/// Rewrite the receiver `analyze` left behind into the theorem's own binder.
+///
+/// `analyze_body_for_sig` substitutes the quantified variable with the *sig
+/// name*, so `all a: Account | a.active > 0 implies …` is stored as
+/// `Account.active > 0`. Every other backend maps that back to its own receiver
+/// — `value` in Rust, `this` in Kotlin, `self` in Swift. Lean had no such step,
+/// so the theorem bound `∀ (x : Account)` and then compared `Account.active`,
+/// the projection *function*, against a value (#117).
+fn rebind_receiver(expr: &crate::parser::ast::Expr, sig_name: &str) -> crate::parser::ast::Expr {
+    use crate::parser::ast::Expr as E;
+    let rec = |e: &E| Box::new(rebind_receiver(e, sig_name));
+    match expr {
+        E::VarRef(name) if name == sig_name => E::VarRef(THEOREM_BINDER.to_string()),
+        E::VarRef(_) | E::IntLiteral(_) => expr.clone(),
+        E::FieldAccess { base, field } => E::FieldAccess {
+            base: rec(base), field: field.clone(),
+        },
+        E::Comparison { op, left, right } => E::Comparison {
+            op: op.clone(), left: rec(left), right: rec(right),
+        },
+        E::BinaryLogic { op, left, right } => E::BinaryLogic {
+            op: op.clone(), left: rec(left), right: rec(right),
+        },
+        E::SetOp { op, left, right } => E::SetOp {
+            op: *op, left: rec(left), right: rec(right),
+        },
+        E::Product { left, right } => E::Product { left: rec(left), right: rec(right) },
+        E::TemporalBinary { op, left, right } => E::TemporalBinary {
+            op: *op, left: rec(left), right: rec(right),
+        },
+        E::Not(i) => E::Not(rec(i)),
+        E::Cardinality(i) => E::Cardinality(rec(i)),
+        E::TransitiveClosure(i) => E::TransitiveClosure(rec(i)),
+        E::ReflexiveClosure(i) => E::ReflexiveClosure(rec(i)),
+        E::Prime(i) => E::Prime(rec(i)),
+        E::MultFormula { kind, expr: i } => E::MultFormula {
+            kind: kind.clone(), expr: rec(i),
+        },
+        E::TemporalUnary { op, expr: i } => E::TemporalUnary { op: *op, expr: rec(i) },
+        // A binder of its own shadows the receiver, so the body below it is
+        // left alone; only the domains, which are outside that scope, recurse.
+        E::Quantifier { kind, bindings, body } => E::Quantifier {
+            kind: kind.clone(),
+            bindings: bindings.iter().map(|b| crate::parser::ast::QuantBinding {
+                vars: b.vars.clone(),
+                domain: rebind_receiver(&b.domain, sig_name),
+                disj: b.disj,
+            }).collect(),
+            body: if bindings.iter().any(|b| b.vars.iter().any(|v| v == THEOREM_BINDER)) {
+                body.clone()
+            } else {
+                rec(body)
+            },
+        },
+        E::FunApp { name, receiver, args } => E::FunApp {
+            name: name.clone(),
+            receiver: receiver.as_ref().map(|r| rec(r)),
+            args: args.iter().map(|a| rebind_receiver(a, sig_name)).collect(),
+        },
+    }
+}
+
 fn category_test(ctx: &LeanContext, category: &str) -> String {
     if ctx.is_variant(category) {
         format!("x matches .{} ..", lean_field(category))
@@ -571,8 +694,8 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Implication { sig_name, condition, consequent } => {
-                let cond_str = expr_translator::translate_with_ir(condition, ir);
-                let cons_str = expr_translator::translate_with_ir(consequent, ir);
+                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
+                let cons_str = expr_translator::translate_with_ir(&rebind_receiver(consequent, sig_name), ir);
                 writeln!(out, "theorem implication_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {cond_str} → {cons_str} := by").unwrap();
@@ -582,8 +705,8 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Iff { sig_name, left, right } => {
-                let left_str = expr_translator::translate_with_ir(left, ir);
-                let right_str = expr_translator::translate_with_ir(right, ir);
+                let left_str = expr_translator::translate_with_ir(&rebind_receiver(left, sig_name), ir);
+                let right_str = expr_translator::translate_with_ir(&rebind_receiver(right, sig_name), ir);
                 writeln!(out, "theorem iff_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {left_str} ↔ {right_str} := by").unwrap();
@@ -595,7 +718,7 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Prohibition { sig_name, condition } => {
-                let cond_str = expr_translator::translate_with_ir(condition, ir);
+                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
                 writeln!(out, "theorem prohibition_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), ¬({cond_str}) := by").unwrap();
@@ -605,6 +728,20 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Disjoint { sig_name, left, right } => {
+                // `no (A.xs & B.ys)` says no *element* is in both collections,
+                // read across every atom of A and of B. This encoding has no
+                // term for a sig's extent, and where the sig is a variant it
+                // has no type to bind either — the theorem named `Additive`,
+                // which is a constructor of `Cat` (#105, #117).
+                let statable = !sig_name.is_empty()
+                    && !ctx.is_variant(sig_name)
+                    && ![left, right].iter().any(|c| c.contains('.'));
+                if !statable {
+                    writeln!(out, "-- oxidtr: `no ({left} & {right})` reads a sig's extent, \
+                        which has no term in this encoding").unwrap();
+                    writeln!(out).unwrap();
+                    continue;
+                }
                 writeln!(out, "theorem disjoint_{sig_name}_{theorem_idx} :").unwrap();
                 let (l, r) = (category_test(ctx, left), category_test(ctx, right));
                 let sig = lean_ident(sig_name);
@@ -642,15 +779,75 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
-            // Presence: type-guaranteed in Lean (non-Option = required)
+            // A value bound is a claim about the field, exactly like a field
+            // ordering — it had no arm at all and fell into the catch-all,
+            // losing the fact with no diagnostic (#118).
+            analyze::ConstraintInfo::ValueBound { sig_name, field_name, bound } => {
+                let fname = lean_field(field_name);
+                let bound_str = match bound {
+                    analyze::BoundKind::Exact(n) => format!("x.{fname} = {n}"),
+                    analyze::BoundKind::AtMost(n) => format!("x.{fname} ≤ {n}"),
+                    analyze::BoundKind::AtLeast(n) => format!("x.{fname} ≥ {n}"),
+                };
+                writeln!(out, "theorem value_bound_{sig_name}_{field_name} :").unwrap();
+                let sig = lean_ident(sig_name);
+                writeln!(out, "    ∀ (x : {sig}), {bound_str} := by").unwrap();
+                writeln!(out, "  intro x").unwrap();
+                write_fact_sorry(&mut out);
+                writeln!(out).unwrap();
+                theorem_idx += 1;
+            }
+            // Presence is guaranteed by the type only where the field is not an
+            // `Option` — that is, a `one` field. The arm was copied from Rust,
+            // where `lone` is not an Option either, so it claimed a `lone`
+            // field was "non-Option" and dropped the constraint (#118).
             analyze::ConstraintInfo::Presence { sig_name, field_name, kind } => {
                 let fname = lean_field(field_name);
-                match kind {
-                    analyze::PresenceKind::Required => {
+                let mult = ir.structures.iter()
+                    .find(|s| s.name == *sig_name)
+                    .and_then(|s| s.fields.iter().find(|f| f.name == *field_name))
+                    .map(|f| f.mult.clone());
+                let sig = lean_ident(sig_name);
+                match (kind, &mult) {
+                    (_, Some(Multiplicity::One)) => {
                         writeln!(out, "-- {sig_name}.{fname}: required (guaranteed by type — field is non-Option)").unwrap();
                     }
-                    analyze::PresenceKind::Absent => {
-                        writeln!(out, "-- {sig_name}.{fname}: absent (guaranteed by type — field not present)").unwrap();
+                    (analyze::PresenceKind::Required, Some(Multiplicity::Lone)) => {
+                        writeln!(out, "theorem presence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} ≠ none := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    (analyze::PresenceKind::Absent, Some(Multiplicity::Lone)) => {
+                        writeln!(out, "theorem absence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} = none := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    // A `set`/`seq` is a `List`, never `none`, so presence is
+                    // non-emptiness.
+                    (analyze::PresenceKind::Required, Some(_)) => {
+                        writeln!(out, "theorem presence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} ≠ [] := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    (analyze::PresenceKind::Absent, Some(_)) => {
+                        writeln!(out, "theorem absence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} = [] := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    // The field is not declared on this sig — inherited, or the
+                    // analysis named something that is not there. Guessing a
+                    // shape would emit a theorem that does not elaborate.
+                    (_, None) => {
+                        writeln!(out, "-- oxidtr: {sig_name}.{fname} is not declared on {sig_name}, \
+                            so its presence has no statement here").unwrap();
                     }
                 }
                 writeln!(out).unwrap();

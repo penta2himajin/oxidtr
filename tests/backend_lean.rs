@@ -410,3 +410,149 @@ fn lean_quantifier_domain_is_still_the_type() {
 
     assert!(ops.contains("∀ x : Leaf, x.n > 0"), "the domain is the type:\n{ops}");
 }
+
+// ── Constraint theorems bind their own variable (#117) ────────────────────
+
+/// `analyze` strips the `all a: Sig |` prefix and rewrites the bound variable
+/// to the *sig name*, which every other backend maps back to its own receiver.
+/// Lean had no such step, so the theorem bound `∀ (x : Account)` and then read
+/// `Account.active` — the projection function, compared against a value.
+#[test]
+fn lean_constraint_theorems_bind_their_own_variable() {
+    let implication = find_file(
+        &generate_lean(
+            "sig Account { active: one Int, balance: one Int }\n\
+             fact Rule { all a: Account | a.active > 0 implies a.balance > 0 }",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!implication.contains("Account.active"),
+        "`Account.active` is the projection function:\n{implication}");
+    assert!(implication.contains("∀ (x : Account), x.active > 0 → x.balance > 0"),
+        "the theorem's own binder is what the body reads:\n{implication}");
+
+    let iff = find_file(
+        &generate_lean(
+            "sig Account { active: one Int, balance: one Int }\n\
+             fact Iffy { all a: Account | a.active > 0 iff a.balance > 0 }",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(iff.contains("∀ (x : Account), x.active > 0 ↔ x.balance > 0"), "iff too:\n{iff}");
+
+    let prohibition = find_file(
+        &generate_lean("sig Account { balance: one Int }\nfact Never { no a: Account | a.balance < 0 }"),
+        "Constraints.lean",
+    ).to_string();
+    assert!(prohibition.contains("∀ (x : Account), ¬(x.balance < 0)"),
+        "and prohibition:\n{prohibition}");
+}
+
+/// A binder of the theorem's own name shadows the receiver, so the body under
+/// it must be left alone.
+#[test]
+fn lean_rebinding_stops_at_a_shadowing_binder() {
+    let files = generate_lean(
+        "sig Item {}\nsig Box { items: set Item, ok: one Int }\n\
+         fact R { all b: Box | b.ok > 0 implies (all x: Item | x = x) }",
+    );
+    let src = find_file(&files, "Constraints.lean");
+
+    assert!(src.contains("∀ x : Item, x = x"),
+        "the inner binder is its own:\n{src}");
+}
+
+/// `no (A.xs & B.ys)` is about the *elements*, read across every atom of A and
+/// of B. This encoding has no term for a sig's extent, and a variant has no
+/// type to bind — the theorem named `Additive`, a constructor of `Cat`.
+#[test]
+fn lean_disjointness_over_an_extent_defers() {
+    let files = generate_lean(
+        "sig Item {}\nabstract sig Cat { covers: set Item }\n\
+         sig Additive extends Cat {}\nsig Multiplicative extends Cat {}\n\
+         fact NoOverlap { no (Additive.covers & Multiplicative.covers) }",
+    );
+    let src = find_file(&files, "Constraints.lean");
+
+    assert!(!src.contains("theorem disjoint_"),
+        "the theorem cannot be stated here:\n{src}");
+    assert!(src.contains("-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
+        "the gap must be stated, not silently mistranslated:\n{src}");
+}
+
+// ── Facts and preds are no longer dropped silently (#118) ─────────────────
+
+/// A pred's clauses are conjoined in Alloy. Lean took `body.last()` and
+/// dropped the rest — silently, because what remained still elaborated.
+#[test]
+fn lean_multi_clause_pred_keeps_every_clause() {
+    let files = generate_lean(
+        "sig Acct { bal: one Int, cap: one Int }\n\
+         pred solvent[a: Acct] { a.bal > 0\n  a.bal < a.cap }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(ops.contains("a.bal > 0 ∧ a.bal < a.cap"),
+        "every clause of a pred is part of it:\n{ops}");
+}
+
+/// `Presence` was copied from Rust, where `lone` is not an `Option`. Here it
+/// is, so "guaranteed by type" was a false claim and the fact was lost.
+#[test]
+fn lean_presence_of_a_lone_field_is_a_theorem() {
+    let lone = find_file(
+        &generate_lean("sig Cfg { name: lone Str }\nfact HasName { all c: Cfg | some c.name }"),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!lone.contains("field is non-Option"),
+        "a `lone` field *is* an Option here:\n{lone}");
+    assert!(lone.contains("∀ (x : Cfg), x.name ≠ none"),
+        "so presence is a claim to prove, not a comment:\n{lone}");
+}
+
+/// `ValueBound` had no arm at all and fell into the catch-all.
+#[test]
+fn lean_value_bound_gets_a_theorem() {
+    let files = generate_lean("sig Cfg { size: one Int }\nfact Big { all c: Cfg | c.size > 3 }");
+    let src = find_file(&files, "Constraints.lean");
+
+    // `analyze` normalises `> 3` to `AtLeast(4)`, the same claim over an Int.
+    assert!(src.contains("∀ (x : Cfg), x.size ≥ 4"), "the bound is a theorem:\n{src}");
+}
+
+// ── Uninhabited types derive nothing (#122) ───────────────────────────────
+
+/// A `one` field is stored by value, so `structure Node where next : Node` is
+/// infinitely sized: nothing constructs it and `Repr`/`BEq` cannot be derived.
+#[test]
+fn lean_self_referential_one_field_derives_nothing() {
+    let files = generate_lean("sig Node { next: one Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("deriving"), "no instance can be synthesised:\n{types}");
+    assert!(types.contains("-- oxidtr: no finite value of Node exists"),
+        "and the reason must be stated:\n{types}");
+}
+
+/// The gap is transitive exactly as `DecidableEq`'s is: a holder inherits it
+/// through a container as readily as through a bare field.
+#[test]
+fn lean_holder_of_an_uninhabited_type_derives_nothing() {
+    let files = generate_lean("sig Node { next: one Node }\nsig Box { maybe: lone Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("deriving"), "`Repr (Option Node)` needs `Repr Node`:\n{types}");
+    assert!(types.contains("-- oxidtr: nothing derives for Box — it holds a type with no finite value"),
+        "Box itself is finite; what it holds is not:\n{types}");
+}
+
+/// A `lone`/`set` self-reference still breaks the cycle, so it keeps deriving
+/// what it always did.
+#[test]
+fn lean_lone_self_reference_still_derives() {
+    let files = generate_lean("sig Node { next: lone Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(types.contains("  next : Option Node\n  deriving Repr, BEq\n"),
+        "`Option Node` is finite:\n{types}");
+}

@@ -1936,6 +1936,57 @@ fn lean_adversarial_models_compile() {
         ("quantifier_domain_is_still_the_type",
          "sig Leaf { n: one Int }\npred allPos[a: Leaf] { all x: Leaf | x.n > 0 }",
          "def allPos (a : Leaf) : Prop :=\n  ∀ x : Leaf, x.n > 0"),
+        // `analyze` strips the `all a: Account |` prefix and rewrites the bound
+        // variable to the *sig name*, which every other backend maps back to
+        // its own receiver (`value`, `this`, `self`). The theorem re-binds
+        // `∀ (x : Sig)` and left the body reading `Account.active` — the
+        // projection *function*, compared against a value (#117).
+        ("implication_theorem_binds_its_own_variable",
+         "sig Account { active: one Int, balance: one Int }\n          fact Rule { all a: Account | a.active > 0 implies a.balance > 0 }",
+         "∀ (x : Account), x.active > 0 → x.balance > 0"),
+        ("iff_theorem_binds_its_own_variable",
+         "sig Account { active: one Int, balance: one Int }\n          fact Iffy { all a: Account | a.active > 0 iff a.balance > 0 }",
+         "∀ (x : Account), x.active > 0 ↔ x.balance > 0"),
+        ("prohibition_theorem_binds_its_own_variable",
+         "sig Account { balance: one Int }\nfact Never { no a: Account | a.balance < 0 }",
+         "∀ (x : Account), ¬(x.balance < 0)"),
+        // `no (A.xs & B.ys)` is about the *elements*, read across every atom of
+        // A and of B — an extent this encoding has no term for, and `Additive`
+        // is a constructor of `Cat` rather than a type to bind (#117).
+        ("disjointness_over_an_extent_defers",
+         "sig Item {}\nabstract sig Cat { covers: set Item }\n          sig Additive extends Cat {}\nsig Multiplicative extends Cat {}\n          fact NoOverlap { no (Additive.covers & Multiplicative.covers) }",
+         "-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
+        // A pred's clauses are conjoined in Alloy. Lean took `body.last()` and
+        // dropped the rest — silently, since what remained still compiled
+        // (#118). Every other backend already joins them.
+        ("multi_clause_pred_keeps_every_clause",
+         "sig Acct { bal: one Int, cap: one Int }\n          pred solvent[a: Acct] { a.bal > 0\n  a.bal < a.cap }",
+         "def solvent (a : Acct) : Prop :=\n  a.bal > 0 ∧ a.bal < a.cap"),
+        // `Presence` was copied from Rust, where `lone` is not an Option. Here
+        // it is, so "guaranteed by type" was false and the constraint was lost.
+        ("presence_of_a_lone_field_is_a_theorem_not_a_comment",
+         "sig Cfg { name: lone Str }\nfact HasName { all c: Cfg | some c.name }",
+         "∀ (x : Cfg), x.name ≠ none"),
+        // `ValueBound` had no arm at all and fell into the catch-all.
+        // `analyze` normalises `> 3` to `AtLeast(4)`, which is the same claim
+        // over an Int.
+        ("value_bound_gets_a_theorem",
+         "sig Cfg { size: one Int }\nfact Big { all c: Cfg | c.size > 3 }",
+         "∀ (x : Cfg), x.size ≥ 4"),
+        // `one Node` is stored by value, so `structure Node where next : Node`
+        // is infinitely sized and uninhabited. `Repr`/`BEq` cannot be derived
+        // for it, and the gap is transitive exactly as `DecidableEq`'s is —
+        // anything holding one, through a container or not, inherits it (#122).
+        ("self_referential_one_field_derives_nothing",
+         "sig Node { next: one Node }",
+         "-- oxidtr: no finite value of Node exists"),
+        ("holder_of_an_uninhabited_type_derives_nothing",
+         "sig Node { next: one Node }\nsig Team { lead: one Node, maybe: lone Node }",
+         "structure Team where\n  lead : Node\n  maybe : Option Node\n"),
+        // A `lone`/`set` self-reference still breaks the cycle and derives.
+        ("lone_self_reference_still_derives",
+         "sig Node { next: lone Node }",
+         "structure Node where\n  next : Option Node\n  deriving Repr, BEq\n"),
     ];
 
     for (name, model, expected) in cases {
