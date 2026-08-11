@@ -1918,6 +1918,24 @@ fn lean_adversarial_models_compile() {
          "abstract sig Shape {}\nsig Circle extends Shape {}\nsig Square extends Shape {}\n\
           fact Covers { all x: Shape | x in Circle or x in Square }",
          "∀ (x : Shape), x matches .circle .. ∨ x matches .square .."),
+        // `v = Low` asks which case an atom is. `Low` is a *constructor* of the
+        // parent `inductive`, not a type, so the bare name does not elaborate
+        // where a value belongs (#105).
+        ("equality_with_a_variant_is_a_pattern_match",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          pred notLow[v: L] { v != Low }",
+         "def notLow (v : L) : Prop :=\n  ¬(v matches .low ..)"),
+        // A sig name outside a quantifier domain is the set of its atoms, and
+        // this encoding has no term for that — `P.length` names a type where a
+        // value belongs. Deferring is the honest answer; emitting it is not.
+        ("whole_sig_extent_defers_instead_of_naming_the_type",
+         "one sig P { x: one Int }\npred cardOk[p: P] { p.x = #P }",
+         "def cardOk (p : P) : Prop :=\n  sorry -- oxidtr: cardOk reads a sig's extent"),
+        // The quantifier domain is the one position where the type *is* what is
+        // meant, so it must not be swept up by the same rule.
+        ("quantifier_domain_is_still_the_type",
+         "sig Leaf { n: one Int }\npred allPos[a: Leaf] { all x: Leaf | x.n > 0 }",
+         "def allPos (a : Leaf) : Prop :=\n  ∀ x : Leaf, x.n > 0"),
     ];
 
     for (name, model, expected) in cases {
