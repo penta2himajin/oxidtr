@@ -208,6 +208,18 @@ fn rust_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.contains(&t.lead)"),
+        // `Schedule.morning` is the relational image — the union of `morning`
+        // over every `Schedule` atom — not member access on a type. #105
+        // covered the positions where a sig name stands alone and left this
+        // one out, so `Schedule` was still emitted as a receiver (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.iter().flat_map(|s| s.morning.iter().cloned()).collect::<BTreeSet<_>>()"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          assert R { no Team.lead }\ncheck R for 3",
+         "teams.iter().map(|s| s.lead.clone()).collect::<BTreeSet<_>>()"),
     ];
 
     for (name, model, expected) in cases {
@@ -431,6 +443,16 @@ fn ts_adversarial_models_typecheck() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.includes(t.lead)"),
+        // `Schedule.morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.flatMap(s => [...s.morning]).length === 0"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          assert R { no Team.lead }\ncheck R for 3",
+         "teams.map(s => s.lead).length === 0"),
     ];
 
     for (name, model, expected) in cases {
@@ -584,6 +606,13 @@ sig Item { tag: one Int }
 sig Bag { items: set Item, tags: set Int }
 fact ExactlyTwo { all b: Bag | #b.items = 2 }
 fact AlsoTwo { all b: Bag | #b.tags = 2 }
+
+sig Task {}
+sig Schedule { morning: set Task, chief: one Task }
+assert NoMorning { no Schedule.morning }
+check NoMorning for 3
+assert NoChief { no Schedule.chief }
+check NoChief for 3
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -595,6 +624,9 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     // A boundary fixture used to repeat `default{T}()`, which for a native
     // element is `defaultInt()` — a factory that does not exist (#96).
     ("boundary_native_elements_are_distinct", "0L, 1L"),
+    // `Schedule.morning` is the union of `morning` over every `Schedule` atom,
+    // not member access on a type (#142).
+    ("relational_image_flat_maps_the_extent", "schedules"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -937,6 +969,16 @@ fn go_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "contains(persons, t.Lead)"),
+        // `Schedule.Morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "flatMap(schedules, func(s Schedule) []Task { return s.Morning })"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Task {}\nsig Schedule { chief: one Task }\n\
+          assert R { no Schedule.chief }\ncheck R for 3",
+         "flatMap(schedules, func(s Schedule) []Task { return oneOf(s.Chief) })"),
     ];
 
     for (name, model, expected) in cases {
@@ -1153,6 +1195,16 @@ fn swift_adversarial_models_compile() {
          "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
           sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
          "!n.level.isLow"),
+        // `Schedule.morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.flatMap { $0.morning }.isEmpty"),
+        ("relational_image_of_a_lone_field_compacts",
+         "sig Task {}\nsig Schedule { chief: lone Task }\n\
+          assert R { no Schedule.chief }\ncheck R for 3",
+         "schedules.compactMap { $0.chief }.isEmpty"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
          "func boundaryBox() -> Box {\n    Box(\n        marks: Set([0, 1])"),
@@ -1515,6 +1567,13 @@ fn cs_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.Contains(t.Lead)"),
+        // `Schedule.Morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type — `Morning` is an instance
+        // property, so the receiver form was CS0120 (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.SelectMany(s => s.Morning).ToList().Count == 0"),
     ];
 
     for (name, model, expected) in cases {

@@ -149,6 +149,34 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     Some(to_camel_plural(name))
 }
 
+/// `Sig.field`, as the union of `field` over every atom of `Sig`.
+///
+/// Alloy's `Schedule.Morning` is the *relational image*, not member access on
+/// a type — `Schedule` is a Go type, so the receiver form does not compile.
+/// #105 rendered a sig name as its materialised extent wherever the name
+/// stands alone; this is the position it left out (#142).
+///
+/// Go infers nothing about a func literal, so the closure's receiver and
+/// element types are both written out.
+fn relational_image(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    let Expr::FieldAccess { base, field } = expr else { return None };
+    let Expr::VarRef(sig) = base.as_ref() else { return None };
+    let extent = whole_sig_extent_in(base, sig_names, ir, env)?;
+    let f = resolve_field(base, field, sig_names, ir, env)?;
+    let name = capitalize(field);
+    // `oneOf`/`loneOf` lift a singleton relation into the slice the quantifier
+    // helpers already take.
+    let elem = match f.mult {
+        Multiplicity::Set | Multiplicity::Seq => format!("s.{name}"),
+        Multiplicity::One => format!("oneOf(s.{name})"),
+        Multiplicity::Lone => format!("loneOf(s.{name})"),
+    };
+    let elem_ty = crate::backend::resolve_type(crate::backend::TargetLang::Go, &f.target);
+    Some(format!("flatMap({extent}, func(s {sig}) []{elem_ty} {{ return {elem} }})"))
+}
+
 /// `whole_sig_extent`, but also refusing a name a binder has shadowed.
 fn whole_sig_extent_in(
     expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
@@ -251,7 +279,12 @@ fn collect_params(
         Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_params(inner, sig_names, ir, params);
         }
-        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, ir, params),
+        Expr::FieldAccess { base, .. } => {
+            // The image reads the field across the sig's extent, so the domain
+            // has to be declared here as well (#142).
+            extent(base, params);
+            collect_params(base, sig_names, ir, params);
+        }
         Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
@@ -295,6 +328,11 @@ fn translate_inner(
         Expr::VarRef(name) if name == "this" => "s".to_string(),
 
         Expr::VarRef(name) => name.clone(),
+
+        // `Schedule.Morning` reads a field across every atom of the sig (#142).
+        Expr::FieldAccess { .. } if relational_image(expr, sig_names, ir, env).is_some() => {
+            relational_image(expr, sig_names, ir, env).unwrap()
+        }
 
         Expr::FieldAccess { base, field } => {
             format!("{}.{}", ti(base, false), capitalize(field))
@@ -421,8 +459,10 @@ fn translate_inner(
 
         Expr::MultFormula { kind, expr: inner } => {
             // `some Person` is about the sig's extent, which is a slice — not a
-            // nilable pointer (#105).
-            if let Some(e) = whole_sig_extent_in(inner, sig_names, ir, env) {
+            // nilable pointer (#105); so is a relational image (#142).
+            let collection = whole_sig_extent_in(inner, sig_names, ir, env)
+                .or_else(|| relational_image(inner, sig_names, ir, env));
+            if let Some(e) = collection {
                 return match kind {
                     crate::parser::ast::QuantKind::Some => format!("len({e}) > 0"),
                     crate::parser::ast::QuantKind::No => format!("len({e}) == 0"),

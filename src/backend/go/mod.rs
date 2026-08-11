@@ -574,6 +574,17 @@ fn generate_collection_helpers(out: &mut String) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 
+    writeln!(out, "// flatMap concatenates f's results over xs — the relational image of a").unwrap();
+    writeln!(out, "// field across a sig's atoms.").unwrap();
+    writeln!(out, "func flatMap[T any, U any](xs []T, f func(T) []U) []U {{").unwrap();
+    writeln!(out, "\tvar out []U").unwrap();
+    writeln!(out, "\tfor _, x := range xs {{").unwrap();
+    writeln!(out, "\t\tout = append(out, f(x)...)").unwrap();
+    writeln!(out, "\t}}").unwrap();
+    writeln!(out, "\treturn out").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
     writeln!(out, "// isVariant reports whether v is the given case of a sum interface.").unwrap();
     writeln!(out, "// A sum's cases are struct types, so `v == Low` would compare a value").unwrap();
     writeln!(out, "// against a type; which case an atom is, is a type assertion.").unwrap();

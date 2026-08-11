@@ -45,6 +45,16 @@ impl JvmLang for JavaLang {
     fn value_neq(&self, l: &str, r: &str) -> String {
         format!("!java.util.Objects.equals({l}, {r})")
     }
+    // A `Stream` and a collector; `Objects::nonNull` drops an absent `lone`.
+    fn relational_image(&self, extent: &str, read: &str, mult: &Multiplicity) -> String {
+        match mult {
+            Multiplicity::Set | Multiplicity::Seq => format!(
+                "{extent}.stream().flatMap(s -> {read}.stream()).toList()"),
+            Multiplicity::Lone => format!(
+                "{extent}.stream().map(s -> {read}).filter(java.util.Objects::nonNull).toList()"),
+            Multiplicity::One => format!("{extent}.stream().map(s -> {read}).toList()"),
+        }
+    }
     // A sealed interface permitting records: the case is an `instanceof`.
     fn is_variant(&self, subject: &str, variant: &str) -> String {
         format!("{subject} instanceof {variant}")

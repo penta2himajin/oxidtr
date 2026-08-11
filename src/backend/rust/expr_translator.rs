@@ -1,6 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
-use crate::backend::type_env::{TypeEnv, resolve_field_owner};
+use crate::backend::type_env::{TypeEnv, resolve_field, resolve_field_owner};
 use crate::naming::fn_name_for_op;
 use std::collections::{HashSet, BTreeSet};
 
@@ -164,6 +164,33 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     Some(to_snake_plural(name))
 }
 
+/// `Sig.field`, as the union of `field` over every atom of `Sig`.
+///
+/// Alloy's `Schedule.morning` is the *relational image*, not member access on
+/// a type — and `Schedule` is a Rust type, so the receiver form was `E0423:
+/// expected value, found struct`. #105 rendered a sig name as its materialised
+/// extent wherever the name stands alone; this is the position it left out
+/// (#142).
+///
+/// A `set`/`seq` field flattens; a `one` field is one element per atom and a
+/// `lone` field zero or one, so both lift into the same collection the way a
+/// quantifier domain already does.
+fn relational_image(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    let Expr::FieldAccess { base, field } = expr else { return None };
+    let extent = whole_sig_extent_in(base, sig_names, ir, env)?;
+    let f = resolve_field(base, field, sig_names, ir, env)?;
+    let per_atom = match f.mult {
+        Multiplicity::Set | Multiplicity::Seq => {
+            format!("flat_map(|s| s.{field}.iter().cloned())")
+        }
+        Multiplicity::Lone => format!("filter_map(|s| s.{field}.clone())"),
+        Multiplicity::One => format!("map(|s| s.{field}.clone())"),
+    };
+    Some(format!("{extent}.iter().{per_atom}.collect::<BTreeSet<_>>()"))
+}
+
 /// `whole_sig_extent`, but also refusing a name a binder has shadowed.
 fn whole_sig_extent_in(
     expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
@@ -230,6 +257,9 @@ fn collect_params(
             collect_params(right, sig_names, ir, params);
         }
         Expr::FieldAccess { base, .. } => {
+            // `Schedule.morning` reads the field across the sig's extent, so
+            // the domain has to be declared here as well (#142).
+            extent(base, params);
             collect_params(base, sig_names, ir, params);
         }
         Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
@@ -739,6 +769,11 @@ pub(super) fn is_collection_expr(
     ir: &OxidtrIR,
     env: &TypeEnv,
 ) -> bool {
+    // A relational image collects into a `BTreeSet` whatever the field's own
+    // multiplicity is — `Sig.oneField` is still one element *per atom* (#142).
+    if relational_image(expr, sig_names, ir, env).is_some() {
+        return true;
+    }
     if let Expr::FieldAccess { base, field } = expr {
         matches!(
             field_mult(base, field, sig_names, ir, env),
@@ -890,6 +925,11 @@ fn translate_inner_ir(
                 return format!("{name}()");
             }
             name.clone()
+        }
+
+        // `Schedule.morning` reads a field across every atom of the sig (#142).
+        Expr::FieldAccess { .. } if relational_image(expr, sig_names, ir, env).is_some() => {
+            relational_image(expr, sig_names, ir, env).unwrap()
         }
 
         Expr::FieldAccess { base, field } => {

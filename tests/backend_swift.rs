@@ -869,3 +869,31 @@ fn swift_variant_comparison_reaches_through_a_one_field() {
     assert!(tests.contains("!n.level.isLow"),
         "being the Low atom is being the Low case:\n{tests}");
 }
+
+/// Alloy's `Schedule.morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type — `Schedule` is a Swift type (#142).
+#[test]
+fn swift_relational_image_flat_maps_the_extent() {
+    let files = generate_swift(
+        "sig Task {}\nsig Schedule { morning: set Task, chief: lone Task }\n\
+         assert R { no Schedule.morning }\ncheck R for 3",
+    );
+    let src = find_file(&files, "Tests.swift");
+
+    assert!(
+        src.contains("schedules.flatMap { $0.morning }.isEmpty"),
+        "the image is an array built over the extent:\n{src}"
+    );
+
+    let lone = find_file(
+        &generate_swift(
+            "sig Task {}\nsig Schedule { chief: lone Task }\n\
+             assert R { no Schedule.chief }\ncheck R for 3",
+        ),
+        "Tests.swift",
+    ).to_string();
+    assert!(
+        lone.contains("schedules.compactMap { $0.chief }.isEmpty"),
+        "`compactMap` is map-then-drop-the-nils:\n{lone}"
+    );
+}

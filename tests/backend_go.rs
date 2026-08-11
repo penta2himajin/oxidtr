@@ -842,3 +842,21 @@ fn go_comparison_with_a_variant_asserts_the_case() {
     assert!(models.contains("Tag int64"),
         "a variant's field needs its native alias resolved:\n{models}");
 }
+
+/// Alloy's `Schedule.Morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type — `Schedule` is a Go type (#142).
+#[test]
+fn go_relational_image_flat_maps_the_extent() {
+    let files = generate_go(
+        "sig Task {}\nsig Schedule { morning: set Task, chief: one Task }\n\
+         assert R { no Schedule.morning }\ncheck R for 3",
+    );
+    let tests = find_file(&files, "models_test.go");
+    let helpers = find_file(&files, "helpers.go");
+
+    assert!(
+        tests.contains("flatMap(schedules, func(s Schedule) []Task { return s.Morning })"),
+        "Go infers nothing about a func literal, so both types are written out:\n{tests}"
+    );
+    assert!(helpers.contains("func flatMap[T any, U any]"), "and the helper exists:\n{helpers}");
+}

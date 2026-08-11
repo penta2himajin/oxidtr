@@ -649,3 +649,26 @@ fn ts_enum_fixture_matches_the_shape_of_its_union() {
         "a string-literal union takes the variant's name:\n{fixtures}"
     );
 }
+
+/// Alloy's `Schedule.morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type — `Schedule` names nothing here (#142).
+#[test]
+fn ts_relational_image_flat_maps_the_extent() {
+    let files = generate_from(
+        "sig Task {}\nsig Schedule { morning: set Task }\n\
+         assert R { no Schedule.morning }\ncheck R for 3",
+    );
+    let src = find_file(&files, "tests.ts");
+
+    // Only the assertion matters: the anomaly tests name `Schedule.morning`
+    // in their prose, which is not code.
+    assert!(!src.contains("expect(Schedule."), "`Schedule` is a type:\n{src}");
+    assert!(
+        src.contains("schedules.flatMap(s => [...s.morning]).length === 0"),
+        "the image is an array built over the extent:\n{src}"
+    );
+    assert!(
+        src.contains("const schedules: M.Schedule[] = [fix.defaultSchedule()];"),
+        "and the extent has to be declared:\n{src}"
+    );
+}
