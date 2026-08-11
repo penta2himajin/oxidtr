@@ -124,6 +124,49 @@ fn generate_detects_tautological_fact() {
     );
 }
 
+/// `Str`, `Int`, `Float` and `Bool` are the marker sigs every backend maps to
+/// a language primitive, so a sig declared with one of those names is dropped
+/// and its fields vanish — `User.b` then silently retargets the *builtin*
+/// `Bool`. The output compiles, so `check` and every compile gate pass on a
+/// model that lost a declaration (#120).
+#[test]
+fn generate_warns_when_a_sig_shadows_a_native_alias() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_dir = tmp.path().join("output");
+    let model_path = write_model(tmp.path(), "model.als", r#"
+        sig Bool { flag: one Int }
+        sig User { b: one Bool }
+    "#);
+
+    let result = generate::run(&model_path, &test_config(out_dir.to_str().unwrap())).unwrap();
+
+    assert!(
+        result.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::ShadowedNativeAlias)
+            && w.location.contains("Bool")),
+        "expected SHADOWED_NATIVE_ALIAS warning for Bool, got: {:?}",
+        result.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>()
+    );
+}
+
+/// A model that names none of the marker sigs must stay quiet.
+#[test]
+fn generate_does_not_warn_on_an_ordinary_sig_name() {
+    let tmp = tempfile::tempdir().unwrap();
+    let out_dir = tmp.path().join("output");
+    let model_path = write_model(tmp.path(), "model.als", r#"
+        sig Flag { flag: one Int }
+        sig User { b: one Flag }
+    "#);
+
+    let result = generate::run(&model_path, &test_config(out_dir.to_str().unwrap())).unwrap();
+
+    assert!(
+        !result.warnings.iter().any(|w| matches!(w.kind, generate::WarningKind::ShadowedNativeAlias)),
+        "no sig shadows a marker here, got: {:?}",
+        result.warnings.iter().map(|w| &w.kind).collect::<Vec<_>>()
+    );
+}
+
 #[test]
 fn generate_does_not_warn_on_genuinely_conditional_fact() {
     let tmp = tempfile::tempdir().unwrap();

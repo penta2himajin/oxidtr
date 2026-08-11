@@ -556,3 +556,137 @@ fn lean_lone_self_reference_still_derives() {
     assert!(types.contains("  next : Option Node\n  deriving Repr, BEq\n"),
         "`Option Node` is finite:\n{types}");
 }
+
+// ── Expression translation is type-directed (#115) ────────────────────────
+
+/// Lean has no `Union`/`Inter`/`SDiff` instance for `List`, and integer
+/// arithmetic came through the same arm — `hi - lo` emitted `\` and failed to
+/// synthesise `SDiff Int`. The operands' shape tells the two apart.
+#[test]
+fn lean_set_operators_are_list_operations() {
+    let sets = find_file(
+        &generate_lean(
+            "sig Leaf {}\nsig Node { a: set Leaf, b: set Leaf }\n\
+             fun Node.both: set Leaf { this.a + this.b }\n\
+             fun Node.common: set Leaf { this.a & this.b }\n\
+             fun Node.only: set Leaf { this.a - this.b }",
+        ),
+        "Types.lean",
+    ).to_string();
+    assert!(!sets.contains(" ∪ "), "`List` has no `Union` instance:\n{sets}");
+    assert!(sets.contains("self.a ++ self.b"), "union is concatenation:\n{sets}");
+    assert!(sets.contains("self.a.filter (fun e => self.b.contains e)"),
+        "intersection is a filter:\n{sets}");
+    assert!(sets.contains("self.a.filter (fun e => !self.b.contains e)"),
+        "and so is difference:\n{sets}");
+
+    let ints = find_file(
+        &generate_lean("sig Span { lo: one Int, hi: one Int }\nfun Span.width: one Int { this.hi - this.lo }"),
+        "Types.lean",
+    ).to_string();
+    assert!(ints.contains("self.hi - self.lo"), "an Int difference is arithmetic:\n{ints}");
+}
+
+/// `#` always appended `.length`, which `Option` does not have.
+#[test]
+fn lean_cardinality_follows_the_shape() {
+    let files = generate_lean(
+        "sig Leaf {}\nsig Node { kids: set Leaf, opt: lone Leaf }\n\
+         fun Node.n: one Int { #this.kids }\nfun Node.m: one Int { #this.opt }",
+    );
+    let types = find_file(&files, "Types.lean");
+
+    assert!(types.contains("self.kids.length"), "a List has a length:\n{types}");
+    assert!(types.contains("(if self.opt.isSome then 1 else 0)"),
+        "an Option's cardinality is 0 or 1:\n{types}");
+}
+
+/// `some e`/`no e` hardcoded the `Option` encoding, and `in` between two sets
+/// is subset rather than membership.
+#[test]
+fn lean_presence_and_membership_follow_the_shape() {
+    let files = generate_lean(
+        "sig Leaf {}\nsig Node { kids: set Leaf, opt: lone Leaf, a: set Leaf, b: set Leaf }\n\
+         pred hasKid[n: Node] { some n.kids }\npred hasOpt[n: Node] { some n.opt }\n\
+         pred sub[n: Node] { n.a in n.b }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(ops.contains("n.kids ≠ []"), "a List is empty, not none:\n{ops}");
+    assert!(ops.contains("n.opt ≠ none"), "an Option still is none:\n{ops}");
+    assert!(ops.contains("n.a.all (fun e => n.b.contains e)"),
+        "set-in-set is subset:\n{ops}");
+}
+
+/// Reading a field *through* a `lone`/`set` one is a join, which yields
+/// `Option T`/`List T` — not the `T` a `one` return type asks for.
+#[test]
+fn lean_access_through_a_collection_defers() {
+    let files = generate_lean(
+        "sig Inner { v: one Int }\nsig Outer { i: lone Inner }\nfun Outer.val: one Int { this.i.v }",
+    );
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("self.i.v"), "`Option` has no field `v`:\n{types}");
+    assert!(types.contains("sorry -- oxidtr: val reads `i.v` through a lone/set field"),
+        "the mismatch must be stated:\n{types}");
+}
+
+// ── Temporal formulas defer (#116) ────────────────────────────────────────
+
+/// `□`/`◇`/`𝒰` were emitted with no definitions and no import, so Lean could
+/// not even lex them. This encoding has no trace to state them over: a sig is
+/// a type and a `def` sees one state.
+#[test]
+fn lean_temporal_operators_defer() {
+    let ops = find_file(
+        &generate_lean("sig Light { on: one Int }\npred p[l: Light] { always l.on > 0 }"),
+        "Operations.lean",
+    ).to_string();
+    assert!(!ops.contains('□'), "`□` has no definition here:\n{ops}");
+    assert!(ops.contains("sorry -- oxidtr: p is a temporal formula"),
+        "the gap must be stated:\n{ops}");
+
+    let constraints = find_file(
+        &generate_lean(
+            "sig Light { on: one Int }\n\
+             assert Live { eventually (all l: Light | l.on > 0) }\ncheck Live for 3",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!constraints.contains('◇'), "nor `◇`:\n{constraints}");
+    // Not `theorem Live : True` — that reads as proved-trivially, a stronger
+    // claim than the assert makes.
+    assert!(!constraints.contains("theorem Live"), "no theorem is stated:\n{constraints}");
+    assert!(constraints.contains("-- oxidtr: Live is a temporal formula"),
+        "but the assert is accounted for:\n{constraints}");
+}
+
+/// `Prime` appended `'` to the already-rendered string, so `a.count'` lexed as
+/// one identifier and named a field that does not exist.
+#[test]
+fn lean_prime_defers_instead_of_gluing_a_quote() {
+    let files = generate_lean("sig Leaf { count: one Int }\npred q[a: Leaf] { a.count' > a.count }");
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(!ops.contains("a.count'"), "`Leaf.count'` is not a field:\n{ops}");
+    assert!(ops.contains("sorry -- oxidtr: q is a temporal formula"),
+        "a post-state needs a parameter this encoding has not:\n{ops}");
+}
+
+/// `Lean.Float` has no `DecidableEq` instance, so a `Float` field made the
+/// `deriving` line a hard error. The gap is transitive exactly as recursion's
+/// is (#120).
+#[test]
+fn lean_float_field_drops_decidable_eq() {
+    let direct = find_file(&generate_lean("sig Point { x: one Float }"), "Types.lean").to_string();
+    assert!(direct.contains("  x : Float\n  deriving Repr, BEq\n"),
+        "`Float` has no `DecidableEq`:\n{direct}");
+
+    let holder = find_file(
+        &generate_lean("sig Point { x: one Float }\nsig Line { a: one Point, b: one Point }"),
+        "Types.lean",
+    ).to_string();
+    assert!(holder.contains("  b : Point\n  deriving Repr, BEq\n"),
+        "and a holder inherits the gap:\n{holder}");
+}

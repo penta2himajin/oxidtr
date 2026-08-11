@@ -1,5 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
+use crate::backend::type_env::{TypeEnv, resolve_field};
 use std::collections::HashSet;
 
 pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
@@ -7,8 +8,46 @@ pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
 }
 
 pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
+    translate_with_env(expr, ir, &TypeEnv::new())
+}
+
+/// Translate in an explicit scope — an operation's parameters and receiver.
+///
+/// Without one the translator is type-blind: a `set` field, a `lone` field and
+/// an `Int` all take the same arm, so `a + b` emits `∪` (which `List` has no
+/// instance for) whatever the operands are, and `#e` appends `.length` even
+/// where `e` is an `Option` (#115).
+pub fn translate_with_env(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> String {
     let sig_names = collect_sig_names(ir);
-    translate_inner(expr, false, &sig_names, ir)
+    translate_inner(expr, false, &sig_names, ir, env)
+}
+
+/// How an expression is represented in Lean, as far as translation needs to
+/// know: `List T` for a `set`/`seq`, `Option T` for a `lone`, everything else
+/// a plain value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    List,
+    Option,
+    Scalar,
+}
+
+fn shape_of(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv) -> Shape {
+    match expr {
+        Expr::FieldAccess { base, field } => {
+            match resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()) {
+                Some(Multiplicity::Set) | Some(Multiplicity::Seq) => Shape::List,
+                Some(Multiplicity::Lone) => Shape::Option,
+                _ => Shape::Scalar,
+            }
+        }
+        // A set operation is as collection-shaped as its operands.
+        Expr::SetOp { left, right, .. } => match shape_of(left, sig_names, ir, env) {
+            Shape::Scalar => shape_of(right, sig_names, ir, env),
+            s => s,
+        },
+        _ => Shape::Scalar,
+    }
 }
 
 /// Whether a sig name is used where a *value* belongs.
@@ -54,6 +93,78 @@ pub fn mentions_whole_sig_as_value(expr: &Expr, ir: &OxidtrIR) -> bool {
         }
     }
     walk(expr, &sig_names, ir)
+}
+
+/// Whether an expression carries an Alloy 6 temporal operator or a prime.
+///
+/// This encoding has no trace: a sig is a Lean type, and a `def` sees one
+/// state. `always P` therefore has nothing to range over, and `x'` names a
+/// post-state no parameter carries — every other backend rewrites prime to a
+/// post-state argument and generates trace checkers, and Lean generates
+/// neither. The operators were emitted as `□`/`◇`/`𝒰` with no definitions and
+/// no import, which Lean cannot even lex (#116).
+pub fn is_temporal(expr: &Expr) -> bool {
+    match expr {
+        Expr::TemporalUnary { .. } | Expr::TemporalBinary { .. } | Expr::Prime(_) => true,
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::ReflexiveClosure(i) | Expr::MultFormula { expr: i, .. }
+        | Expr::FieldAccess { base: i, .. } => is_temporal(i),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            is_temporal(left) || is_temporal(right)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| is_temporal(&b.domain)) || is_temporal(body)
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(is_temporal) || args.iter().any(is_temporal)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
+/// The first field read *through* a collection-shaped one, if any.
+///
+/// Alloy's `o.i.v` is a join: where `i` is `lone` it yields a `lone Int`, and
+/// where `i` is `set` a `set Int`. Lean needs `Option.map`/`List.map` for that,
+/// and the result is `Option Int`/`List Int` — which does not match the `Int`
+/// the declared `one` return type asks for. Rather than emit a projection that
+/// does not elaborate, the caller defers and says so (#115).
+pub fn access_through_a_collection(expr: &Expr, ir: &OxidtrIR, env: &TypeEnv) -> Option<String> {
+    let sig_names = collect_sig_names(ir);
+    fn walk(
+        e: &Expr, sigs: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+    ) -> Option<String> {
+        if let Expr::FieldAccess { base, field } = e {
+            if let Expr::FieldAccess { field: outer, .. } = base.as_ref() {
+                if shape_of(base, sigs, ir, env) != Shape::Scalar {
+                    return Some(format!("{outer}.{field}"));
+                }
+            }
+        }
+        match e {
+            Expr::FieldAccess { base: i, .. } | Expr::Not(i) | Expr::Cardinality(i)
+            | Expr::TransitiveClosure(i) | Expr::ReflexiveClosure(i)
+            | Expr::MultFormula { expr: i, .. } | Expr::Prime(i)
+            | Expr::TemporalUnary { expr: i, .. } => walk(i, sigs, ir, env),
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                walk(left, sigs, ir, env).or_else(|| walk(right, sigs, ir, env))
+            }
+            Expr::Quantifier { bindings, body, .. } => {
+                let inner = env.extended(bindings, sigs, ir);
+                bindings.iter().find_map(|b| walk(&b.domain, sigs, ir, env))
+                    .or_else(|| walk(body, sigs, ir, &inner))
+            }
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().and_then(|r| walk(r, sigs, ir, env))
+                    .or_else(|| args.iter().find_map(|a| walk(a, sigs, ir, env)))
+            }
+            Expr::VarRef(_) | Expr::IntLiteral(_) => None,
+        }
+    }
+    walk(expr, &sig_names, ir, env)
 }
 
 /// `x = Variant` / `x != Variant`, as equality with the constructor.
@@ -148,8 +259,10 @@ fn translate_inner(
     parens_if_complex: bool,
     sig_names: &HashSet<String>,
     ir: &OxidtrIR,
+    env: &TypeEnv,
 ) -> String {
-    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir);
+    let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, env);
+    let shape = |e: &Expr| shape_of(e, sig_names, ir, env);
 
     let result = match expr {
         Expr::IntLiteral(n) => n.to_string(),
@@ -171,7 +284,12 @@ fn translate_inner(
             format!("{}.{}", ti(base, false), lean_field(field))
         }
 
-        Expr::Cardinality(inner) => format!("{}.length", ti(inner, false)),
+        // `List.length` is right for a `set`/`seq`; `Option` has no `.length`
+        // at all, and its cardinality is 0 or 1 (#115).
+        Expr::Cardinality(inner) => match shape(inner) {
+            Shape::Option => format!("(if {}.isSome then 1 else 0)", ti(inner, false)),
+            _ => format!("{}.length", ti(inner, false)),
+        },
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
@@ -221,8 +339,16 @@ fn translate_inner(
                         },
                         _ => None,
                     };
-                    reachability.unwrap_or_else(||
-                        format!("{} ∈ {}", ti(left, false), ti(right, false)))
+                    reachability.unwrap_or_else(|| {
+                        // A collection-shaped left operand makes `in` a subset
+                        // test, not element membership (#115).
+                        if shape(left) == Shape::List {
+                            format!("{}.all (fun e => {}.contains e)",
+                                ti(left, false), ti(right, false))
+                        } else {
+                            format!("{} ∈ {}", ti(left, false), ti(right, false))
+                        }
+                    })
                 }
             }
         }
@@ -265,21 +391,44 @@ fn translate_inner(
             out
         }
 
+        // `some e`/`no e` hardcoded the `Option` encoding, so a `set` field
+        // compared a `List` against `none` (#115).
         Expr::MultFormula { kind, expr: inner } => {
+            let empty = match shape(inner) {
+                Shape::List => "[]",
+                _ => "none",
+            };
             match kind {
-                QuantKind::Some => format!("{} ≠ none", ti(inner, false)),
-                QuantKind::No => format!("{} = none", ti(inner, false)),
+                QuantKind::Some => format!("{} ≠ {empty}", ti(inner, false)),
+                QuantKind::No => format!("{} = {empty}", ti(inner, false)),
                 _ => ti(inner, false),
             }
         }
 
+        // Lean has no `Union`/`Inter`/`SDiff` instance for `List`, and integer
+        // arithmetic came through this same arm — `hi - lo` emitted `\` and
+        // failed to synthesise `SDiff Int`. The operands' shape tells the two
+        // apart (#115).
         Expr::SetOp { op, left, right } => {
-            let op_str = match op {
-                SetOpKind::Union => "∪",
-                SetOpKind::Intersection => "∩",
-                SetOpKind::Difference => "\\",
-            };
-            format!("{} {} {}", ti(left, true), op_str, ti(right, true))
+            let (l, r) = (ti(left, true), ti(right, true));
+            match (shape(left), shape(right)) {
+                (Shape::Scalar, Shape::Scalar) => {
+                    let op_str = match op {
+                        SetOpKind::Union => "+",
+                        SetOpKind::Intersection => "*",
+                        SetOpKind::Difference => "-",
+                    };
+                    format!("{l} {op_str} {r}")
+                }
+                // `++` concatenates rather than unions, which keeps duplicates
+                // a `set` should not have — but `List` is the encoding, and
+                // deduplication needs a `DecidableEq` this cannot assume.
+                _ => match op {
+                    SetOpKind::Union => format!("{l} ++ {r}"),
+                    SetOpKind::Intersection => format!("{l}.filter (fun e => {r}.contains e)"),
+                    SetOpKind::Difference => format!("{l}.filter (fun e => !{r}.contains e)"),
+                },
+            }
         }
 
         Expr::Product { left, right } => {

@@ -100,6 +100,7 @@ pub enum WarningKind {
     MissingErrorPropagation,
     KonpuSingletonIdentity,
     TautologicalFact,
+    ShadowedNativeAlias,
 }
 
 #[derive(Debug)]
@@ -491,6 +492,24 @@ fn analyze_warnings(ir: &ir::nodes::OxidtrIR) -> Vec<Warning> {
                     });
                 }
             }
+        }
+
+        // SHADOWED_NATIVE_ALIAS: `Str`/`Int`/`Float`/`Bool` are the marker sigs
+        // every backend maps to a language primitive, so a sig declared with
+        // one of those names is dropped and its fields vanish. A field of that
+        // type then silently retargets the *builtin*, and the output compiles
+        // — so `check` and every compile gate pass on a model that lost a
+        // declaration (#120).
+        if crate::backend::is_native_type_alias(&s.name) {
+            warnings.push(Warning {
+                kind: WarningKind::ShadowedNativeAlias,
+                message: format!(
+                    "{} は言語プリミティブへのマーカー名なので宣言が破棄され、このsigを参照するフィールドは組み込み型を指す",
+                    s.name
+                ),
+                location: format!("sig {}", s.name),
+                suggestion: Some(format!("sig {}Value のように改名する", s.name)),
+            });
         }
 
         // UNREFERENCED_SIG: no other sig references this one (via fields, parent, or constraints)
