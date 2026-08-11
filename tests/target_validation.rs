@@ -356,6 +356,88 @@ fn ts_self_hosted_tests_pass() {
     );
 }
 
+/// Models TypeScript had no type gate for. `bun test` parses `tests.ts` and
+/// runs it, so a sig name used as a value — a reference to a *type* — only
+/// showed up as a `ReferenceError` inside whichever assertion reached it, and
+/// a fact whose fixtures happen not to satisfy it never got that far (#105).
+/// `tsc --noEmit` is the TypeScript equivalent of `cargo check --all-targets`.
+#[test]
+#[ignore]
+fn ts_adversarial_models_typecheck() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x === ps.length"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.some(e => JSON.stringify(e) === JSON.stringify(n.c))"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "n.level.kind !== \"Low\""),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.includes(t.lead)"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let config = typescript::TsBackendConfig { test_runner: typescript::TsTestRunner::Bun };
+        let files = typescript::generate_with_config(&lowered, &config);
+        for file in &files {
+            std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        }
+        let validators = typescript::generate_validators(&lowered);
+        if !validators.is_empty() {
+            std::fs::write(dir.join("validators.ts"), &validators).unwrap();
+        }
+        // `bun:test` ships no ambient types outside a bun project; without a
+        // declaration for it every file fails on the import instead of on the
+        // defect under test.
+        std::fs::write(dir.join("bun-test.d.ts"), BUN_TEST_SHIM).unwrap();
+        let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+        let sources: Vec<String> = std::fs::read_dir(dir).unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.ends_with(".ts"))
+            .collect();
+        let out = std::process::Command::new("tsc")
+            .args(["--noEmit", "--skipLibCheck", "--target", "es2022",
+                   "--module", "esnext", "--moduleResolution", "bundler"])
+            .args(&sources)
+            .current_dir(dir)
+            .output()
+            .expect("failed to run tsc (is typescript installed?)");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{name}: generated TS does not type-check\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+             --- generated ---\n{all}"
+        );
+        // A clean type-check alone would also pass for a vacuous translation,
+        // so pin the fragment that proves the resolution.
+        assert!(
+            all.contains(expected),
+            "{name}: type-checked, but expected {expected:?} in the generated TS:\n{all}"
+        );
+    }
+}
+
+const BUN_TEST_SHIM: &str = "declare module 'bun:test' {\n\
+    \x20 export const describe: any;\n\
+    \x20 export const it: any;\n\
+    \x20 export const test: any;\n\
+    \x20 export const expect: any;\n\
+    }\n";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Kotlin — gradle test
 // ═══════════════════════════════════════════════════════════════════════════════

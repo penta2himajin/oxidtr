@@ -286,6 +286,36 @@ fn write_field_annotations_ts(
     }
 }
 
+/// Whether an enum parent's union is a union of string literals rather than of
+/// tagged objects. Nothing carries a field — not the parent, not any variant —
+/// so there is no `kind` to discriminate on and the atom *is* its own name.
+///
+/// The fixture factory and the expression translator both have to agree with
+/// `generate_union_type` on this, or the fixture's value has the wrong shape
+/// for the type and `x.kind` reads a property of a string.
+pub(crate) fn is_string_literal_union(
+    s: &StructureNode,
+    variants: &[String],
+    struct_map: &HashMap<&str, &StructureNode>,
+) -> bool {
+    s.fields.is_empty() && variants.iter().all(|v| {
+        struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
+    })
+}
+
+/// `is_string_literal_union` resolved straight from the IR.
+pub(crate) fn enum_is_string_literal(ir: &OxidtrIR, enum_name: &str) -> bool {
+    let Some(s) = ir.structures.iter().find(|s| s.name == enum_name) else { return false };
+    if !s.is_enum { return false; }
+    let variants: Vec<String> = ir.structures.iter()
+        .filter(|c| c.parent.as_deref() == Some(enum_name))
+        .map(|c| c.name.clone())
+        .collect();
+    let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
+        .map(|s| (s.name.as_str(), s)).collect();
+    is_string_literal_union(s, &variants, &struct_map)
+}
+
 fn generate_union_type(
     out: &mut String,
     s: &StructureNode,
@@ -300,12 +330,7 @@ fn generate_union_type(
     // Parent abstract sig may have fields that should be inherited by all variants
     let parent_fields = &s.fields;
 
-    // Check if all variants are unit (no fields, including inherited) — use string literal union
-    let all_unit = parent_fields.is_empty() && variants.iter().all(|v| {
-        struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-    });
-
-    if all_unit {
+    if is_string_literal_union(s, variants, struct_map) {
         // Simple string literal union: type Multiplicity = "MultOne" | "MultLone" | ...
         let parts: Vec<String> = variants.iter()
             .map(|v| format!("\"{}\"", v))
@@ -552,8 +577,13 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
     let variant_names: HashSet<String> = ir.structures.iter()
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
+    // Having no field is not having no value: `sig Person {}` is `{}`, and
+    // materialising its domain empty is a sample nothing can be true of.
+    // What has no factory is what has no finite value at all (#109, #105).
+    let (terminating, _) = crate::backend::terminating_types(ir);
     let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum
+            && terminating.contains(&s.name))
         .map(|s| s.name.clone()).collect();
 
     // Check if any expression uses TC functions → need helpers import
@@ -575,7 +605,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
     // Property tests from asserts — inline expressions
     for prop in &ir.properties {
         let test_name = to_camel_case(&prop.name);
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
         // An `assert` carries temporal operators just as a `fact` does, and
@@ -653,7 +683,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("transition {fact_name}");
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "  /** @temporal Transition constraint: {fact_name} */").unwrap();
@@ -703,7 +733,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             _ => "invariant",
         };
         let test_name = format!("{test_prefix} {fact_name}");
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let ownership = super::detect_ownership_pattern(&constraint.expr, ir, ts_param_name);
@@ -786,7 +816,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -938,14 +968,14 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names_seen: HashSet<String> = HashSet::new();
             if let Some(c) = constraint_a {
-                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                for p in expr_translator::extract_params(&c.expr, &sig_names, ir) {
                     if param_names_seen.insert(p.0.clone()) {
                         all_params.push(p);
                     }
                 }
             }
             if let Some(c) = constraint_b {
-                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                for p in expr_translator::extract_params(&c.expr, &sig_names, ir) {
                     if param_names_seen.insert(p.0.clone()) {
                         all_params.push(p);
                     }
@@ -1045,35 +1075,61 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         .map(|s| (s.name.as_str(), s))
         .collect();
 
-    // Generate enum default fixtures (first variant as string literal)
+    // Generate enum default fixtures. A union of string literals takes the
+    // variant's name; a discriminated union takes an object tagged with `kind`
+    // and carrying every field the interface declares — returning the bare name
+    // there was `Type 'string' is not assignable to type 'L'`.
+    let (_, enum_witness) = crate::backend::terminating_types(ir);
     for s in &ir.structures {
         if !s.is_enum { continue; }
         let variants = match children.get(&s.name) {
             Some(v) if !v.is_empty() => v,
             _ => continue,
         };
-        // Find first unit variant (no fields)
-        let first_unit = variants.iter().find(|v| {
-            struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-        });
-        if let Some(variant) = first_unit {
+        if is_string_literal_union(s, variants, &struct_map) {
+            // Any variant will do — none of them carries a field.
+            let Some(variant) = variants.first() else { continue };
             writeln!(out, "/** Factory: default value for enum {} */", s.name).unwrap();
             writeln!(out, "export function default{}(): M.{} {{", s.name, s.name).unwrap();
             writeln!(out, "  return \"{}\";", variant).unwrap();
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
+            continue;
         }
+        // The case whose payload was satisfiable when the enum was admitted;
+        // any other may lead straight back into the enum.
+        let Some(variant) = enum_witness.get(&s.name) else { continue };
+        let own: Vec<&IRField> = struct_map.get(variant.as_str())
+            .map(|c| c.fields.iter().collect()).unwrap_or_default();
+        writeln!(out, "/** Factory: default value for enum {} */", s.name).unwrap();
+        writeln!(out, "export function default{}(): M.{} {{", s.name, s.name).unwrap();
+        writeln!(out, "  return {{").unwrap();
+        writeln!(out, "    kind: \"{variant}\",").unwrap();
+        for f in s.fields.iter().chain(own.into_iter()) {
+            let val = if f.value_type.is_some() {
+                "new Map()".to_string()
+            } else {
+                ts_default_value(&f.target, &f.mult)
+            };
+            writeln!(out, "    {}: {val},", f.name).unwrap();
+        }
+        writeln!(out, "  }};").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
 
     // Collect which types have fixture factories (for populating set/seq fields)
+    let (terminating, _) = crate::backend::terminating_types(ir);
     let fixture_types: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum
+            && terminating.contains(&s.name))
         .map(|s| s.name.clone())
         .collect();
 
     for s in &ir.structures {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        // A field-less sig is `{}` — a value, and one other fixtures reference.
+        if !terminating.contains(&s.name) { continue; }
 
         let fn_name = format!("default{}", s.name);
         writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();

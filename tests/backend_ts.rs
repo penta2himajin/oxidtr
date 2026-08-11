@@ -177,15 +177,24 @@ fn ts_tests_use_fixture_factory_for_sig_with_fields() {
         "test should use fixture factory for User:\n{tests}");
 }
 
+/// Having no field is not having no value: `sig Token {}` is `{}`. Its domain
+/// was materialised empty, so every `all` over it was vacuously true and every
+/// `some` vacuously false — and the factory other fixtures referenced through
+/// a `Token`-typed field was never generated (#105).
 #[test]
-fn ts_tests_empty_array_for_sig_without_fields() {
+fn ts_tests_populate_a_sig_without_fields() {
     let files = generate_from(
         "sig Token {}\nassert AllTokens { all t: Token | t = t }",
     );
     let tests = find_file(&files, "tests.ts");
-    // Token has no fields → no fixture factory → stays as empty array
-    assert!(tests.contains("Token[] = []"),
-        "test should use empty array for Token (no fields):\n{tests}");
+    let fixtures = find_file(&files, "fixtures.ts");
+
+    assert!(!tests.contains("Token[] = []"),
+        "an empty domain proves nothing about Token:\n{tests}");
+    assert!(tests.contains("Token[] = [fix.defaultToken()]"),
+        "test should populate Token from its factory:\n{tests}");
+    assert!(fixtures.contains("export function defaultToken()"),
+        "and the factory has to exist:\n{fixtures}");
 }
 
 // ── Feature 1: Fun return type in TS ────────────────────────────────────────
@@ -563,5 +572,80 @@ fn ts_assert_until_gets_a_trace_checker() {
     assert!(
         src.contains("findIndex("),
         "until is a position search, not a conjunction. got:\n{src}"
+    );
+}
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// In Alloy a sig name in an expression is the set of its atoms. TypeScript
+/// has no such value — the name is a type — so `#P` compiled to `P.length`,
+/// a reference to nothing.
+#[test]
+fn ts_whole_sig_cardinality_uses_a_materialised_domain() {
+    let files = generate_from("one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }");
+    let src = find_file(&files, "tests.ts");
+
+    assert!(!src.contains("P.length"), "`P` is a type, not a value:\n{src}");
+    assert!(
+        src.contains("p.x === ps.length"),
+        "the sig's cardinality is that of the sample the test builds:\n{src}"
+    );
+}
+
+/// `n.c = Config` compares an atom against the sig's whole extent.
+#[test]
+fn ts_equality_with_a_whole_sig_is_membership_in_its_domain() {
+    let files = generate_from(
+        "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+         fact UsesConfig { all n: N | n.c = Config }",
+    );
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("configs.some(e => JSON.stringify(e) === JSON.stringify(n.c))"),
+        "equality with a sig is membership in its extent:\n{src}"
+    );
+    assert!(
+        src.contains("const configs: M.Config[] = [fix.defaultConfig()];"),
+        "and the extent has to exist:\n{src}"
+    );
+}
+
+/// A variant is a member of the union, tagged by `kind` — the bare name is a
+/// type, so `!== Low` compared a value against nothing.
+#[test]
+fn ts_comparison_with_a_variant_tests_the_discriminant() {
+    let files = generate_from(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+    );
+    let src = find_file(&files, "tests.ts");
+
+    assert!(
+        src.contains("n.level.kind !== \"Low\""),
+        "being the Low atom is being the Low case:\n{src}"
+    );
+}
+
+/// A union whose members carry fields is discriminated by `kind`, so the
+/// factory has to build the object. It returned the variant's bare name —
+/// `Type 'string' is not assignable to type 'L'` (#105).
+#[test]
+fn ts_enum_fixture_matches_the_shape_of_its_union() {
+    let tagged = generate_from(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}",
+    );
+    let fixtures = find_file(&tagged, "fixtures.ts");
+    assert!(
+        fixtures.contains("kind: \"High\",") && fixtures.contains("tag: 0,"),
+        "a discriminated union needs a tagged object:\n{fixtures}"
+    );
+
+    // Nothing carries a field here, so the union really is of string literals.
+    let plain = generate_from("abstract sig S {}\none sig On extends S {}\none sig Off extends S {}");
+    let fixtures = find_file(&plain, "fixtures.ts");
+    assert!(
+        fixtures.contains("return \"On\";"),
+        "a string-literal union takes the variant's name:\n{fixtures}"
     );
 }
