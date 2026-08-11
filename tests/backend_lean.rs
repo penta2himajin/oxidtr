@@ -479,3 +479,43 @@ fn lean_disjointness_over_an_extent_defers() {
     assert!(src.contains("-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
         "the gap must be stated, not silently mistranslated:\n{src}");
 }
+
+// ── Facts and preds are no longer dropped silently (#118) ─────────────────
+
+/// A pred's clauses are conjoined in Alloy. Lean took `body.last()` and
+/// dropped the rest — silently, because what remained still elaborated.
+#[test]
+fn lean_multi_clause_pred_keeps_every_clause() {
+    let files = generate_lean(
+        "sig Acct { bal: one Int, cap: one Int }\n\
+         pred solvent[a: Acct] { a.bal > 0\n  a.bal < a.cap }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(ops.contains("a.bal > 0 ∧ a.bal < a.cap"),
+        "every clause of a pred is part of it:\n{ops}");
+}
+
+/// `Presence` was copied from Rust, where `lone` is not an `Option`. Here it
+/// is, so "guaranteed by type" was a false claim and the fact was lost.
+#[test]
+fn lean_presence_of_a_lone_field_is_a_theorem() {
+    let lone = find_file(
+        &generate_lean("sig Cfg { name: lone Str }\nfact HasName { all c: Cfg | some c.name }"),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!lone.contains("field is non-Option"),
+        "a `lone` field *is* an Option here:\n{lone}");
+    assert!(lone.contains("∀ (x : Cfg), x.name ≠ none"),
+        "so presence is a claim to prove, not a comment:\n{lone}");
+}
+
+/// `ValueBound` had no arm at all and fell into the catch-all.
+#[test]
+fn lean_value_bound_gets_a_theorem() {
+    let files = generate_lean("sig Cfg { size: one Int }\nfact Big { all c: Cfg | c.size > 3 }");
+    let src = find_file(&files, "Constraints.lean");
+
+    // `analyze` normalises `> 3` to `AtLeast(4)`, the same claim over an Int.
+    assert!(src.contains("∀ (x : Cfg), x.size ≥ 4"), "the bound is a theorem:\n{src}");
+}

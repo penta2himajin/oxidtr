@@ -1956,6 +1956,23 @@ fn lean_adversarial_models_compile() {
         ("disjointness_over_an_extent_defers",
          "sig Item {}\nabstract sig Cat { covers: set Item }\n          sig Additive extends Cat {}\nsig Multiplicative extends Cat {}\n          fact NoOverlap { no (Additive.covers & Multiplicative.covers) }",
          "-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
+        // A pred's clauses are conjoined in Alloy. Lean took `body.last()` and
+        // dropped the rest — silently, since what remained still compiled
+        // (#118). Every other backend already joins them.
+        ("multi_clause_pred_keeps_every_clause",
+         "sig Acct { bal: one Int, cap: one Int }\n          pred solvent[a: Acct] { a.bal > 0\n  a.bal < a.cap }",
+         "def solvent (a : Acct) : Prop :=\n  a.bal > 0 ∧ a.bal < a.cap"),
+        // `Presence` was copied from Rust, where `lone` is not an Option. Here
+        // it is, so "guaranteed by type" was false and the constraint was lost.
+        ("presence_of_a_lone_field_is_a_theorem_not_a_comment",
+         "sig Cfg { name: lone Str }\nfact HasName { all c: Cfg | some c.name }",
+         "∀ (x : Cfg), x.name ≠ none"),
+        // `ValueBound` had no arm at all and fell into the catch-all.
+        // `analyze` normalises `> 3` to `AtLeast(4)`, which is the same claim
+        // over an Int.
+        ("value_bound_gets_a_theorem",
+         "sig Cfg { size: one Int }\nfact Big { all c: Cfg | c.size > 3 }",
+         "∀ (x : Cfg), x.size ≥ 4"),
     ];
 
     for (name, model, expected) in cases {

@@ -421,19 +421,24 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 /// The body of a `def` lowered from a pred/fun, or `sorry` where the encoding
 /// has no term for what the Alloy expression names.
 fn write_op_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
-    let Some(body_expr) = op.body.last() else {
+    if op.body.is_empty() {
         writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
         return;
-    };
+    }
     // A sig name outside a quantifier domain is the set of its atoms, and this
     // encoding gives a sig a Lean *type* and no term for its extent. Emitting
     // the type name where a value belongs does not elaborate (#105).
-    if expr_translator::mentions_whole_sig_as_value(body_expr, ir) {
+    if op.body.iter().any(|b| expr_translator::mentions_whole_sig_as_value(b, ir)) {
         writeln!(out, "  sorry -- oxidtr: {} reads a sig's extent, which has no term in this encoding",
             op.name).unwrap();
         return;
     }
-    writeln!(out, "  {}", expr_translator::translate_with_ir(body_expr, ir)).unwrap();
+    // A pred's clauses are conjoined in Alloy. Taking the last one dropped the
+    // rest silently, since what remained still elaborated (#118).
+    let clauses: Vec<String> = op.body.iter()
+        .map(|b| expr_translator::translate_with_ir(b, ir))
+        .collect();
+    writeln!(out, "  {}", clauses.join(" ∧ ")).unwrap();
 }
 
 fn field_type_str(f: &IRField, ctx: &LeanContext) -> String {
@@ -722,15 +727,75 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 writeln!(out).unwrap();
                 theorem_idx += 1;
             }
-            // Presence: type-guaranteed in Lean (non-Option = required)
+            // A value bound is a claim about the field, exactly like a field
+            // ordering — it had no arm at all and fell into the catch-all,
+            // losing the fact with no diagnostic (#118).
+            analyze::ConstraintInfo::ValueBound { sig_name, field_name, bound } => {
+                let fname = lean_field(field_name);
+                let bound_str = match bound {
+                    analyze::BoundKind::Exact(n) => format!("x.{fname} = {n}"),
+                    analyze::BoundKind::AtMost(n) => format!("x.{fname} ≤ {n}"),
+                    analyze::BoundKind::AtLeast(n) => format!("x.{fname} ≥ {n}"),
+                };
+                writeln!(out, "theorem value_bound_{sig_name}_{field_name} :").unwrap();
+                let sig = lean_ident(sig_name);
+                writeln!(out, "    ∀ (x : {sig}), {bound_str} := by").unwrap();
+                writeln!(out, "  intro x").unwrap();
+                write_fact_sorry(&mut out);
+                writeln!(out).unwrap();
+                theorem_idx += 1;
+            }
+            // Presence is guaranteed by the type only where the field is not an
+            // `Option` — that is, a `one` field. The arm was copied from Rust,
+            // where `lone` is not an Option either, so it claimed a `lone`
+            // field was "non-Option" and dropped the constraint (#118).
             analyze::ConstraintInfo::Presence { sig_name, field_name, kind } => {
                 let fname = lean_field(field_name);
-                match kind {
-                    analyze::PresenceKind::Required => {
+                let mult = ir.structures.iter()
+                    .find(|s| s.name == *sig_name)
+                    .and_then(|s| s.fields.iter().find(|f| f.name == *field_name))
+                    .map(|f| f.mult.clone());
+                let sig = lean_ident(sig_name);
+                match (kind, &mult) {
+                    (_, Some(Multiplicity::One)) => {
                         writeln!(out, "-- {sig_name}.{fname}: required (guaranteed by type — field is non-Option)").unwrap();
                     }
-                    analyze::PresenceKind::Absent => {
-                        writeln!(out, "-- {sig_name}.{fname}: absent (guaranteed by type — field not present)").unwrap();
+                    (analyze::PresenceKind::Required, Some(Multiplicity::Lone)) => {
+                        writeln!(out, "theorem presence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} ≠ none := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    (analyze::PresenceKind::Absent, Some(Multiplicity::Lone)) => {
+                        writeln!(out, "theorem absence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} = none := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    // A `set`/`seq` is a `List`, never `none`, so presence is
+                    // non-emptiness.
+                    (analyze::PresenceKind::Required, Some(_)) => {
+                        writeln!(out, "theorem presence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} ≠ [] := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    (analyze::PresenceKind::Absent, Some(_)) => {
+                        writeln!(out, "theorem absence_{sig_name}_{field_name} :").unwrap();
+                        writeln!(out, "    ∀ (x : {sig}), x.{fname} = [] := by").unwrap();
+                        writeln!(out, "  intro x").unwrap();
+                        write_fact_sorry(&mut out);
+                        theorem_idx += 1;
+                    }
+                    // The field is not declared on this sig — inherited, or the
+                    // analysis named something that is not there. Guessing a
+                    // shape would emit a theorem that does not elaborate.
+                    (_, None) => {
+                        writeln!(out, "-- oxidtr: {sig_name}.{fname} is not declared on {sig_name}, \
+                            so its presence has no statement here").unwrap();
                     }
                 }
                 writeln!(out).unwrap();
