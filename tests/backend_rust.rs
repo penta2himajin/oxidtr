@@ -2320,3 +2320,60 @@ fn rust_boundary_without_a_diversity_source_still_generates() {
         "the factory is still emitted:\n{fixtures}"
     );
 }
+
+// ── Relational image (#142) ───────────────────────────────────────────────
+
+/// Alloy's `Schedule.morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type. `Schedule` is a Rust *type*, so the
+/// receiver form was `E0423: expected value, found struct`.
+#[test]
+fn rust_relational_image_flat_maps_the_extent() {
+    let files = generate_from(
+        "sig Task {}\nsig Schedule { morning: set Task }\n\
+         assert R { no Schedule.morning }\ncheck R for 3",
+    );
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(!tests.contains("Schedule.morning"), "`Schedule` is a type:\n{tests}");
+    assert!(
+        tests.contains("schedules.iter().flat_map(|s| s.morning.iter().cloned())\
+                        .collect::<BTreeSet<_>>()"),
+        "the image is the union over the extent:\n{tests}"
+    );
+    assert!(
+        tests.contains("let schedules: Vec<Schedule> = vec![default_schedule()];"),
+        "and the extent has to be declared:\n{tests}"
+    );
+}
+
+/// A `one` field is one element *per atom*, so the image is still a
+/// collection — `no Team.lead` is emptiness, not `is_none`.
+#[test]
+fn rust_relational_image_of_a_one_field_is_lifted() {
+    let files = generate_from(
+        "sig Person {}\nsig Team { lead: one Person }\n\
+         assert R { no Team.lead }\ncheck R for 3",
+    );
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        tests.contains("teams.iter().map(|s| s.lead.clone()).collect::<BTreeSet<_>>()"),
+        "one element per atom:\n{tests}"
+    );
+    assert!(tests.contains(".is_empty()"), "and the result is a collection:\n{tests}");
+}
+
+/// A `lone` field contributes zero or one per atom.
+#[test]
+fn rust_relational_image_of_a_lone_field_filters() {
+    let files = generate_from(
+        "sig Person {}\nsig Team { lead: lone Person }\n\
+         assert R { no Team.lead }\ncheck R for 3",
+    );
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        tests.contains("teams.iter().filter_map(|s| s.lead.clone()).collect::<BTreeSet<_>>()"),
+        "an absent lead contributes nothing:\n{tests}"
+    );
+}

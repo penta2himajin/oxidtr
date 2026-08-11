@@ -208,6 +208,18 @@ fn rust_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.contains(&t.lead)"),
+        // `Schedule.morning` is the relational image — the union of `morning`
+        // over every `Schedule` atom — not member access on a type. #105
+        // covered the positions where a sig name stands alone and left this
+        // one out, so `Schedule` was still emitted as a receiver (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.iter().flat_map(|s| s.morning.iter().cloned()).collect::<BTreeSet<_>>()"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          assert R { no Team.lead }\ncheck R for 3",
+         "teams.iter().map(|s| s.lead.clone()).collect::<BTreeSet<_>>()"),
     ];
 
     for (name, model, expected) in cases {
