@@ -1574,6 +1574,25 @@ fn cs_adversarial_models_compile() {
          "sig Task {}\nsig Schedule { morning: set Task }\n\
           assert R { no Schedule.morning }\ncheck R for 3",
          "schedules.SelectMany(s => s.Morning).ToList().Count == 0"),
+        // `Models.cs` writes `.Any(` in its validators but imported only
+        // `System` and `System.Collections.Generic` — CS1061 (#111 item 1).
+        ("models_imports_linq_for_its_own_validators",
+         "sig Task {}\nsig Schedule { morning: set Task, evening: set Task }\n\
+          fact NoOverlap { no (Schedule.morning & Schedule.evening) }",
+         "using System.Linq;"),
+        // `needs_parens` omitted `MultFormula`, so the `!` an implication puts
+        // in front of its antecedent bound to the first token only — and a
+        // set-valued operand was compared against null rather than counted
+        // (#111 item 2).
+        ("negated_multformula_is_parenthesized",
+         "sig Item {}\nsig Box { a: set Item, b: set Item }\n\
+          assert F { all x: Box | some (x.a + x.b) implies x.a = x.a }\ncheck F for 3",
+         "!(x.A.Union(x.B).ToList().Count > 0)"),
+        // A factory's name is the sig's, title-cased; escaping the *type* left
+        // the method half reading the raw name (#107).
+        ("escaped_sig_name_still_titlecases_its_factory",
+         "sig Val {}\nsig lock { v: one Val }",
+         "public static @lock DefaultLock()"),
     ];
 
     for (name, model, expected) in cases {

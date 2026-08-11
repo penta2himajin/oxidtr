@@ -388,14 +388,7 @@ fn translate_inner(
             // initialise, so it is never null: emptiness is `.Count`. Only a
             // `lone` field is nullable. Which one this is can only be answered
             // through the binding — the field name alone is ambiguous (#108).
-            let is_collection = relational_image(inner, sig_names, ir, env).is_some()
-                || match inner.as_ref() {
-                    Expr::FieldAccess { base, field } => matches!(
-                        resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
-                        Some(Multiplicity::Set) | Some(Multiplicity::Seq)
-                    ),
-                    _ => false,
-                };
+            let is_collection = is_collection_expr(inner, sig_names, ir, env);
             match (kind, is_collection) {
                 (QuantKind::Some, true) => format!("{translated}.Count > 0"),
                 (QuantKind::No, true) => format!("{translated}.Count == 0"),
@@ -561,7 +554,11 @@ fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], transla
 }
 
 fn needs_parens(expr: &Expr) -> bool {
-    matches!(expr, Expr::Comparison { .. } | Expr::BinaryLogic { .. } | Expr::Quantifier { .. })
+    // A `MultFormula` renders as a comparison too — `x != null`, `x.Count > 0`
+    // — so the `!` an implication puts in front of its antecedent bound to the
+    // first token only: `!x.A.Union(x.B).ToList() != null` is CS0023 (#111).
+    matches!(expr, Expr::Comparison { .. } | Expr::BinaryLogic { .. }
+        | Expr::Quantifier { .. } | Expr::MultFormula { .. })
 }
 
 pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Vec<(String, String)> {
@@ -585,6 +582,35 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     if crate::backend::is_native_type_alias(name) { return None; }
     if crate::backend::variant_parent(ir, name).is_some() { return None; }
     Some(to_camel_plural(name))
+}
+
+/// Whether an expression is a collection rather than a nullable reference.
+///
+/// A `set`/`seq` field lowers to a `List<T>` that fixtures always initialise,
+/// so it is never null and emptiness is `.Count`. So is a sig's extent (#105)
+/// and a relational image (#142) — and so is a set operation, whose
+/// `Union`/`Intersect`/`Except` all end in `.ToList()`. That last case was
+/// missing, so `some (x.a + x.b)` compared a `List` against null (#111).
+fn is_collection_expr(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> bool {
+    if relational_image(expr, sig_names, ir, env).is_some()
+        || whole_sig_extent_in(expr, sig_names, ir, env).is_some()
+    {
+        return true;
+    }
+    match expr {
+        Expr::FieldAccess { base, field } => matches!(
+            resolve_field(base, field, sig_names, ir, env).map(|f| f.mult.clone()),
+            Some(Multiplicity::Set) | Some(Multiplicity::Seq)
+        ),
+        // `Union`/`Intersect`/`Except` are materialised with `.ToList()`.
+        Expr::SetOp { left, right, .. } => {
+            is_collection_expr(left, sig_names, ir, env)
+                || is_collection_expr(right, sig_names, ir, env)
+        }
+        _ => false,
+    }
 }
 
 /// `Sig.field`, as the union of `field` over every atom of `Sig`.
