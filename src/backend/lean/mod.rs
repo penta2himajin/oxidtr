@@ -487,8 +487,19 @@ fn write_op_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
     }
     // A pred's clauses are conjoined in Alloy. Taking the last one dropped the
     // rest silently, since what remained still elaborated (#118).
+    let env = crate::backend::type_env::operation_env(op);
+    // Reading a field through a `lone`/`set` one is a join, which Lean spells
+    // `Option.map`/`List.map` — and the result is `Option T`/`List T`, not the
+    // `T` a `one` return type asks for (#115).
+    if let Some(path) = op.body.iter()
+        .find_map(|b| expr_translator::access_through_a_collection(b, ir, &env))
+    {
+        writeln!(out, "  sorry -- oxidtr: {} reads `{path}` through a lone/set field, \
+            which is a join this encoding cannot type", op.name).unwrap();
+        return;
+    }
     let clauses: Vec<String> = op.body.iter()
-        .map(|b| expr_translator::translate_with_ir(b, ir))
+        .map(|b| expr_translator::translate_with_env(b, ir, &env))
         .collect();
     writeln!(out, "  {}", clauses.join(" ∧ ")).unwrap();
 }
@@ -563,6 +574,15 @@ fn write_fact_sorry(out: &mut String) {
 /// The variable every constraint theorem binds. `analyze` has already stripped
 /// the `all a: Sig |` prefix, so the theorem re-introduces one of its own.
 const THEOREM_BINDER: &str = "x";
+
+/// The scope a constraint theorem's body is translated in: its own binder,
+/// typed as the sig it ranges over. Without it the translation is type-blind
+/// and cannot tell a `set` field from a `lone` one (#115).
+fn theorem_env(sig_name: &str) -> crate::backend::type_env::TypeEnv {
+    let mut env = crate::backend::type_env::TypeEnv::new();
+    env.bind(THEOREM_BINDER, sig_name);
+    env
+}
 
 /// Rewrite the receiver `analyze` left behind into the theorem's own binder.
 ///
@@ -694,8 +714,9 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Implication { sig_name, condition, consequent } => {
-                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
-                let cons_str = expr_translator::translate_with_ir(&rebind_receiver(consequent, sig_name), ir);
+                let env = theorem_env(sig_name);
+                let cond_str = expr_translator::translate_with_env(&rebind_receiver(condition, sig_name), ir, &env);
+                let cons_str = expr_translator::translate_with_env(&rebind_receiver(consequent, sig_name), ir, &env);
                 writeln!(out, "theorem implication_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {cond_str} → {cons_str} := by").unwrap();
@@ -705,8 +726,9 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Iff { sig_name, left, right } => {
-                let left_str = expr_translator::translate_with_ir(&rebind_receiver(left, sig_name), ir);
-                let right_str = expr_translator::translate_with_ir(&rebind_receiver(right, sig_name), ir);
+                let env = theorem_env(sig_name);
+                let left_str = expr_translator::translate_with_env(&rebind_receiver(left, sig_name), ir, &env);
+                let right_str = expr_translator::translate_with_env(&rebind_receiver(right, sig_name), ir, &env);
                 writeln!(out, "theorem iff_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {left_str} ↔ {right_str} := by").unwrap();
@@ -718,7 +740,7 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Prohibition { sig_name, condition } => {
-                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
+                let cond_str = expr_translator::translate_with_env(&rebind_receiver(condition, sig_name), ir, &theorem_env(sig_name));
                 writeln!(out, "theorem prohibition_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), ¬({cond_str}) := by").unwrap();

@@ -556,3 +556,78 @@ fn lean_lone_self_reference_still_derives() {
     assert!(types.contains("  next : Option Node\n  deriving Repr, BEq\n"),
         "`Option Node` is finite:\n{types}");
 }
+
+// ── Expression translation is type-directed (#115) ────────────────────────
+
+/// Lean has no `Union`/`Inter`/`SDiff` instance for `List`, and integer
+/// arithmetic came through the same arm — `hi - lo` emitted `\` and failed to
+/// synthesise `SDiff Int`. The operands' shape tells the two apart.
+#[test]
+fn lean_set_operators_are_list_operations() {
+    let sets = find_file(
+        &generate_lean(
+            "sig Leaf {}\nsig Node { a: set Leaf, b: set Leaf }\n\
+             fun Node.both: set Leaf { this.a + this.b }\n\
+             fun Node.common: set Leaf { this.a & this.b }\n\
+             fun Node.only: set Leaf { this.a - this.b }",
+        ),
+        "Types.lean",
+    ).to_string();
+    assert!(!sets.contains(" ∪ "), "`List` has no `Union` instance:\n{sets}");
+    assert!(sets.contains("self.a ++ self.b"), "union is concatenation:\n{sets}");
+    assert!(sets.contains("self.a.filter (fun e => self.b.contains e)"),
+        "intersection is a filter:\n{sets}");
+    assert!(sets.contains("self.a.filter (fun e => !self.b.contains e)"),
+        "and so is difference:\n{sets}");
+
+    let ints = find_file(
+        &generate_lean("sig Span { lo: one Int, hi: one Int }\nfun Span.width: one Int { this.hi - this.lo }"),
+        "Types.lean",
+    ).to_string();
+    assert!(ints.contains("self.hi - self.lo"), "an Int difference is arithmetic:\n{ints}");
+}
+
+/// `#` always appended `.length`, which `Option` does not have.
+#[test]
+fn lean_cardinality_follows_the_shape() {
+    let files = generate_lean(
+        "sig Leaf {}\nsig Node { kids: set Leaf, opt: lone Leaf }\n\
+         fun Node.n: one Int { #this.kids }\nfun Node.m: one Int { #this.opt }",
+    );
+    let types = find_file(&files, "Types.lean");
+
+    assert!(types.contains("self.kids.length"), "a List has a length:\n{types}");
+    assert!(types.contains("(if self.opt.isSome then 1 else 0)"),
+        "an Option's cardinality is 0 or 1:\n{types}");
+}
+
+/// `some e`/`no e` hardcoded the `Option` encoding, and `in` between two sets
+/// is subset rather than membership.
+#[test]
+fn lean_presence_and_membership_follow_the_shape() {
+    let files = generate_lean(
+        "sig Leaf {}\nsig Node { kids: set Leaf, opt: lone Leaf, a: set Leaf, b: set Leaf }\n\
+         pred hasKid[n: Node] { some n.kids }\npred hasOpt[n: Node] { some n.opt }\n\
+         pred sub[n: Node] { n.a in n.b }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(ops.contains("n.kids ≠ []"), "a List is empty, not none:\n{ops}");
+    assert!(ops.contains("n.opt ≠ none"), "an Option still is none:\n{ops}");
+    assert!(ops.contains("n.a.all (fun e => n.b.contains e)"),
+        "set-in-set is subset:\n{ops}");
+}
+
+/// Reading a field *through* a `lone`/`set` one is a join, which yields
+/// `Option T`/`List T` — not the `T` a `one` return type asks for.
+#[test]
+fn lean_access_through_a_collection_defers() {
+    let files = generate_lean(
+        "sig Inner { v: one Int }\nsig Outer { i: lone Inner }\nfun Outer.val: one Int { this.i.v }",
+    );
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("self.i.v"), "`Option` has no field `v`:\n{types}");
+    assert!(types.contains("sorry -- oxidtr: val reads `i.v` through a lone/set field"),
+        "the mismatch must be stated:\n{types}");
+}

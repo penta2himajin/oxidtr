@@ -1987,6 +1987,41 @@ fn lean_adversarial_models_compile() {
         ("lone_self_reference_still_derives",
          "sig Node { next: lone Node }",
          "structure Node where\n  next : Option Node\n  deriving Repr, BEq\n"),
+        // Expression translation was type-blind: it had no `TypeEnv`, so a
+        // `set` field and a `lone` field and an `Int` all took the same arm
+        // (#115). Lean has no `Union`/`Inter`/`SDiff` instance for `List`.
+        ("set_union_is_list_concatenation",
+         "sig Leaf {}\nsig Node { a: set Leaf, b: set Leaf }\n          fun Node.both: set Leaf { this.a + this.b }",
+         "self.a ++ self.b"),
+        ("set_intersection_and_difference_filter",
+         "sig Leaf {}\nsig Node { a: set Leaf, b: set Leaf }\n          fun Node.common: set Leaf { this.a & this.b }\n          fun Node.only: set Leaf { this.a - this.b }",
+         "self.a.filter (fun e => self.b.contains e)"),
+        // Integer `-` routed through the same `SetOp` arm and emitted `\`.
+        ("integer_difference_is_arithmetic",
+         "sig Span { lo: one Int, hi: one Int }\nfun Span.width: one Int { this.hi - this.lo }",
+         "self.hi - self.lo"),
+        // `#` always appended `.length`, which `Option` does not have.
+        ("cardinality_of_a_lone_field_counts_the_option",
+         "sig Leaf {}\nsig Node { opt: lone Leaf }\nfun Node.m: one Int { #this.opt }",
+         "(if self.opt.isSome then 1 else 0)"),
+        // `some e`/`no e` hardcoded the `Option` encoding.
+        ("presence_of_a_set_field_is_emptiness",
+         "sig Leaf {}\nsig Node { kids: set Leaf }\n          pred hasKid[n: Node] { some n.kids }\npred noKid[n: Node] { no n.kids }",
+         "n.kids ≠ []"),
+        // `in` between two sets is subset, not membership.
+        ("set_in_set_is_subset",
+         "sig Leaf {}\nsig Node { a: set Leaf, b: set Leaf }\npred sub[n: Node] { n.a in n.b }",
+         "n.a.all (fun e => n.b.contains e)"),
+        // Reading a field *through* a `lone` or `set` one is a join in Alloy
+        // and a `map` in Lean, so `this.i.v` is an `Option Int` while the
+        // declared return type is `Int`. Deferring states the mismatch; the
+        // projection did not even elaborate (#115).
+        ("access_through_a_lone_field_defers",
+         "sig Inner { v: one Int }\nsig Outer { i: lone Inner }\n          fun Outer.val: one Int { this.i.v }",
+         "sorry -- oxidtr: val reads `i.v` through a lone/set field"),
+        ("access_through_a_set_field_defers",
+         "sig Inner { v: one Int }\nsig Outer { many: set Inner }\n          fun Outer.vals: set Int { this.many.v }",
+         "sorry -- oxidtr: vals reads `many.v` through a lone/set field"),
     ];
 
     for (name, model, expected) in cases {
