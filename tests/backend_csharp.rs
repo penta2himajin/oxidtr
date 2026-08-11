@@ -277,3 +277,26 @@ fn cs_temporal_assert_gets_a_trace_checker() {
         "until is a position search, not a conjunction:\n{src}"
     );
 }
+
+// ── A field targeting a variant of an abstract sig (#93) ───────────────────
+
+/// C# emits a variant as a real class, so the field type is fine — but the
+/// fixture generator excludes variants, so `DefaultChild` was referenced and
+/// never defined (CS0103).
+#[test]
+fn cs_emits_a_fixture_for_a_variant_used_as_a_field_type() {
+    let files = generate_cs(
+        "sig Item {}\nabstract sig Parent { items: set Item }\nsig Child extends Parent {}\n\
+         sig Holder { child: one Child }",
+    );
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(
+        fixtures.contains("DefaultChild()"),
+        "a variant used as a field type needs a factory:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("static Child DefaultChild"),
+        "and the factory must be declared, not just called:\n{fixtures}"
+    );
+}

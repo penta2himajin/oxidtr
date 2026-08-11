@@ -9,7 +9,7 @@ fn module_path_to_rust(module_name: &str) -> String {
     module_name.replace('/', "::")
 }
 
-use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
+use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type, variant_parent};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -700,7 +700,48 @@ fn generate_models_inner(ir: &OxidtrIR, use_serde: bool) -> String {
     // Derived fields: receiver functions → impl blocks
     generate_derived_fields(&mut out, ir);
 
+    // A field declared to hold a variant takes the parent's type, so the
+    // variant itself would otherwise be lost — keep it as a check (#93).
+    generate_variant_field_validators(&mut out, ir);
+
     out
+}
+
+/// `sig Holder { child: one Child }` where `Child` is a case of the abstract
+/// `Parent` lowers `child` to `Parent`, because Rust has no type for a single
+/// enum case. That the value must be *that* case is still part of the model, so
+/// it becomes a check — the same way every other restriction on a value does.
+fn generate_variant_field_validators(out: &mut String, ir: &OxidtrIR) {
+    let variant_names: HashSet<String> = super::variants_used_as_field_targets(ir);
+    if variant_names.is_empty() {
+        return;
+    }
+    for s in &ir.structures {
+        if s.is_enum || super::variant_parent(ir, &s.name).is_some() {
+            continue;
+        }
+        for f in &s.fields {
+            let Some(parent) = super::variant_parent(ir, &f.target) else { continue };
+            let sig = &s.name;
+            let variant = &f.target;
+            let field = &f.name;
+            let fn_name = format!("validate_{}_{}", to_snake_case(sig), to_snake_case(field));
+            // `{ .. }` matches a case whether or not it carries fields.
+            let access = match f.mult {
+                Multiplicity::One => format!("value.{field}"),
+                _ => continue, // set/lone of a variant needs a per-element check; see #93 follow-up
+            };
+            writeln!(out, "/// `{sig}.{field}` is declared as `{variant}`, a case of `{parent}`.").unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn {fn_name}(value: &{sig}) -> Result<(), &'static str> {{").unwrap();
+            writeln!(out, "    if !matches!({access}, {parent}::{variant} {{ .. }}) {{").unwrap();
+            writeln!(out, "        return Err(\"{sig}.{field} must be {parent}::{variant}\");").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out, "    Ok(())").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
@@ -815,7 +856,9 @@ fn generate_enum(
                     let needs_box = f.target == s.name;
                     let is_self_ref = needs_box
                         || self_ref_fields.contains(&(v.clone(), f.name.clone()));
-                    let resolved_target = resolve_type(TargetLang::Rust, &f.target);
+                    // A variant is a case of the parent enum, not a type.
+                    let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
+                    let resolved_target = resolve_type(TargetLang::Rust, &target);
                     let type_str = if let Some(vt) = &f.value_type {
                         let resolved_vt = resolve_type(TargetLang::Rust, vt);
                         format!("BTreeMap<{}, {}>", resolved_target, resolved_vt)
@@ -831,7 +874,9 @@ fn generate_enum(
                 // Unit variant: collect fixed values for const methods
                 for f in &all_fields {
                     if let Some(val) = fixed_values.get(&(v.to_string(), f.name.clone())) {
-                        let resolved_target = resolve_type(TargetLang::Rust, &f.target);
+                        // A variant is a case of the parent enum, not a type.
+                    let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
+                    let resolved_target = resolve_type(TargetLang::Rust, &target);
                         if let Some(entry) = const_methods.iter_mut().find(|(name, _, _)| name == &f.name) {
                             entry.2.push((v.clone(), *val));
                         } else {
@@ -901,7 +946,9 @@ fn generate_struct(
             // Gap 1 & 3: annotations for sig multiplicity and disj constraints
             write_field_annotations_rust(out, ir, &s.name, f, "    ", disj_fields);
             let is_self_ref = self_ref_fields.contains(&(s.name.clone(), f.name.clone()));
-            let resolved_target = resolve_type(TargetLang::Rust, &f.target);
+            // A variant is a case of the parent enum, not a type.
+            let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
+            let resolved_target = resolve_type(TargetLang::Rust, &target);
             let type_str = if let Some(vt) = &f.value_type {
                 let resolved_vt = resolve_type(TargetLang::Rust, vt);
                 format!("BTreeMap<{}, {}>", resolved_target, resolved_vt)
@@ -2804,6 +2851,46 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
         }
+    }
+
+    // A field declared to hold a variant takes the parent's type (#93), but the
+    // variant it was declared as is still what the fixture should build — and
+    // `default_{variant}()` has to exist for the call site to resolve. Emit one
+    // that returns the parent, constructing exactly that case.
+    for variant in {
+        let mut v: Vec<String> = super::variants_used_as_field_targets(ir).into_iter().collect();
+        v.sort();
+        v
+    } {
+        let Some(vs) = ir.structures.iter().find(|s| s.name == variant) else { continue };
+        let Some(parent) = super::variant_parent(ir, &variant) else { continue };
+        // Same shape the enum's own factory builds: the parent's fields come
+        // first, then whatever the variant adds.
+        let parent_fields: Vec<&IRField> = ir.structures.iter()
+            .find(|p| p.name == parent)
+            .map(|p| p.fields.iter().collect())
+            .unwrap_or_default();
+        let fields: Vec<&IRField> = parent_fields.into_iter().chain(vs.fields.iter()).collect();
+        writeln!(out, "/// Factory: `{}` as the `{}` case it was declared as.", parent, variant).unwrap();
+        writeln!(out, "#[allow(dead_code)]").unwrap();
+        writeln!(out, "pub fn default_{}() -> {} {{", to_snake_case(&variant), parent).unwrap();
+        if fields.is_empty() {
+            writeln!(out, "    {parent}::{variant}").unwrap();
+        } else {
+            writeln!(out, "    {parent}::{variant} {{").unwrap();
+            for f in &fields {
+                let val = if f.value_type.is_some() {
+                    "BTreeMap::new()".to_string()
+                } else {
+                    let is_boxed = f.target == vs.name || cyclic.contains(&(variant.clone(), f.name.clone()));
+                    default_value_for_field(&f.target, &f.mult, is_boxed)
+                };
+                writeln!(out, "        {}: {},", f.name, val).unwrap();
+            }
+            writeln!(out, "    }}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
     }
 
     // Collect which types have fixture factories (for populating set/seq fields).

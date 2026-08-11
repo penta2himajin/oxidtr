@@ -348,3 +348,26 @@ fn lean_extract_theorem() {
     assert_eq!(model.fact_candidates.len(), 1);
     assert!(model.fact_candidates[0].source_pattern.contains("lean-theorem"));
 }
+
+// ── A field targeting a variant of an abstract sig (#93) ───────────────────
+
+const LEAN_VARIANT_FIELD_MODEL: &str = "\
+sig Item {}
+abstract sig Parent { items: set Item }
+sig Child extends Parent {}
+sig Holder { child: one Child }
+";
+
+/// Lean folds an abstract sig's children into one `inductive`, so `Child` is a
+/// *constructor* of `Parent`, not a type. Naming it in a field made Lean bind
+/// it as an implicit universe variable, and the structure failed to elaborate:
+/// "Constructor field `child` of `Holder.mk` contains universe level
+/// metavariables".
+#[test]
+fn lean_variant_field_uses_the_parent_type() {
+    let files = generate_lean(LEAN_VARIANT_FIELD_MODEL);
+    let types = find_file(&files, "Types.lean");
+
+    assert!(types.contains("child : Parent"), "got:\n{types}");
+    assert!(!types.contains("child : Child"), "`Child` names no Lean type:\n{types}");
+}

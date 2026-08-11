@@ -1,6 +1,6 @@
 pub mod expr_translator;
 
-use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
+use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type, variant_parent};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -195,7 +195,43 @@ fn generate_models(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
     // Derived fields: receiver functions → extensions
     generate_derived_fields(&mut out, ir);
 
+    // A field declared to hold a variant takes the parent's type, so the
+    // variant itself would otherwise be lost — keep it as a check (#93).
+    generate_variant_field_validators(&mut out, ir);
+
     out
+}
+
+/// `sig Holder { child: one Child }` where `Child` is a case of the abstract
+/// `Parent` lowers `child` to `Parent`, because Swift has no type for a single
+/// enum case. That the value must be *that* case is still part of the model, so
+/// it becomes a check.
+fn generate_variant_field_validators(out: &mut String, ir: &OxidtrIR) {
+    if crate::backend::variants_used_as_field_targets(ir).is_empty() {
+        return;
+    }
+    for s in &ir.structures {
+        if s.is_enum || variant_parent(ir, &s.name).is_some() {
+            continue;
+        }
+        for f in &s.fields {
+            let Some(parent) = variant_parent(ir, &f.target) else { continue };
+            // A set/lone of a variant needs a per-element check; see #93 follow-up.
+            if f.mult != Multiplicity::One {
+                continue;
+            }
+            let sig = &s.name;
+            let variant = &f.target;
+            let field = to_swift_field_name(&f.name);
+            let case = to_swift_case_name(variant);
+            writeln!(out, "/// `{sig}.{}` is declared as `{variant}`, a case of `{parent}`.", f.name).unwrap();
+            writeln!(out, "func validate{sig}{variant}(_ value: {sig}) -> Bool {{").unwrap();
+            writeln!(out, "    if case .{case} = value.{field} {{ return true }}").unwrap();
+            writeln!(out, "    return false").unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+        }
+    }
 }
 
 /// `is<Case>` for every payload-bearing enum case, so `x in Lit` has something
@@ -299,7 +335,9 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &Swi
         writeln!(out, "{keyword} {}: Equatable, Hashable {{", s.name).unwrap();
         let mut props: Vec<(String, String)> = Vec::new();
         for f in &s.fields {
-            let resolved_target = resolve_type(TargetLang::Swift, &f.target);
+            // A variant is a case of the parent enum, not a type (#93).
+            let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
+            let resolved_target = resolve_type(TargetLang::Swift, &target);
             let type_str = if let Some(vt) = &f.value_type {
                 let resolved_vt = resolve_type(TargetLang::Swift, vt);
                 format!("[{}: {}]", resolved_target, resolved_vt)
@@ -1209,6 +1247,40 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
         }
     }
 
+    // A field declared to hold a variant takes the parent's type (#93), but the
+    // variant it was declared as is still what the fixture should build — and
+    // `default{Variant}()` has to exist for the call site to resolve. Emit one
+    // that returns the parent, constructing exactly that case.
+    {
+        let mut needed: Vec<String> = crate::backend::variants_used_as_field_targets(ir).into_iter().collect();
+        needed.sort();
+        for variant in needed {
+            let Some(vs) = ir.structures.iter().find(|s| s.name == variant) else { continue };
+            let Some(parent) = variant_parent(ir, &variant) else { continue };
+            let parent_fields: Vec<&IRField> = ir.structures.iter()
+                .find(|p| p.name == parent)
+                .map(|p| p.fields.iter().collect())
+                .unwrap_or_default();
+            let fields: Vec<&IRField> = parent_fields.into_iter().chain(vs.fields.iter()).collect();
+            let args = if fields.is_empty() {
+                String::new()
+            } else {
+                let list = fields.iter().map(|f| {
+                    let val = if f.value_type.is_some() {
+                        "[:]".to_string()
+                    } else {
+                        swift_default_value(&f.target, &f.mult)
+                    };
+                    format!("{}: {val}", to_swift_arg_label(&f.name))
+                }).collect::<Vec<_>>().join(", ");
+                format!("({list})")
+            };
+            writeln!(out, "/// Factory: `{parent}` as the `{variant}` case it was declared as.").unwrap();
+            writeln!(out, "func default{variant}() -> {parent} {{ .{}{args} }}", to_swift_case_name(&variant)).unwrap();
+            writeln!(out).unwrap();
+        }
+    }
+
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
         if is_native_type_alias(&s.name) { continue; }
@@ -1419,12 +1491,16 @@ fn find_terminating_types(
     let mut done: HashSet<String> = HashSet::new();
     let mut witness: HashMap<String, String> = HashMap::new();
     let edge_ok = |f: &IRField, done: &HashSet<String>| {
+        // A field declared to hold a variant takes the parent's type (#93), so
+        // constructibility is the parent's — a variant is never in `done`, and
+        // treating it as its own type made every holder look non-constructible.
+        let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
         f.value_type.is_some()
             || f.mult != Multiplicity::One
-            || swift_native_default(&f.target).is_some()
-            || done.contains(&f.target)
+            || swift_native_default(&target).is_some()
+            || done.contains(&target)
             // A target with no structure of its own has nothing to recurse into.
-            || !ir.structures.iter().any(|s| s.name == f.target)
+            || !ir.structures.iter().any(|s| s.name == target)
     };
 
     loop {

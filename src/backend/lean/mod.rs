@@ -81,6 +81,17 @@ impl LeanContext {
         self.variant_names.contains(name)
     }
 
+    /// The type actually declared for `name`: a variant has none of its own, so
+    /// it resolves to the parent `inductive` it is a constructor of (#93).
+    fn declared_type_of(&self, name: &str) -> String {
+        if self.is_variant(name) {
+            if let Some(p) = self.struct_map.get(name).and_then(|s| s.parent.clone()) {
+                return p;
+            }
+        }
+        name.to_string()
+    }
+
     /// Every emitted declaration this one names in a field type. Unlike Swift's
     /// `find_recursive_types`, containers do *not* break the edge: Lean needs
     /// `List B` declared before `A` just as much as a bare `B`, and its
@@ -413,14 +424,18 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
     }
 }
 
-fn field_type_str(f: &IRField, _ctx: &LeanContext) -> String {
+fn field_type_str(f: &IRField, ctx: &LeanContext) -> String {
+    // A variant is a constructor of the parent `inductive`, not a type of its
+    // own. Naming it here made Lean auto-bind it as an implicit universe
+    // variable, and the structure failed to elaborate (#93).
+    let target = ctx.declared_type_of(&f.target);
     if let Some(vt) = &f.value_type {
-        let resolved_key = resolve_type(TargetLang::Lean, &f.target);
+        let resolved_key = resolve_type(TargetLang::Lean, &target);
         let resolved_val = resolve_type(TargetLang::Lean, vt);
         // Map type: Key → Value as List (Key × Value)
         return format!("List ({} × {})", lean_ident(&resolved_key), lean_ident(&resolved_val));
     }
-    let resolved = resolve_type(TargetLang::Lean, &f.target);
+    let resolved = resolve_type(TargetLang::Lean, &target);
     lean_mult_type(&resolved, &f.mult)
 }
 

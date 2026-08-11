@@ -431,16 +431,32 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
     // extends Expr`) get one too whenever they carry fields — a fact can quantify
     // over the variant directly (`all q: Quantifier | ...`), and the abstract
     // parent's own default (below) needs *some* concrete factory to pick from.
+    // A variant is normally not a fixture type — it is a case of its parent, not
+    // a value on its own. It becomes one the moment a field is declared to hold
+    // it, and a variant that inherits every field has an empty *own* field list,
+    // so the `fields.is_empty()` guard skipped it and left `DefaultChild`
+    // referenced but never declared (CS0103) (#93).
+    let needed_variants = backend::variants_used_as_field_targets(ir);
     for s in &ir.structures {
-        if s.is_enum || s.fields.is_empty() { continue; }
+        if s.is_enum { continue; }
+        if s.fields.is_empty() && !needed_variants.contains(&s.name) { continue; }
+
+        // Inherited fields are set through the object initialiser too — the
+        // emitted class declares them on the abstract parent.
+        let init_fields: Vec<(&IRField, String)> = inherited_and_own_fields(ir, s)
+            .into_iter()
+            .map(|(owner, f)| {
+                let val = default_value_for(&f.target, &f.mult, &owner, ir, &fixture_types, ctx);
+                (f, val)
+            })
+            .collect();
 
         // Default factory
         writeln!(out, "    public static {} Default{}()", cs_ident(&s.name), s.name).unwrap();
         writeln!(out, "    {{").unwrap();
         writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
-        for f in &s.fields {
-            let val = default_value_for(&f.target, &f.mult, &s.name, ir, &fixture_types, ctx);
+        for (f, val) in &init_fields {
             writeln!(out, "            {} = {},", capitalize(&f.name), val).unwrap();
         }
         writeln!(out, "        }};").unwrap();
@@ -1285,4 +1301,28 @@ fn emit_temporal_test_and_checker(
         }
     }
     writeln!(out).unwrap();
+}
+
+/// A sig's own fields plus those it inherits from an abstract ancestor, paired
+/// with the sig that declares each. A variant that adds nothing of its own
+/// still has to initialise what its parent declares.
+fn inherited_and_own_fields<'a>(ir: &'a OxidtrIR, s: &'a StructureNode) -> Vec<(String, &'a IRField)> {
+    let mut out: Vec<(String, &IRField)> = Vec::new();
+    let mut cur = s.parent.clone();
+    let mut chain: Vec<&StructureNode> = Vec::new();
+    while let Some(name) = cur {
+        match ir.structures.iter().find(|p| p.name == name) {
+            Some(p) => {
+                chain.push(p);
+                cur = p.parent.clone();
+            }
+            None => break,
+        }
+    }
+    // Parent-most first, so the initialiser reads top-down.
+    for p in chain.into_iter().rev() {
+        out.extend(p.fields.iter().map(|f| (p.name.clone(), f)));
+    }
+    out.extend(s.fields.iter().map(|f| (s.name.clone(), f)));
+    out
 }

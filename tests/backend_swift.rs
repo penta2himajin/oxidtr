@@ -797,3 +797,36 @@ fn swift_discloses_an_empty_assert_domain() {
     assert!(src.contains("[defaultPerson()]"), "got:\n{src}");
     assert!(src.contains("@coverage"), "an empty domain must be disclosed. got:\n{src}");
 }
+
+// ── A field targeting a variant of an abstract sig (#93) ───────────────────
+
+const SWIFT_VARIANT_FIELD_MODEL: &str = "\
+sig Item {}
+abstract sig Parent { items: set Item }
+sig Child extends Parent {}
+sig Holder { child: one Child }
+";
+
+/// Swift folds an abstract sig's variants into an enum, so `Child` is a *case*
+/// of `Parent`, not a type. A field declared to hold one emitted
+/// `let child: Child` — "cannot find type 'Child' in scope".
+#[test]
+fn swift_variant_field_uses_the_parent_type() {
+    let files = generate_swift(SWIFT_VARIANT_FIELD_MODEL);
+    let models = find_file(&files, "Models.swift");
+
+    assert!(models.contains("let child: Parent"), "got:\n{models}");
+    assert!(!models.contains("let child: Child"), "`Child` names no Swift type:\n{models}");
+}
+
+/// Dropping the variant from the type must not drop the information.
+#[test]
+fn swift_variant_field_keeps_the_variant_constraint() {
+    let files = generate_swift(SWIFT_VARIANT_FIELD_MODEL);
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    assert!(
+        all.contains("if case .child = value.child"),
+        "the field must still be constrained to the case it was declared as:\n{all}"
+    );
+}

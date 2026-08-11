@@ -2052,3 +2052,49 @@ fn rust_shared_field_name_is_order_independent() {
     assert!(src.contains("c.next.contains(&p)"), "got:\n{src}");
     assert!(src.contains("n.next.as_ref() == Some(&p)"), "got:\n{src}");
 }
+
+// ── A field targeting a variant of an abstract sig (#93) ───────────────────
+
+const VARIANT_FIELD_MODEL: &str = "\
+sig Item {}
+abstract sig Parent { items: set Item }
+sig Child extends Parent {}
+sig Holder { child: one Child }
+";
+
+/// Rust folds an abstract sig's variants into an enum, so `Child` is a *case*
+/// of `Parent`, not a type. A field declared to hold one emitted `pub child:
+/// Child` — `E0425: cannot find type Child` — and a `default_child()` that was
+/// never generated.
+///
+/// The field takes the parent type; "and it is that variant" is a constraint,
+/// which is how oxidtr expresses every other restriction on a value.
+#[test]
+fn rust_variant_field_uses_the_parent_type() {
+    let files = generate_from(VARIANT_FIELD_MODEL);
+    let models = find_file(&files, "models.rs");
+
+    assert!(
+        models.contains("pub child: Parent"),
+        "a variant is a case of its parent, not a type of its own:\n{models}"
+    );
+    assert!(
+        !models.contains("pub child: Child"),
+        "`Child` names no Rust type:\n{models}"
+    );
+}
+
+/// Dropping the variant from the type must not drop the information: the
+/// generated validator still requires it.
+#[test]
+fn rust_variant_field_keeps_the_variant_constraint() {
+    let files = generate_from(VARIANT_FIELD_MODEL);
+    // `Parent::Child` also appears in the enum's own fixture, so pin the guard
+    // rather than the mere mention.
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    assert!(
+        all.contains("matches!(value.child, Parent::Child { .. })"),
+        "the field must still be constrained to the variant it was declared as:\n{all}"
+    );
+}
