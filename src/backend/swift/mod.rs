@@ -991,8 +991,49 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             writeln!(out).unwrap();
         } else {
         writeln!(out, "    func test_{}_{}() {{", test_prefix, fact_name).unwrap();
+        // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
+        // true of a sample of two unrelated defaults. Build the link first, as
+        // the TypeScript backend already does — otherwise seeding the domains
+        // turns a vacuous pass into a false failure rather than a real check.
+        // Every stored property is a `let`, so the owner is rebuilt through the
+        // initialiser rather than mutated.
+        let ownership = crate::backend::detect_ownership_pattern(
+            &constraint.expr, ir, expr_translator::to_camel_plural);
+        let mut linked: HashSet<String> = HashSet::new();
+        if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
+            let owned = params.iter().find(|(p, _)| p == owned_var);
+            let owner = params.iter().find(|(p, _)| p == owner_var);
+            let owner_sig = ir.structures.iter().find(|s| s.name == *owner_type);
+            if let (Some((opname, otname)), Some((cpname, ctname)), Some(sig)) =
+                (owned, owner, owner_sig)
+            {
+                let args: Vec<String> = sig.fields.iter().map(|f| {
+                    let label = escape_swift_keyword(&f.name);
+                    if f.name == *field_name { format!("{label}: [item]") }
+                    else { format!("{label}: base.{label}") }
+                }).collect();
+                writeln!(out, "        let item = default{otname}()").unwrap();
+                writeln!(out, "        let base = default{ctname}()").unwrap();
+                writeln!(out, "        let owner = {ctname}({})", args.join(", ")).unwrap();
+                writeln!(out, "        let {opname}: [{otname}] = [item]").unwrap();
+                writeln!(out, "        let {cpname}: [{ctname}] = [owner]").unwrap();
+                linked.insert(opname.clone());
+                linked.insert(cpname.clone());
+            }
+        }
         for (pname, tname) in &params {
-            writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
+            // The `assert` path above already seeds from the factory; this one
+            // wrote `[]` unconditionally, so `allSatisfy` was vacuously true
+            // and the test proved nothing about the fact (#136, #81).
+            if linked.contains(pname) {
+                // already materialised as the owner/owned pair
+            } else if fixture_types.contains(tname) {
+                writeln!(out, "        let {pname}: [{tname}] = [default{tname}()]").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        let {pname}: [{tname}] = []").unwrap();
+            }
         }
         writeln!(out, "        XCTAssertTrue({body})").unwrap();
         writeln!(out, "    }}").unwrap();
@@ -1083,12 +1124,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
 
     // --- Anomaly tests ---
     let anomalies = analyze::detect_anomalies(ir);
-    let variant_names: HashSet<String> = ir.structures.iter()
-        .filter(|s| s.parent.is_some())
-        .map(|s| s.name.clone()).collect();
-    let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
-        .map(|s| s.name.clone()).collect();
+    let has_fixture = crate::backend::collect_fixture_types(ir);
     if !anomalies.is_empty() {
         writeln!(out, "    // --- Anomaly tests: edge-case coverage ---").unwrap();
         writeln!(out).unwrap();

@@ -635,3 +635,73 @@ fn transition_walks_the_bindings_own_domain_in_every_backend() {
         );
     }
 }
+
+/// An `all` over an empty domain is true whatever the implementation does, so a
+/// vacuous invariant test is green and worthless (#136). The `assert` path in
+/// these backends already seeds its domain from the factory; the `fact` path
+/// wrote `emptyList()` unconditionally.
+#[test]
+fn invariant_domains_are_seeded_from_the_factory_in_every_backend() {
+    const MODEL: &str = "sig P { x: one Int }\nfact CardOne { all p: P | p.x = 0 }";
+    let model = oxidtr::parser::parse(MODEL).expect("parse");
+    let ir = oxidtr::ir::lower(&model).expect("lower");
+
+    let cases: Vec<(&str, Vec<oxidtr::backend::GeneratedFile>, &str)> = vec![
+        ("typescript", oxidtr::backend::typescript::generate(&ir), "[fix.defaultP()]"),
+        ("kotlin", oxidtr::backend::jvm::kotlin::generate(&ir), "listOf(defaultP())"),
+        ("java", oxidtr::backend::jvm::java::generate(&ir), "List.of(Fixtures.defaultP())"),
+        ("swift", oxidtr::backend::swift::generate(&ir), "[defaultP()]"),
+        ("go", oxidtr::backend::go::generate(&ir), "[]P{DefaultP()}"),
+        ("csharp", oxidtr::backend::csharp::generate(&ir), "Fixtures.DefaultP()"),
+    ];
+
+    for (lang, files, expected) in &cases {
+        let tests: String = files.iter()
+            .filter(|f| f.path.to_lowercase().contains("test"))
+            .map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+        let inv = tests.split("CardOne").nth(1).unwrap_or_else(
+            || panic!("{lang}: no invariant test for CardOne:\n{tests}"));
+        assert!(
+            inv.contains(expected),
+            "{lang}: the invariant domain must be seeded with {expected:?}:\n{tests}"
+        );
+    }
+}
+
+/// Having no field is not having no value: `sig Person {}` is `{}`, and every
+/// backend already emits a factory for it. Only `has_fixture` disagreed, so the
+/// domain was materialised empty and the quantifier went vacuous (#136, #109).
+#[test]
+fn a_field_less_sig_counts_as_having_a_fixture_in_every_backend() {
+    const MODEL: &str = "sig Person {}\nfact Refl { all q: Person | q = q }";
+    let model = oxidtr::parser::parse(MODEL).expect("parse");
+    let ir = oxidtr::ir::lower(&model).expect("lower");
+
+    let cases: Vec<(&str, Vec<oxidtr::backend::GeneratedFile>, &str)> = vec![
+        ("typescript", oxidtr::backend::typescript::generate(&ir), "defaultPerson()"),
+        ("kotlin", oxidtr::backend::jvm::kotlin::generate(&ir), "defaultPerson()"),
+        ("java", oxidtr::backend::jvm::java::generate(&ir), "defaultPerson()"),
+        ("swift", oxidtr::backend::swift::generate(&ir), "defaultPerson()"),
+        ("go", oxidtr::backend::go::generate(&ir), "DefaultPerson()"),
+        ("csharp", oxidtr::backend::csharp::generate(&ir), "DefaultPerson()"),
+    ];
+
+    for (lang, files, expected) in &cases {
+        let joined: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+        let tests: String = files.iter()
+            .filter(|f| f.path.to_lowercase().contains("test"))
+            .map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+        assert!(
+            joined.contains(expected),
+            "{lang}: a field-less sig must still get a factory:\n{joined}"
+        );
+        assert!(
+            tests.contains(expected),
+            "{lang}: the domain must use it, not be materialised empty:\n{tests}"
+        );
+        assert!(
+            !tests.contains("vacuously satisfied"),
+            "{lang}: nothing here is vacuous — the factory exists:\n{tests}"
+        );
+    }
+}

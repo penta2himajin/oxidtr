@@ -883,8 +883,54 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         } else {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    void {}_{}() {{", test_prefix, fact_name).unwrap();
+        // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
+        // true of a sample of two unrelated defaults. Build the link first, as
+        // the TypeScript backend already does — otherwise seeding the domains
+        // turns a vacuous pass into a false failure rather than a real check.
+        // A record is final in every component, so the owner is rebuilt through
+        // the canonical constructor rather than mutated.
+        let ownership = crate::backend::detect_ownership_pattern(
+            &constraint.expr, ir, expr_translator::to_camel_plural);
+        let mut linked: HashSet<String> = HashSet::new();
+        if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
+            let owned = params.iter().find(|(p, _)| p == owned_var);
+            let owner = params.iter().find(|(p, _)| p == owner_var);
+            let owner_sig = ir.structures.iter().find(|s| s.name == *owner_type);
+            if let (Some((opname, otname)), Some((cpname, ctname)), Some(sig)) =
+                (owned, owner, owner_sig)
+            {
+                // Fully qualified: `Tests.java` imports only `List`, and an
+                // import emitted for one fact would be unused in every other.
+                let of = match sig.fields.iter().find(|f| f.name == *field_name).map(|f| &f.mult) {
+                    Some(Multiplicity::Seq) => "java.util.List.of(item)",
+                    _ => "java.util.Set.of(item)",
+                };
+                let args: Vec<String> = sig.fields.iter().map(|f| {
+                    if f.name == *field_name { of.to_string() }
+                    else { format!("base.{}()", f.name) }
+                }).collect();
+                writeln!(out, "        var item = Fixtures.default{otname}();").unwrap();
+                writeln!(out, "        var base = Fixtures.default{ctname}();").unwrap();
+                writeln!(out, "        var owner = new {ctname}({});", args.join(", ")).unwrap();
+                writeln!(out, "        List<{otname}> {opname} = List.of(item);").unwrap();
+                writeln!(out, "        List<{ctname}> {cpname} = List.of(owner);").unwrap();
+                linked.insert(opname.clone());
+                linked.insert(cpname.clone());
+            }
+        }
         for (pname, tname) in &params {
-            writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+            // The `assert` path above already seeds from the factory; this one
+            // wrote `List.of()` unconditionally, so `allMatch` was vacuously
+            // true and the test proved nothing about the fact (#136, #81).
+            if linked.contains(pname) {
+                // already materialised as the owner/owned pair
+            } else if fixture_types.contains(tname) {
+                writeln!(out, "        List<{tname}> {pname} = List.of(Fixtures.default{tname}());").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        List<{tname}> {pname} = List.of();").unwrap();
+            }
         }
         writeln!(out, "        assertTrue({body});").unwrap();
         writeln!(out, "    }}").unwrap();
@@ -991,10 +1037,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             anomaly_sigs.entry(sig.clone()).or_default().push(a);
         }
 
-        let has_fixture: HashSet<String> = ir.structures.iter()
-            .filter(|s| !s.is_enum && !s.fields.is_empty())
-            .map(|s| s.name.clone())
-            .collect();
+        let has_fixture = crate::backend::collect_fixture_types(ir);
 
         for (sig_name, patterns) in &anomaly_sigs {
             if !has_fixture.contains(sig_name) { continue; }
@@ -1040,10 +1083,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "    // --- Coverage tests: fact × fact pairwise ---").unwrap();
         writeln!(out).unwrap();
 
-        let has_fixture: HashSet<String> = ir.structures.iter()
-            .filter(|s| !s.is_enum && !s.fields.is_empty())
-            .map(|s| s.name.clone())
-            .collect();
+        let has_fixture = crate::backend::collect_fixture_types(ir);
 
         let mut seen_cover: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {

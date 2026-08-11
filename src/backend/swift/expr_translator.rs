@@ -633,7 +633,7 @@ fn needs_parens(expr: &Expr) -> bool {
     matches!(expr, Expr::Comparison { .. } | Expr::BinaryLogic { .. } | Expr::Quantifier { .. })
 }
 
-fn to_camel_plural(name: &str) -> String {
+pub fn to_camel_plural(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
         if i == 0 {

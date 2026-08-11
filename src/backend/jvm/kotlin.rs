@@ -622,15 +622,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     let sig_names = expr_translator::collect_sig_names(ir);
     let lang = KotlinLang;
 
-    let enum_parents: HashSet<String> = ir.structures.iter()
-        .filter(|s| s.is_enum)
-        .map(|s| s.name.clone()).collect();
-    let variant_names_set: HashSet<String> = ir.structures.iter()
-        .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
-        .map(|s| s.name.clone()).collect();
-    let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty())
-        .map(|s| s.name.clone()).collect();
+    let has_fixture = crate::backend::collect_fixture_types(ir);
 
     writeln!(out, "import org.junit.jupiter.api.Test").unwrap();
     writeln!(out, "import org.junit.jupiter.api.Disabled").unwrap();
@@ -824,8 +816,39 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         } else {
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{test_prefix} {fact_name}`() {{").unwrap();
+        // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
+        // true of a sample of two unrelated defaults. Build the link first, as
+        // the TypeScript backend already does — otherwise seeding the domains
+        // turns a vacuous pass into a false failure rather than a real check.
+        let ownership = crate::backend::detect_ownership_pattern(
+            &constraint.expr, ir, expr_translator::to_camel_plural);
+        let mut linked: HashSet<String> = HashSet::new();
+        if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
+            let owned = params.iter().find(|(p, _)| p == owned_var);
+            let owner = params.iter().find(|(p, _)| p == owner_var);
+            if let (Some((opname, otname)), Some((cpname, ctname))) = (owned, owner) {
+                let of = collection_of(ir, owner_type, field_name);
+                writeln!(out, "        val item = default{otname}()").unwrap();
+                writeln!(out, "        val owner = default{ctname}().copy({field_name} = {of}(item))").unwrap();
+                writeln!(out, "        val {opname}: List<{otname}> = listOf(item)").unwrap();
+                writeln!(out, "        val {cpname}: List<{ctname}> = listOf(owner)").unwrap();
+                linked.insert(opname.clone());
+                linked.insert(cpname.clone());
+            }
+        }
         for (pname, tname) in &params {
-            writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+            // The `assert` path above already seeds from the factory; this one
+            // wrote `emptyList()` unconditionally, so `all` was vacuously true
+            // and the test proved nothing about the fact (#136, #81).
+            if linked.contains(pname) {
+                // already materialised as the owner/owned pair
+            } else if fixture_types.contains(tname) {
+                writeln!(out, "        val {pname}: List<{tname}> = listOf(default{tname}())").unwrap();
+            } else {
+                writeln!(out, "        // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "        // this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
+            }
         }
         writeln!(out, "        assertTrue({body})").unwrap();
         writeln!(out, "    }}").unwrap();
@@ -1552,6 +1575,20 @@ fn emit_temporal_trace_checkers(
 /// Adapter so the extracted block keeps reading `constraint.expr`.
 struct TemporalSource<'a> {
     expr: &'a crate::parser::ast::Expr,
+}
+
+/// The Kotlin builder for a one-element collection of `sig.field`, matching the
+/// container `resolve_type` gave the field — `setOf` for `set`, `listOf` for
+/// `seq`. Passing the wrong one is a type error, not a wrong value.
+fn collection_of(ir: &OxidtrIR, sig: &str, field: &str) -> &'static str {
+    let mult = ir.structures.iter()
+        .find(|s| s.name == sig)
+        .and_then(|s| s.fields.iter().find(|f| f.name == field))
+        .map(|f| f.mult.clone());
+    match mult {
+        Some(Multiplicity::Seq) => "listOf",
+        _ => "setOf",
+    }
 }
 
 /// The name `emit_temporal_trace_checkers` will give this constraint's checker,

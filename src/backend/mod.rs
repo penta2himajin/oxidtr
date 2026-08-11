@@ -273,15 +273,24 @@ pub fn variant_parent(ir: &OxidtrIR, target: &str) -> Option<String> {
         .then(|| parent.clone())
 }
 
-/// Collect fixture-eligible types: non-enum, non-variant sigs with fields.
+/// Collect fixture-eligible types: non-enum, non-variant sigs that have a value.
+///
+/// Having no field is not having no value: `sig Person {}` is `{}`, and every
+/// backend already emits a factory for it. Keying on `!fields.is_empty()` left
+/// those sigs out, so their domains were materialised empty and the quantifier
+/// over them went vacuous (#136, #105). What has no factory is what has no
+/// finite value at all — a cycle of `one` fields — which is what
+/// `terminating_types` decides (#109).
 pub fn collect_fixture_types(ir: &OxidtrIR) -> HashSet<String> {
     let enum_parents: HashSet<String> = ir.structures.iter()
         .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
     let variant_names: HashSet<String> = ir.structures.iter()
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
+    let (terminating, _) = terminating_types(ir);
     ir.structures.iter()
-        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
+        .filter(|s| !variant_names.contains(&s.name) && !s.is_enum
+            && terminating.contains(&s.name)
             && !is_native_type_alias(&s.name))
         .map(|s| s.name.clone())
         .collect()
