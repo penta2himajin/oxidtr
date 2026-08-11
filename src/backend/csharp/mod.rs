@@ -819,14 +819,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        // Binary temporal / liveness: cannot assert with single snapshot
+        // Binary temporal / liveness: a single snapshot cannot decide these, so
+        // they get a trace checker — the machinery every other backend has and
+        // C# did not, which left the operator erased entirely (#78).
         if temporal_kind == Some(analyze::TemporalKind::Binary) || matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
-            writeln!(out, "    [Fact]").unwrap();
-            writeln!(out, "    public void {test_name}()").unwrap();
-            writeln!(out, "    {{").unwrap();
-            writeln!(out, "        // temporal: requires trace-based verification").unwrap();
-            writeln!(out, "    }}").unwrap();
-            writeln!(out).unwrap();
+            emit_temporal_test_and_checker(&mut out, &test_name, &fact_name, &constraint.expr, &params, ir, temporal_kind);
             continue;
         }
 
@@ -858,6 +855,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let test_name = capitalize(&prop.name);
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
+
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them (#78).
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            emit_temporal_test_and_checker(&mut out, &test_name, &prop.name, &prop.expr, &params, ir, temporal_kind);
+            continue;
+        }
 
         writeln!(out, "    [Fact]").unwrap();
         writeln!(out, "    public void {test_name}()").unwrap();
@@ -1159,4 +1169,120 @@ fn translate_validator_expr_cs(expr: &crate::parser::ast::Expr, sig_name: &str) 
         }
         _ => analyze::describe_expr(expr), // fallback: human-readable
     }
+}
+
+/// The name the trace checker for this constraint is emitted under.
+fn temporal_checker_name(
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    kind: Option<analyze::TemporalKind>,
+) -> Option<String> {
+    let cap = capitalize(name);
+    match kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let (op, _, _, _) = analyze::find_temporal_binary_with_bindings(expr)?;
+            let op_label = match op {
+                crate::parser::ast::TemporalBinaryOp::Until => "Until",
+                crate::parser::ast::TemporalBinaryOp::Since => "Since",
+                crate::parser::ast::TemporalBinaryOp::Release => "Release",
+                crate::parser::ast::TemporalBinaryOp::Triggered => "Triggered",
+            };
+            Some(format!("Check{op_label}{cap}"))
+        }
+        Some(analyze::TemporalKind::PastLiveness) => Some(format!("CheckPastLiveness{cap}")),
+        Some(analyze::TemporalKind::Liveness) => Some(format!("CheckLiveness{cap}")),
+        _ => None,
+    }
+}
+
+/// Emit a temporal constraint's test together with the trace checker it calls.
+///
+/// Shared by the `fact` and `assert` paths. A single snapshot cannot decide a
+/// liveness or binary temporal property, so the test pins the one thing a
+/// snapshot *can* decide — the empty trace satisfies neither — and that is also
+/// what keeps the checker referenced rather than dead.
+fn emit_temporal_test_and_checker(
+    out: &mut String,
+    test_name: &str,
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    params: &[(String, String)],
+    ir: &OxidtrIR,
+    temporal_kind: Option<analyze::TemporalKind>,
+) {
+    let checker = temporal_checker_name(name, expr, temporal_kind);
+    let elem = params.first().map(|(_, t)| cs_type_name(t)).unwrap_or_else(|| "object".to_string());
+
+    writeln!(out, "    [Fact]").unwrap();
+    writeln!(out, "    public void {test_name}()").unwrap();
+    writeln!(out, "    {{").unwrap();
+    writeln!(out, "        // full verification needs a trace; an empty trace can never").unwrap();
+    writeln!(out, "        // satisfy it, which at least exercises the checker.").unwrap();
+    match &checker {
+        Some(c) => {
+            writeln!(out, "        var trace = new List<List<{elem}>>();").unwrap();
+            writeln!(out, "        Assert.False({c}(trace));").unwrap();
+        }
+        None => writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap(),
+    }
+    writeln!(out, "    }}").unwrap();
+    writeln!(out).unwrap();
+
+    let Some(checker) = checker else { return };
+    let pname = params.first().map(|(p, _)| p.clone()).unwrap_or_else(|| "state".to_string());
+
+    match temporal_kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let Some((op, left, right, _)) = analyze::find_temporal_binary_with_bindings(expr) else { return };
+            let left_pred = expr_translator::translate_trace_body(left, ir);
+            let right_pred = expr_translator::translate_trace_body(right, ir);
+            let semantics = match op {
+                crate::parser::ast::TemporalBinaryOp::Until => "left holds until right becomes true",
+                crate::parser::ast::TemporalBinaryOp::Since => "left has held since right was true",
+                crate::parser::ast::TemporalBinaryOp::Release => "right holds until left releases it",
+                crate::parser::ast::TemporalBinaryOp::Triggered => "left triggers right",
+            };
+            writeln!(out, "    /// <summary>Trace checker: {semantics}.</summary>").unwrap();
+            writeln!(out, "    private static bool {checker}(List<List<{elem}>> trace)").unwrap();
+            writeln!(out, "    {{").unwrap();
+            match op {
+                crate::parser::ast::TemporalBinaryOp::Until => {
+                    writeln!(out, "        var pos = trace.FindIndex({pname} => {right_pred});").unwrap();
+                    writeln!(out, "        return pos >= 0 && trace.Take(pos).All({pname} => {left_pred});").unwrap();
+                }
+                crate::parser::ast::TemporalBinaryOp::Since => {
+                    writeln!(out, "        var pos = trace.FindLastIndex({pname} => {right_pred});").unwrap();
+                    writeln!(out, "        return pos >= 0 && trace.Skip(pos).All({pname} => {left_pred});").unwrap();
+                }
+                crate::parser::ast::TemporalBinaryOp::Release => {
+                    writeln!(out, "        var pos = trace.FindIndex({pname} => {left_pred});").unwrap();
+                    writeln!(out, "        return pos >= 0").unwrap();
+                    writeln!(out, "            ? trace.Take(pos + 1).All({pname} => {right_pred})").unwrap();
+                    writeln!(out, "            : trace.All({pname} => {right_pred});").unwrap();
+                }
+                crate::parser::ast::TemporalBinaryOp::Triggered => {
+                    writeln!(out, "        for (var i = 0; i < trace.Count; i++)").unwrap();
+                    writeln!(out, "        {{").unwrap();
+                    writeln!(out, "            var {pname} = trace[i];").unwrap();
+                    writeln!(out, "            if ({right_pred} && !trace.Take(i + 1).Any({pname} => {left_pred})) return false;").unwrap();
+                    writeln!(out, "        }}").unwrap();
+                    writeln!(out, "        return true;").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+        }
+        _ => {
+            let past = temporal_kind == Some(analyze::TemporalKind::PastLiveness);
+            let semantics = if past {
+                "property held in at least one past state"
+            } else {
+                "property holds in at least one future state"
+            };
+            let pred = expr_translator::translate_trace_body(expr, ir);
+            writeln!(out, "    /// <summary>Trace checker: {semantics}.</summary>").unwrap();
+            writeln!(out, "    private static bool {checker}(List<List<{elem}>> trace) =>").unwrap();
+            writeln!(out, "        trace.Any({pname} => {pred});").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
 }

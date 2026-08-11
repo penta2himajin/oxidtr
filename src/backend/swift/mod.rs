@@ -759,6 +759,38 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             continue;
         }
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them (#78).
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            let label = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => "binary temporal",
+                _ => "liveness",
+            };
+            writeln!(out, "    func test_{}() {{", prop.name).unwrap();
+            writeln!(out, "        // {label}: full verification needs a trace; an empty trace").unwrap();
+            writeln!(out, "        // can never satisfy it, which at least exercises the checker.").unwrap();
+            match temporal_checker_name(&prop.name, &prop.expr, temporal_kind) {
+                Some(checker) => {
+                    let tname = params.first().map(|(_, t)| t.as_str()).unwrap_or("Never");
+                    writeln!(out, "        let trace: [[{tname}]] = []").unwrap();
+                    writeln!(out, "        XCTAssertFalse({checker}(trace: trace))").unwrap();
+                }
+                None => {
+                    writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "    func test_{}() {{", prop.name).unwrap();
         for (pname, tname) in &params {
             // An empty domain makes `allSatisfy` vacuously true, so the test
@@ -918,111 +950,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
         writeln!(out).unwrap();
         } // end non-binary temporal
 
-        // Generate trace checker functions for temporal constraints
-        if let Some(kind) = temporal_kind {
-            let snake_name = to_snake_case(&fact_name);
-            match kind {
-                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
-                    let kind_label = if kind == analyze::TemporalKind::Liveness {
-                        "liveness" } else { "past_liveness" };
-                    let semantics = if kind == analyze::TemporalKind::Liveness {
-                        "property holds in at least one future state"
-                    } else {
-                        "property held in at least one past state"
-                    };
-                    writeln!(out, "    /// Trace checker for {kind_label}: {semantics}.").unwrap();
-                    if params.len() == 1 {
-                        let (pname, tname) = &params[0];
-                        writeln!(out, "    func check_{kind_label}_{snake_name}(trace: [[{tname}]]) -> Bool {{").unwrap();
-                        writeln!(out, "        trace.contains {{ {pname} in").unwrap();
-                    } else {
-                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("[{t}]")).collect();
-                        let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
-                        writeln!(out, "    func check_{kind_label}_{snake_name}(trace: [({})]) -> Bool {{", tuple_types.join(", ")).unwrap();
-                        writeln!(out, "        trace.contains {{ ({}) in", tuple_names.join(", ")).unwrap();
-                    }
-                    writeln!(out, "            {body}").unwrap();
-                    writeln!(out, "        }}").unwrap();
-                    writeln!(out, "    }}").unwrap();
-                    writeln!(out).unwrap();
-                }
-                analyze::TemporalKind::Binary => {
-                    if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
-                        let left_body = expr_translator::translate_with_ir(left, ir);
-                        let right_body = expr_translator::translate_with_ir(right, ir);
-                        let op_name = match op {
-                            TemporalBinaryOp::Until => "until",
-                            TemporalBinaryOp::Since => "since",
-                            TemporalBinaryOp::Release => "release",
-                            TemporalBinaryOp::Triggered => "triggered",
-                        };
-                        let semantics = match op {
-                            TemporalBinaryOp::Until => "left holds until right becomes true",
-                            TemporalBinaryOp::Since => "left has held since right was true",
-                            TemporalBinaryOp::Release => "right holds until left releases it",
-                            TemporalBinaryOp::Triggered => "left triggers right",
-                        };
-                        writeln!(out, "    /// Trace checker for {op_name}: {semantics}.").unwrap();
-                        if params.len() == 1 {
-                            let (pname, tname) = &params[0];
-                            writeln!(out, "    func check_{op_name}_{snake_name}(trace: [[{tname}]]) -> Bool {{").unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        guard let pos = trace.firstIndex(where: {{ {pname} in {right_body} }}) else {{ return false }}").unwrap();
-                                    writeln!(out, "        return trace.prefix(pos).allSatisfy {{ {pname} in {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        guard let pos = trace.lastIndex(where: {{ {pname} in {right_body} }}) else {{ return false }}").unwrap();
-                                    writeln!(out, "        return trace.suffix(from: pos).allSatisfy {{ {pname} in {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        if let pos = trace.firstIndex(where: {{ {pname} in {left_body} }}) {{").unwrap();
-                                    writeln!(out, "            return trace.prefix(through: pos).allSatisfy {{ {pname} in {right_body} }}").unwrap();
-                                    writeln!(out, "        }} else {{").unwrap();
-                                    writeln!(out, "            return trace.allSatisfy {{ {pname} in {right_body} }}").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return trace.enumerated().allSatisfy {{ (i, {pname}) in").unwrap();
-                                    writeln!(out, "            if {right_body} {{ return trace.prefix(through: i).contains {{ {pname} in {left_body} }} }} else {{ return true }}").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                            }
-                        } else {
-                            let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("[{t}]")).collect();
-                            let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
-                            let pnames = tuple_names.join(", ");
-                            writeln!(out, "    func check_{op_name}_{snake_name}(trace: [({})]) -> Bool {{", tuple_types.join(", ")).unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        guard let pos = trace.firstIndex(where: {{ ({pnames}) in {right_body} }}) else {{ return false }}").unwrap();
-                                    writeln!(out, "        return trace.prefix(pos).allSatisfy {{ ({pnames}) in {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        guard let pos = trace.lastIndex(where: {{ ({pnames}) in {right_body} }}) else {{ return false }}").unwrap();
-                                    writeln!(out, "        return trace.suffix(from: pos).allSatisfy {{ ({pnames}) in {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        if let pos = trace.firstIndex(where: {{ ({pnames}) in {left_body} }}) {{").unwrap();
-                                    writeln!(out, "            return trace.prefix(through: pos).allSatisfy {{ ({pnames}) in {right_body} }}").unwrap();
-                                    writeln!(out, "        }} else {{").unwrap();
-                                    writeln!(out, "            return trace.allSatisfy {{ ({pnames}) in {right_body} }}").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return trace.enumerated().allSatisfy {{ (i, ({pnames})) in").unwrap();
-                                    writeln!(out, "            if {right_body} {{ return trace.prefix(through: i).contains {{ ({pnames}) in {left_body} }} }} else {{ return true }}").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                            }
-                        }
-                        writeln!(out, "    }}").unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
-                _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
-            }
-        }
+        emit_temporal_trace_checkers(&mut out, &fact_name, &constraint.expr, &params, &body, ir, temporal_kind);
     }
 
     // Boundary value tests
@@ -1693,5 +1621,157 @@ fn translate_validator_expr_swift(expr: &crate::parser::ast::Expr, sig_name: &st
             format!("{}.count", translate_validator_expr_swift(inner, sig_name))
         }
         _ => analyze::describe_expr(expr), // fallback: human-readable
+    }
+}
+
+/// Emit the trace-checker functions a temporal constraint needs.
+///
+/// Shared by the `fact` and `assert` paths. Only the fact path used to call it,
+/// so an `assert` erased its temporal operators entirely (#78).
+fn emit_temporal_trace_checkers(
+    out: &mut String,
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    params: &[(String, String)],
+    body: &str,
+    ir: &OxidtrIR,
+    temporal_kind: Option<analyze::TemporalKind>,
+) {
+    let constraint = TemporalSource { expr };
+    let _ = (&constraint, body);
+    // Generate trace checker functions for temporal constraints
+    if let Some(kind) = temporal_kind {
+        let snake_name = to_snake_case(name);
+        match kind {
+            analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
+                let kind_label = if kind == analyze::TemporalKind::Liveness {
+                    "liveness" } else { "past_liveness" };
+                let semantics = if kind == analyze::TemporalKind::Liveness {
+                    "property holds in at least one future state"
+                } else {
+                    "property held in at least one past state"
+                };
+                writeln!(out, "    /// Trace checker for {kind_label}: {semantics}.").unwrap();
+                if params.len() == 1 {
+                    let (pname, tname) = &params[0];
+                    writeln!(out, "    func check_{kind_label}_{snake_name}(trace: [[{tname}]]) -> Bool {{").unwrap();
+                    writeln!(out, "        trace.contains {{ {pname} in").unwrap();
+                } else {
+                    let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("[{t}]")).collect();
+                    let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
+                    writeln!(out, "    func check_{kind_label}_{snake_name}(trace: [({})]) -> Bool {{", tuple_types.join(", ")).unwrap();
+                    writeln!(out, "        trace.contains {{ ({}) in", tuple_names.join(", ")).unwrap();
+                }
+                writeln!(out, "            {body}").unwrap();
+                writeln!(out, "        }}").unwrap();
+                writeln!(out, "    }}").unwrap();
+                writeln!(out).unwrap();
+            }
+            analyze::TemporalKind::Binary => {
+                if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
+                    let left_body = expr_translator::translate_with_ir(left, ir);
+                    let right_body = expr_translator::translate_with_ir(right, ir);
+                    let op_name = match op {
+                        TemporalBinaryOp::Until => "until",
+                        TemporalBinaryOp::Since => "since",
+                        TemporalBinaryOp::Release => "release",
+                        TemporalBinaryOp::Triggered => "triggered",
+                    };
+                    let semantics = match op {
+                        TemporalBinaryOp::Until => "left holds until right becomes true",
+                        TemporalBinaryOp::Since => "left has held since right was true",
+                        TemporalBinaryOp::Release => "right holds until left releases it",
+                        TemporalBinaryOp::Triggered => "left triggers right",
+                    };
+                    writeln!(out, "    /// Trace checker for {op_name}: {semantics}.").unwrap();
+                    if params.len() == 1 {
+                        let (pname, tname) = &params[0];
+                        writeln!(out, "    func check_{op_name}_{snake_name}(trace: [[{tname}]]) -> Bool {{").unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        guard let pos = trace.firstIndex(where: {{ {pname} in {right_body} }}) else {{ return false }}").unwrap();
+                                writeln!(out, "        return trace.prefix(pos).allSatisfy {{ {pname} in {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        guard let pos = trace.lastIndex(where: {{ {pname} in {right_body} }}) else {{ return false }}").unwrap();
+                                writeln!(out, "        return trace.suffix(from: pos).allSatisfy {{ {pname} in {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        if let pos = trace.firstIndex(where: {{ {pname} in {left_body} }}) {{").unwrap();
+                                writeln!(out, "            return trace.prefix(through: pos).allSatisfy {{ {pname} in {right_body} }}").unwrap();
+                                writeln!(out, "        }} else {{").unwrap();
+                                writeln!(out, "            return trace.allSatisfy {{ {pname} in {right_body} }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return trace.enumerated().allSatisfy {{ (i, {pname}) in").unwrap();
+                                writeln!(out, "            if {right_body} {{ return trace.prefix(through: i).contains {{ {pname} in {left_body} }} }} else {{ return true }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    } else {
+                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("[{t}]")).collect();
+                        let tuple_names: Vec<_> = params.iter().map(|(p, _)| p.as_str()).collect();
+                        let pnames = tuple_names.join(", ");
+                        writeln!(out, "    func check_{op_name}_{snake_name}(trace: [({})]) -> Bool {{", tuple_types.join(", ")).unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        guard let pos = trace.firstIndex(where: {{ ({pnames}) in {right_body} }}) else {{ return false }}").unwrap();
+                                writeln!(out, "        return trace.prefix(pos).allSatisfy {{ ({pnames}) in {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        guard let pos = trace.lastIndex(where: {{ ({pnames}) in {right_body} }}) else {{ return false }}").unwrap();
+                                writeln!(out, "        return trace.suffix(from: pos).allSatisfy {{ ({pnames}) in {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        if let pos = trace.firstIndex(where: {{ ({pnames}) in {left_body} }}) {{").unwrap();
+                                writeln!(out, "            return trace.prefix(through: pos).allSatisfy {{ ({pnames}) in {right_body} }}").unwrap();
+                                writeln!(out, "        }} else {{").unwrap();
+                                writeln!(out, "            return trace.allSatisfy {{ ({pnames}) in {right_body} }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return trace.enumerated().allSatisfy {{ (i, ({pnames})) in").unwrap();
+                                writeln!(out, "            if {right_body} {{ return trace.prefix(through: i).contains {{ ({pnames}) in {left_body} }} }} else {{ return true }}").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    }
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out).unwrap();
+                }
+            }
+            _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
+        }
+    }
+}
+
+/// Adapter so the extracted block keeps reading `constraint.expr`.
+struct TemporalSource<'a> {
+    expr: &'a crate::parser::ast::Expr,
+}
+
+/// The name `emit_temporal_trace_checkers` will give this constraint's checker,
+/// so the generated test can call it rather than leaving it unreferenced.
+fn temporal_checker_name(
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    kind: Option<analyze::TemporalKind>,
+) -> Option<String> {
+    let snake = to_snake_case(name);
+    match kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let (op, _, _, _) = analyze::find_temporal_binary_with_bindings(expr)?;
+            let op_label = match op {
+                TemporalBinaryOp::Until => "until",
+                TemporalBinaryOp::Since => "since",
+                TemporalBinaryOp::Release => "release",
+                TemporalBinaryOp::Triggered => "triggered",
+            };
+            Some(format!("check_{op_label}_{snake}"))
+        }
+        Some(analyze::TemporalKind::PastLiveness) => Some(format!("check_past_liveness_{snake}")),
+        Some(analyze::TemporalKind::Liveness) => Some(format!("check_liveness_{snake}")),
+        _ => None,
     }
 }

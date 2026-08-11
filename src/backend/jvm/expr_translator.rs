@@ -1,6 +1,6 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
-use crate::backend::type_env::{TypeEnv, resolve_field};
+use crate::backend::type_env::{TypeEnv, resolve_field, resolve_field_owner};
 use std::collections::{HashSet, BTreeSet};
 
 /// Language-specific expression syntax.
@@ -27,8 +27,13 @@ pub trait JvmLang {
     /// named in the emitted method. Kotlin uses an extension function, so it is
     /// `this`; Java passes the value as a leading `self` parameter.
     fn receiver_expr(&self) -> &str;
-    /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`
-    fn field_access(&self, base: &str, field: &str) -> String {
+    /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`.
+    ///
+    /// `mutable_owner` says the declaring sig has a `var` field, which Java
+    /// emits as a mutable class with plain fields rather than a record — the
+    /// accessor form does not exist there.
+    fn field_access(&self, base: &str, field: &str, mutable_owner: bool) -> String {
+        let _ = mutable_owner;
         format!("{base}.{field}")
     }
 }
@@ -235,7 +240,15 @@ fn translate_inner(
         Expr::VarRef(name) => name.clone(),
 
         Expr::FieldAccess { base, field } => {
-            lang.field_access(&ti(base, false), field)
+            // A `var` field makes Java emit a class, not a record, so the
+            // accessor form would not resolve. Resolve the declaring sig to
+            // find out, rather than guessing from the field name.
+            let mutable_owner = resolve_field_owner(base, field, sig_names, ir, env)
+                .map(|(owner, _)| {
+                    ir.structures.iter().any(|s| s.name == owner && s.fields.iter().any(|f| f.is_var))
+                })
+                .unwrap_or(false);
+            lang.field_access(&ti(base, false), field, mutable_owner)
         }
 
         Expr::Cardinality(inner) => lang.cardinality(&ti(inner, false)),

@@ -617,6 +617,41 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         let params = expr_translator::extract_params(&prop.expr, &sig_names);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
+        // An `assert` carries temporal operators just as a `fact` does, and
+        // translating its operand alone silently drops them: `eventually P`
+        // became `P`, `P until Q` became `P && Q` (#78). Route it through the
+        // trace checkers the fact path already emits.
+        let temporal_kind = analyze::expr_temporal_kind(&prop.expr);
+        if matches!(
+            temporal_kind,
+            Some(analyze::TemporalKind::Liveness)
+                | Some(analyze::TemporalKind::PastLiveness)
+                | Some(analyze::TemporalKind::Binary)
+        ) {
+            let label = match temporal_kind {
+                Some(analyze::TemporalKind::Binary) => "binary temporal",
+                _ => "liveness",
+            };
+            writeln!(out, "    @Test").unwrap();
+            writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
+            writeln!(out, "        // {label}: full verification needs a trace; an empty trace").unwrap();
+            writeln!(out, "        // can never satisfy it, which at least exercises the checker.").unwrap();
+            match temporal_checker_name(&prop.name, &prop.expr, temporal_kind) {
+                Some(checker) => {
+                    let tname = params.first().map(|(_, t)| t.as_str()).unwrap_or("Nothing");
+                    writeln!(out, "        val trace: List<List<{tname}>> = emptyList()").unwrap();
+                    writeln!(out, "        assertFalse({checker}(trace))").unwrap();
+                }
+                None => {
+                    writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap();
+                }
+            }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
+            continue;
+        }
+
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -761,103 +796,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
         } // end non-binary temporal
 
-        // Generate trace checker functions for temporal constraints
-        if let Some(kind) = temporal_kind {
-            match kind {
-                analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
-                    let kind_label = if kind == analyze::TemporalKind::Liveness {
-                        "Liveness" } else { "PastLiveness" };
-                    let semantics = if kind == analyze::TemporalKind::Liveness {
-                        "property holds in at least one future state"
-                    } else {
-                        "property held in at least one past state"
-                    };
-                    writeln!(out, "    /** Trace checker for {kind_label}: {semantics}. */").unwrap();
-                    if params.len() == 1 {
-                        let (pname, tname) = &params[0];
-                        writeln!(out, "    fun check{kind_label}{fact_name}(trace: List<List<{tname}>>): Boolean =").unwrap();
-                        writeln!(out, "        trace.any {{ {pname} -> {body} }}").unwrap();
-                    } else {
-                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("List<{t}>")).collect();
-                        writeln!(out, "    fun check{kind_label}{fact_name}(trace: List<Pair<{}>>): Boolean =", tuple_types.join(", ")).unwrap();
-                        let destructure: Vec<_> = params.iter().map(|(p, _)| format!("{p}")).collect();
-                        writeln!(out, "        trace.any {{ ({}) -> {body} }}", destructure.join(", ")).unwrap();
-                    }
-                    writeln!(out).unwrap();
-                }
-                analyze::TemporalKind::Binary => {
-                    if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
-                        let left_body = expr_translator::translate_with_ir(left, ir, &lang);
-                        let right_body = expr_translator::translate_with_ir(right, ir, &lang);
-                        let op_name = match op {
-                            TemporalBinaryOp::Until => "Until",
-                            TemporalBinaryOp::Since => "Since",
-                            TemporalBinaryOp::Release => "Release",
-                            TemporalBinaryOp::Triggered => "Triggered",
-                        };
-                        let semantics = match op {
-                            TemporalBinaryOp::Until => "left holds until right becomes true",
-                            TemporalBinaryOp::Since => "left has held since right was true",
-                            TemporalBinaryOp::Release => "right holds until left releases it",
-                            TemporalBinaryOp::Triggered => "left triggers right",
-                        };
-                        writeln!(out, "    /** Trace checker for {op_name}: {semantics}. */").unwrap();
-                        if params.len() == 1 {
-                            let (pname, tname) = &params[0];
-                            writeln!(out, "    fun check{op_name}{fact_name}(trace: List<List<{tname}>>): Boolean {{").unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        val pos = trace.indexOfFirst {{ {pname} -> {right_body} }}").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(0, pos).all {{ {pname} -> {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        val pos = trace.indexOfLast {{ {pname} -> {right_body} }}").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size).all {{ {pname} -> {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        val pos = trace.indexOfFirst {{ {pname} -> {left_body} }}").unwrap();
-                                    writeln!(out, "        return if (pos >= 0) trace.subList(0, pos + 1).all {{ {pname} -> {right_body} }} else trace.all {{ {pname} -> {right_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return trace.indices.all {{ i ->").unwrap();
-                                    writeln!(out, "            val {pname} = trace[i]").unwrap();
-                                    writeln!(out, "            if ({right_body}) trace.subList(0, i + 1).any {{ {pname} -> {left_body} }} else true").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                            }
-                        } else {
-                            let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("List<{t}>")).collect();
-                            let destructure: Vec<_> = params.iter().map(|(p, _)| format!("{p}")).collect();
-                            let pnames = destructure.join(", ");
-                            writeln!(out, "    fun check{op_name}{fact_name}(trace: List<Pair<{}>>): Boolean {{", tuple_types.join(", ")).unwrap();
-                            match op {
-                                TemporalBinaryOp::Until => {
-                                    writeln!(out, "        val pos = trace.indexOfFirst {{ ({pnames}) -> {right_body} }}").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(0, pos).all {{ ({pnames}) -> {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Since => {
-                                    writeln!(out, "        val pos = trace.indexOfLast {{ ({pnames}) -> {right_body} }}").unwrap();
-                                    writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size).all {{ ({pnames}) -> {left_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Release => {
-                                    writeln!(out, "        val pos = trace.indexOfFirst {{ ({pnames}) -> {left_body} }}").unwrap();
-                                    writeln!(out, "        return if (pos >= 0) trace.subList(0, pos + 1).all {{ ({pnames}) -> {right_body} }} else trace.all {{ ({pnames}) -> {right_body} }}").unwrap();
-                                }
-                                TemporalBinaryOp::Triggered => {
-                                    writeln!(out, "        return trace.indices.all {{ i ->").unwrap();
-                                    writeln!(out, "            val ({pnames}) = trace[i]").unwrap();
-                                    writeln!(out, "            if ({right_body}) trace.subList(0, i + 1).any {{ ({pnames}) -> {left_body} }} else true").unwrap();
-                                    writeln!(out, "        }}").unwrap();
-                                }
-                            }
-                        }
-                        writeln!(out, "    }}").unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
-                _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
-            }
-        }
+        emit_temporal_trace_checkers(&mut out, &fact_name, &constraint.expr, &params, &body, ir, temporal_kind);
     }
 
     // Boundary value tests (Feature 5) — inline expressions
@@ -1386,4 +1325,150 @@ fn to_snake_case(s: &str) -> String {
         }
     }
     out
+}
+
+/// Emit the trace-checker functions a temporal constraint needs.
+///
+/// Shared by the `fact` and `assert` paths. Only the fact path used to call it,
+/// so an `assert` erased its temporal operators entirely (#78).
+fn emit_temporal_trace_checkers(
+    out: &mut String,
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    params: &[(String, String)],
+    body: &str,
+    ir: &OxidtrIR,
+    temporal_kind: Option<analyze::TemporalKind>,
+) {
+    let constraint = TemporalSource { expr };
+    let lang = KotlinLang;
+    // Generate trace checker functions for temporal constraints
+    if let Some(kind) = temporal_kind {
+        match kind {
+            analyze::TemporalKind::Liveness | analyze::TemporalKind::PastLiveness => {
+                let kind_label = if kind == analyze::TemporalKind::Liveness {
+                    "Liveness" } else { "PastLiveness" };
+                let semantics = if kind == analyze::TemporalKind::Liveness {
+                    "property holds in at least one future state"
+                } else {
+                    "property held in at least one past state"
+                };
+                writeln!(out, "    /** Trace checker for {kind_label}: {semantics}. */").unwrap();
+                if params.len() == 1 {
+                    let (pname, tname) = &params[0];
+                    writeln!(out, "    fun check{kind_label}{name}(trace: List<List<{tname}>>): Boolean =").unwrap();
+                    writeln!(out, "        trace.any {{ {pname} -> {body} }}").unwrap();
+                } else {
+                    let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("List<{t}>")).collect();
+                    writeln!(out, "    fun check{kind_label}{name}(trace: List<Pair<{}>>): Boolean =", tuple_types.join(", ")).unwrap();
+                    let destructure: Vec<_> = params.iter().map(|(p, _)| format!("{p}")).collect();
+                    writeln!(out, "        trace.any {{ ({}) -> {body} }}", destructure.join(", ")).unwrap();
+                }
+                writeln!(out).unwrap();
+            }
+            analyze::TemporalKind::Binary => {
+                if let Some((op, left, right)) = analyze::find_temporal_binary(&constraint.expr) {
+                    let left_body = expr_translator::translate_with_ir(left, ir, &lang);
+                    let right_body = expr_translator::translate_with_ir(right, ir, &lang);
+                    let op_name = match op {
+                        TemporalBinaryOp::Until => "Until",
+                        TemporalBinaryOp::Since => "Since",
+                        TemporalBinaryOp::Release => "Release",
+                        TemporalBinaryOp::Triggered => "Triggered",
+                    };
+                    let semantics = match op {
+                        TemporalBinaryOp::Until => "left holds until right becomes true",
+                        TemporalBinaryOp::Since => "left has held since right was true",
+                        TemporalBinaryOp::Release => "right holds until left releases it",
+                        TemporalBinaryOp::Triggered => "left triggers right",
+                    };
+                    writeln!(out, "    /** Trace checker for {op_name}: {semantics}. */").unwrap();
+                    if params.len() == 1 {
+                        let (pname, tname) = &params[0];
+                        writeln!(out, "    fun check{op_name}{name}(trace: List<List<{tname}>>): Boolean {{").unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        val pos = trace.indexOfFirst {{ {pname} -> {right_body} }}").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(0, pos).all {{ {pname} -> {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        val pos = trace.indexOfLast {{ {pname} -> {right_body} }}").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size).all {{ {pname} -> {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        val pos = trace.indexOfFirst {{ {pname} -> {left_body} }}").unwrap();
+                                writeln!(out, "        return if (pos >= 0) trace.subList(0, pos + 1).all {{ {pname} -> {right_body} }} else trace.all {{ {pname} -> {right_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return trace.indices.all {{ i ->").unwrap();
+                                writeln!(out, "            val {pname} = trace[i]").unwrap();
+                                writeln!(out, "            if ({right_body}) trace.subList(0, i + 1).any {{ {pname} -> {left_body} }} else true").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    } else {
+                        let tuple_types: Vec<_> = params.iter().map(|(_, t)| format!("List<{t}>")).collect();
+                        let destructure: Vec<_> = params.iter().map(|(p, _)| format!("{p}")).collect();
+                        let pnames = destructure.join(", ");
+                        writeln!(out, "    fun check{op_name}{name}(trace: List<Pair<{}>>): Boolean {{", tuple_types.join(", ")).unwrap();
+                        match op {
+                            TemporalBinaryOp::Until => {
+                                writeln!(out, "        val pos = trace.indexOfFirst {{ ({pnames}) -> {right_body} }}").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(0, pos).all {{ ({pnames}) -> {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Since => {
+                                writeln!(out, "        val pos = trace.indexOfLast {{ ({pnames}) -> {right_body} }}").unwrap();
+                                writeln!(out, "        return pos >= 0 && trace.subList(pos, trace.size).all {{ ({pnames}) -> {left_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Release => {
+                                writeln!(out, "        val pos = trace.indexOfFirst {{ ({pnames}) -> {left_body} }}").unwrap();
+                                writeln!(out, "        return if (pos >= 0) trace.subList(0, pos + 1).all {{ ({pnames}) -> {right_body} }} else trace.all {{ ({pnames}) -> {right_body} }}").unwrap();
+                            }
+                            TemporalBinaryOp::Triggered => {
+                                writeln!(out, "        return trace.indices.all {{ i ->").unwrap();
+                                writeln!(out, "            val ({pnames}) = trace[i]").unwrap();
+                                writeln!(out, "            if ({right_body}) trace.subList(0, i + 1).any {{ ({pnames}) -> {left_body} }} else true").unwrap();
+                                writeln!(out, "        }}").unwrap();
+                            }
+                        }
+                    }
+                    writeln!(out, "    }}").unwrap();
+                    writeln!(out).unwrap();
+                }
+            }
+            _ => {} // Invariant, PastInvariant, Step — static tests are sufficient
+        }
+    }
+}
+
+/// Adapter so the extracted block keeps reading `constraint.expr`.
+struct TemporalSource<'a> {
+    expr: &'a crate::parser::ast::Expr,
+}
+
+/// The name `emit_temporal_trace_checkers` will give this constraint's checker,
+/// so the generated test can call it. A checker nothing references is a test
+/// that asserts nothing — the failure #74/#81 were about.
+fn temporal_checker_name(
+    name: &str,
+    expr: &crate::parser::ast::Expr,
+    kind: Option<analyze::TemporalKind>,
+) -> Option<String> {
+    // The emitter interpolates the constraint name verbatim.
+    let camel = name.to_string();
+    match kind {
+        Some(analyze::TemporalKind::Binary) => {
+            let (op, _, _, _) = analyze::find_temporal_binary_with_bindings(expr)?;
+            let op_name = match op {
+                TemporalBinaryOp::Until => "Until",
+                TemporalBinaryOp::Since => "Since",
+                TemporalBinaryOp::Release => "Release",
+                TemporalBinaryOp::Triggered => "Triggered",
+            };
+            Some(format!("check{op_name}{camel}"))
+        }
+        Some(analyze::TemporalKind::PastLiveness) => Some(format!("checkPastLiveness{camel}")),
+        Some(analyze::TemporalKind::Liveness) => Some(format!("checkLiveness{camel}")),
+        _ => None,
+    }
 }
