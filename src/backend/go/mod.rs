@@ -1237,8 +1237,12 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
         }
     }
 
+    // A variant is a case of its parent, not a value of its own — except that
+    // Go emits it as a real struct, so a field declared to hold one needs a
+    // factory for it (#93).
+    let needed_variants = super::variants_used_as_field_targets(ir);
     for s in &ir.structures {
-        if ctx.is_variant(&s.name) || s.is_enum { continue; }
+        if (ctx.is_variant(&s.name) && !needed_variants.contains(&s.name)) || s.is_enum { continue; }
         // A fieldless sig still needs a factory: any field targeting it emits
         // `DefaultX()`, which would otherwise be an undefined reference.
         if s.fields.is_empty() {

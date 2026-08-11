@@ -738,3 +738,26 @@ fn go_discloses_an_empty_assert_domain() {
     assert!(src.contains("[]Person{DefaultPerson()}"), "got:\n{src}");
     assert!(src.contains("@coverage"), "an empty domain must be disclosed. got:\n{src}");
 }
+
+// ── A field targeting a variant of an abstract sig (#93) ───────────────────
+
+const VARIANT_FIELD_MODEL: &str = "\
+sig Item {}
+abstract sig Parent { items: set Item }
+sig Child extends Parent {}
+sig Holder { child: one Child }
+";
+
+/// Go emits a variant as a real struct, so the field type is fine — but the
+/// fixture generator excludes variants, so `DefaultChild()` was referenced and
+/// never defined (`undefined: DefaultChild`).
+#[test]
+fn go_emits_a_fixture_for_a_variant_used_as_a_field_type() {
+    let files = generate_go(VARIANT_FIELD_MODEL);
+    let fixtures = find_file(&files, "fixtures.go");
+
+    assert!(
+        fixtures.contains("func DefaultChild() Child"),
+        "a variant used as a field type needs a factory:\n{fixtures}"
+    );
+}
