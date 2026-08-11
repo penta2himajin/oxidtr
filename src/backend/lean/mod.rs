@@ -141,6 +141,14 @@ impl LeanContext {
 
 // ── Types.lean ──────────────────────────────────────────────────────────────
 
+/// Whether any field of this sig lands on Lean's `Float`, which has no
+/// `DecidableEq` instance — deriving it anyway is a hard error (#120).
+fn has_float_field(s: &StructureNode) -> bool {
+    s.fields.iter().any(|f| {
+        f.target == "Float" || f.value_type.as_deref() == Some("Float")
+    })
+}
+
 /// One `mutual … end` block's worth of declarations, or a single standalone
 /// type when `names.len() == 1 && !recursive`.
 struct DeclGroup {
@@ -200,10 +208,14 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
         false
     };
 
-    // Types that sit on a cycle: those are exactly the ones Lean's DecidableEq
-    // handler bails on, and anything that reaches one inherits the gap.
-    let on_cycle: HashSet<&str> = emitted.iter()
-        .map(|n| n.as_str()).filter(|n| reaches(n, n)).collect();
+    // Types Lean's `DecidableEq` handler bails on: one that sits on a cycle
+    // (its handler has no case for a recursive type), and one carrying a
+    // `Float` (`Lean.Float` has no `DecidableEq` instance at all). Anything
+    // that reaches either inherits the gap (#120).
+    let no_decidable_eq: HashSet<&str> = emitted.iter()
+        .map(|n| n.as_str())
+        .filter(|n| reaches(n, n) || ctx.struct_map.get(*n).is_some_and(has_float_field))
+        .collect();
 
     // Types with no finite value: every one of their `one` fields leads back to
     // them, and a `one` field is stored by value. `terminating_types` is the
@@ -226,8 +238,8 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
                 placed.insert(other.as_str());
             }
         }
-        let decidable_eq = !on_cycle.contains(name.as_str())
-            && !emitted.iter().any(|t| on_cycle.contains(t.as_str()) && reaches(name, t));
+        let decidable_eq = !no_decidable_eq.contains(name.as_str())
+            && !emitted.iter().any(|t| no_decidable_eq.contains(t.as_str()) && reaches(name, t));
         let has_finite_value = !uninhabited.contains(name.as_str());
         let inhabited = has_finite_value
             && !emitted.iter().any(|t| uninhabited.contains(t.as_str()) && reaches(name, t));

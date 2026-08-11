@@ -2036,6 +2036,15 @@ fn lean_adversarial_models_compile() {
         ("prime_defers_instead_of_gluing_a_quote",
          "sig Leaf { count: one Int }\npred q[a: Leaf] { a.count' > a.count }",
          "sorry -- oxidtr: q is a temporal formula"),
+        // `Lean.Float` has no `DecidableEq` instance, so a `Float` field made
+        // the `deriving` line a hard error. The gap is transitive, exactly as
+        // recursion's is (#120).
+        ("float_field_drops_decidable_eq",
+         "sig Point { x: one Float }",
+         "structure Point where\n  x : Float\n  deriving Repr, BEq\n"),
+        ("holder_of_a_float_field_drops_it_too",
+         "sig Point { x: one Float }\nsig Line { a: one Point, b: one Point }",
+         "structure Line where\n  a : Point\n  b : Point\n  deriving Repr, BEq\n"),
     ];
 
     for (name, model, expected) in cases {

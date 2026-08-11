@@ -673,3 +673,20 @@ fn lean_prime_defers_instead_of_gluing_a_quote() {
     assert!(ops.contains("sorry -- oxidtr: q is a temporal formula"),
         "a post-state needs a parameter this encoding has not:\n{ops}");
 }
+
+/// `Lean.Float` has no `DecidableEq` instance, so a `Float` field made the
+/// `deriving` line a hard error. The gap is transitive exactly as recursion's
+/// is (#120).
+#[test]
+fn lean_float_field_drops_decidable_eq() {
+    let direct = find_file(&generate_lean("sig Point { x: one Float }"), "Types.lean").to_string();
+    assert!(direct.contains("  x : Float\n  deriving Repr, BEq\n"),
+        "`Float` has no `DecidableEq`:\n{direct}");
+
+    let holder = find_file(
+        &generate_lean("sig Point { x: one Float }\nsig Line { a: one Point, b: one Point }"),
+        "Types.lean",
+    ).to_string();
+    assert!(holder.contains("  b : Point\n  deriving Repr, BEq\n"),
+        "and a holder inherits the gap:\n{holder}");
+}
