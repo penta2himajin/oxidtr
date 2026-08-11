@@ -169,13 +169,19 @@ fn rust_adversarial_models_compile() {
          "sig Page {}\nsig Node { next: lone Page }\nsig Cursor { next: set Page }\n\
           fact SameCount { all n: Node | all c: Cursor | #c.next = #c.next }",
          "c.next.len()"),
-        // NOT COVERED: a field whose target is a variant of an abstract sig
-        // (`sig Holder { child: one Child }` where `Child extends Parent`)
-        // generates `pub child: Child` — a type that does not exist, because
-        // the variant was folded into the parent enum. That is #93, not a
-        // resolution defect, and it blocks the inherited-field-through-chained-
-        // access case from being pinned here. Add it when #93 lands; the
-        // translation itself is already correct (`h.child.items.contains(&i)`).
+        // A field declared to hold a variant. The variant is a case of the
+        // parent enum, not a type, so the field takes the parent's type and the
+        // case it was declared as becomes a check (#93).
+        ("field_targeting_a_variant",
+         "sig Item {}\nabstract sig Parent { items: set Item }\nsig Child extends Parent {}\n\
+          sig Holder { child: one Child }",
+         "matches!(value.child, Parent::Child { .. })"),
+        // NOT COVERED: *reading through* such a field — `h.child.items` where
+        // `items` is declared on the abstract parent. `h.child` is now correctly
+        // typed `Parent`, and Rust has no field access on an enum, so this needs
+        // an accessor generated on the parent (`Parent::items()`) matching every
+        // case. That is a separate feature from #93's "the type does not exist",
+        // and it applies to Swift and Lean the same way.
         ("dependent_bindings",
          "sig Item {}\nsig Box { items: set Item }\n\
           fact R { all b: Box, x: b.items | x = x }",
