@@ -427,3 +427,21 @@ fn cs_escaped_sig_name_still_titlecases_its_factory() {
         "while the type half stays escaped:\n{fixtures}"
     );
 }
+
+/// The boundary fixture emitted `new List<Item>()` whatever the bound said,
+/// so it never reached the boundary it was named for (#140). The elements are
+/// distinct even though `List<T>` would tolerate duplicates, because every
+/// other backend's boundary fixture now is.
+#[test]
+fn cs_boundary_fixture_honours_the_bound() {
+    let files = generate_cs(
+        "sig Item { tag: one Int }\nsig Box { items: set Item }\n\
+         fact ExactlyTwo { all b: Box | #b.items = 2 }",
+    );
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(
+        fixtures.contains("Items = new List<Item> { new Item { Tag = 0L }, new Item { Tag = 1L } },"),
+        "two distinct elements, as the bound asks:\n{fixtures}"
+    );
+}

@@ -1593,6 +1593,12 @@ fn cs_adversarial_models_compile() {
         ("escaped_sig_name_still_titlecases_its_factory",
          "sig Val {}\nsig lock { v: one Val }",
          "public static @lock DefaultLock()"),
+        // A boundary fixture emitted an empty list whatever the bound said, so
+        // it never reached the boundary it was named for (#140).
+        ("boundary_fixture_honours_the_bound",
+         "sig Item { tag: one Int }\nsig Box { items: set Item }\n\
+          fact ExactlyTwo { all b: Box | #b.items = 2 }",
+         "Items = new List<Item> { new Item { Tag = 0L }, new Item { Tag = 1L } },"),
     ];
 
     for (name, model, expected) in cases {

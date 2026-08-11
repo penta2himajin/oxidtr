@@ -498,7 +498,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
         for f in &s.fields {
-            let val = boundary_value_for(&f.target, &f.mult, &fixture_types, ctx);
+            let val = boundary_value_for(ir, &s.name, f, &fixture_types, ctx);
             writeln!(out, "            {} = {},", capitalize(&f.name), val).unwrap();
         }
         writeln!(out, "        }};").unwrap();
@@ -650,11 +650,71 @@ fn default_value_for(target: &str, mult: &Multiplicity, owner: &str, ir: &Oxidtr
     }
 }
 
-fn boundary_value_for(target: &str, mult: &Multiplicity, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
-    match mult {
-        Multiplicity::One => one_value_for(target, fixture_types, ctx),
+/// A native-alias literal that differs per index. `Bool` is absent: two values
+/// cannot carry a cardinality of three.
+fn cs_native_element(target: &str, i: usize) -> Option<String> {
+    match target {
+        "Int" => Some(format!("{i}L")),
+        "Str" => Some(format!("\"item{i}\"")),
+        "Float" => Some(format!("{i}.0")),
+        _ => None,
+    }
+}
+
+/// `count` elements of `target`, each distinct from the others.
+///
+/// `List<T>` does not deduplicate, so C# never had #96's collapse — but a
+/// boundary fixture of indistinguishable elements is what every other backend
+/// now avoids, and a later switch to a real set type would regress silently.
+fn cs_distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
+    let fallback = || vec![format!("Default{}()", cs_factory_suffix(target)); count];
+    if cs_native_element(target, 0).is_some() {
+        return (0..count).filter_map(|i| cs_native_element(target, i)).collect();
+    }
+    if crate::backend::is_native_type_alias(target) {
+        return fallback();
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == target) else { return fallback() };
+    let scalar = s.fields.iter().find(|f| {
+        f.value_type.is_none()
+            && f.mult == Multiplicity::One
+            && cs_native_element(&f.target, 0).is_some()
+    });
+    let Some(f) = scalar else { return fallback() };
+    (0..count)
+        .map(|i| format!("new {} {{ {} = {} }}",
+            cs_ident(target), capitalize(&f.name), cs_native_element(&f.target, i).unwrap()))
+        .collect()
+}
+
+/// The value a boundary fixture gives a field.
+///
+/// A `set`/`seq` under a cardinality bound is `count` elements; it used to be
+/// an empty list whatever the bound said, so the fixture never reached the
+/// boundary it was named for (#140).
+fn boundary_value_for(
+    ir: &OxidtrIR, sig_name: &str, f: &IRField,
+    fixture_types: &HashSet<String>, ctx: &CsContext,
+) -> String {
+    match f.mult {
+        Multiplicity::One => one_value_for(&f.target, fixture_types, ctx),
         Multiplicity::Lone => "null".to_string(),
-        Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(target)),
+        Multiplicity::Set | Multiplicity::Seq => {
+            let elem_ty = cs_type_name(&f.target);
+            let Some(bound) = analyze::bounds_for_field(ir, sig_name, &f.name) else {
+                return format!("new List<{elem_ty}>()");
+            };
+            let count = match bound {
+                analyze::BoundKind::Exact(n) | analyze::BoundKind::AtMost(n)
+                | analyze::BoundKind::AtLeast(n) => n,
+            };
+            let items = cs_distinct_elements(ir, &f.target, count);
+            if items.is_empty() {
+                format!("new List<{elem_ty}>()")
+            } else {
+                format!("new List<{elem_ty}> {{ {} }}", items.join(", "))
+            }
+        }
     }
 }
 
