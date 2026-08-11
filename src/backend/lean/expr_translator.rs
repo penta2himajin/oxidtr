@@ -95,6 +95,34 @@ pub fn mentions_whole_sig_as_value(expr: &Expr, ir: &OxidtrIR) -> bool {
     walk(expr, &sig_names, ir)
 }
 
+/// Whether an expression carries an Alloy 6 temporal operator or a prime.
+///
+/// This encoding has no trace: a sig is a Lean type, and a `def` sees one
+/// state. `always P` therefore has nothing to range over, and `x'` names a
+/// post-state no parameter carries — every other backend rewrites prime to a
+/// post-state argument and generates trace checkers, and Lean generates
+/// neither. The operators were emitted as `□`/`◇`/`𝒰` with no definitions and
+/// no import, which Lean cannot even lex (#116).
+pub fn is_temporal(expr: &Expr) -> bool {
+    match expr {
+        Expr::TemporalUnary { .. } | Expr::TemporalBinary { .. } | Expr::Prime(_) => true,
+        Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+        | Expr::ReflexiveClosure(i) | Expr::MultFormula { expr: i, .. }
+        | Expr::FieldAccess { base: i, .. } => is_temporal(i),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            is_temporal(left) || is_temporal(right)
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            bindings.iter().any(|b| is_temporal(&b.domain)) || is_temporal(body)
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            receiver.as_deref().is_some_and(is_temporal) || args.iter().any(is_temporal)
+        }
+        Expr::VarRef(_) | Expr::IntLiteral(_) => false,
+    }
+}
+
 /// The first field read *through* a collection-shaped one, if any.
 ///
 /// Alloy's `o.i.v` is a join: where `i` is `lone` it yields a `lone Int`, and

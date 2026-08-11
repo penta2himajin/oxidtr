@@ -631,3 +631,45 @@ fn lean_access_through_a_collection_defers() {
     assert!(types.contains("sorry -- oxidtr: val reads `i.v` through a lone/set field"),
         "the mismatch must be stated:\n{types}");
 }
+
+// ── Temporal formulas defer (#116) ────────────────────────────────────────
+
+/// `□`/`◇`/`𝒰` were emitted with no definitions and no import, so Lean could
+/// not even lex them. This encoding has no trace to state them over: a sig is
+/// a type and a `def` sees one state.
+#[test]
+fn lean_temporal_operators_defer() {
+    let ops = find_file(
+        &generate_lean("sig Light { on: one Int }\npred p[l: Light] { always l.on > 0 }"),
+        "Operations.lean",
+    ).to_string();
+    assert!(!ops.contains('□'), "`□` has no definition here:\n{ops}");
+    assert!(ops.contains("sorry -- oxidtr: p is a temporal formula"),
+        "the gap must be stated:\n{ops}");
+
+    let constraints = find_file(
+        &generate_lean(
+            "sig Light { on: one Int }\n\
+             assert Live { eventually (all l: Light | l.on > 0) }\ncheck Live for 3",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!constraints.contains('◇'), "nor `◇`:\n{constraints}");
+    // Not `theorem Live : True` — that reads as proved-trivially, a stronger
+    // claim than the assert makes.
+    assert!(!constraints.contains("theorem Live"), "no theorem is stated:\n{constraints}");
+    assert!(constraints.contains("-- oxidtr: Live is a temporal formula"),
+        "but the assert is accounted for:\n{constraints}");
+}
+
+/// `Prime` appended `'` to the already-rendered string, so `a.count'` lexed as
+/// one identifier and named a field that does not exist.
+#[test]
+fn lean_prime_defers_instead_of_gluing_a_quote() {
+    let files = generate_lean("sig Leaf { count: one Int }\npred q[a: Leaf] { a.count' > a.count }");
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(!ops.contains("a.count'"), "`Leaf.count'` is not a field:\n{ops}");
+    assert!(ops.contains("sorry -- oxidtr: q is a temporal formula"),
+        "a post-state needs a parameter this encoding has not:\n{ops}");
+}

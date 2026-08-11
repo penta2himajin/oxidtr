@@ -487,6 +487,13 @@ fn write_op_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
     }
     // A pred's clauses are conjoined in Alloy. Taking the last one dropped the
     // rest silently, since what remained still elaborated (#118).
+    // A temporal formula has no trace to range over here, and a prime names a
+    // post-state no parameter carries (#116).
+    if op.body.iter().any(expr_translator::is_temporal) {
+        writeln!(out, "  sorry -- oxidtr: {} is a temporal formula, and this encoding \
+            has no trace to state it over", op.name).unwrap();
+        return;
+    }
     let env = crate::backend::type_env::operation_env(op);
     // Reading a field through a `lone`/`set` one is a join, which Lean spells
     // `Option.map`/`List.map` — and the result is `Option T`/`List T`, not the
@@ -890,6 +897,17 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
     // Properties (asserts) as theorems
     for p in &ir.properties {
+        // An assert carrying a temporal operator has nothing to range over
+        // here; the notation emitted for it did not even lex (#116).
+        if expr_translator::is_temporal(&p.expr) {
+            // Not `theorem {name} : True`: that reads as "proved, trivially",
+            // which is a stronger claim than the assert makes and a false one.
+            // Restating the operand without its operator is #78's mistake.
+            writeln!(out, "-- oxidtr: {} is a temporal formula, and this encoding has no \
+                trace to state it over", p.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         let body_str = expr_translator::translate_with_ir(&p.expr, ir);
         writeln!(out, "theorem {} :", lean_ident(&p.name)).unwrap();
         writeln!(out, "    {body_str} := by").unwrap();

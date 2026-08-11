@@ -2022,6 +2022,20 @@ fn lean_adversarial_models_compile() {
         ("access_through_a_set_field_defers",
          "sig Inner { v: one Int }\nsig Outer { many: set Inner }\n          fun Outer.vals: set Int { this.many.v }",
          "sorry -- oxidtr: vals reads `many.v` through a lone/set field"),
+        // Temporal operators were emitted as `□`/`◇`/`𝒰` with no definitions
+        // and no import — Lean cannot even lex them ("expected token"). This
+        // encoding has no trace to state them over (#116).
+        ("always_defers_instead_of_emitting_box",
+         "sig Light { on: one Int }\npred p[l: Light] { always l.on > 0 }",
+         "sorry -- oxidtr: p is a temporal formula"),
+        ("temporal_assert_defers_instead_of_emitting_diamond",
+         "sig Light { on: one Int }\n          assert Live { eventually (all l: Light | l.on > 0) }\ncheck Live for 3",
+         "-- oxidtr: Live is a temporal formula"),
+        // `Prime` appended `'` to the already-rendered string, so `a.count'`
+        // lexed as one identifier and named a field that does not exist.
+        ("prime_defers_instead_of_gluing_a_quote",
+         "sig Leaf { count: one Int }\npred q[a: Leaf] { a.count' > a.count }",
+         "sorry -- oxidtr: q is a temporal formula"),
     ];
 
     for (name, model, expected) in cases {
