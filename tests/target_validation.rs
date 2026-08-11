@@ -1557,12 +1557,17 @@ fn cs_adversarial_models_compile() {
          "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
           fact UsesConfig { all n: N | n.c = Config }",
          "configs.Contains(n.C)"),
-        // `sig Level { level: … }` would be CS0542 — a member may not share its
-        // enclosing type's name — which is a separate escape gap, not this one.
         ("comparison_with_a_payload_carrying_variant",
          "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
           sig Holder { level: one L }\nfact NotLow { all v: Holder | v.level != Low }",
          "!(v.Level is Low)"),
+        // A member may not share its enclosing type's name — CS0542, which is
+        // how a constructor is declared. The collision is one *we* create by
+        // capitalising, so the field keeps Alloy's spelling instead (#137).
+        ("field_named_after_its_own_sig_keeps_alloy_casing",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Level { level: one L }\nfact NotLow { all v: Level | v.level != Low }",
+         "public class Level\n{\n    public L level { get; set; }"),
         ("membership_in_a_whole_sig",
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",

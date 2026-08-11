@@ -1,7 +1,7 @@
 use crate::parser::ast::*;
 use crate::ir::nodes::OxidtrIR;
 use crate::backend::{is_native_type_alias, resolve_type, TargetLang};
-use crate::backend::type_env::{TypeEnv, resolve_field};
+use crate::backend::type_env::{TypeEnv, resolve_field, resolve_field_owner};
 use std::collections::{BTreeSet, HashSet};
 
 use super::{cs_ident, cs_zero_value, compose_ident};
@@ -277,7 +277,13 @@ fn translate_inner(
         }
 
         Expr::FieldAccess { base, field } => {
-            format!("{}.{}", ti(base, false), capitalize(field))
+            // The property name depends on the declaring sig: a field whose
+            // capitalised form is that sig's own name keeps Alloy's spelling
+            // (#137).
+            let owner = resolve_field_owner(base, field, sig_names, ir, env)
+                .map(|(o, _)| o)
+                .unwrap_or_default();
+            format!("{}.{}", ti(base, false), cs_property_name(&owner, field))
         }
 
         // A sig's extent is the list the caller materialised for it (#105); so
@@ -767,6 +773,20 @@ fn to_camel_plural(name: &str) -> String {
     }
     out.push('s');
     cs_ident(&out)
+}
+
+/// The C# property name a field gets on a given sig.
+///
+/// Normally the field name title-cased. But a member may not share its
+/// enclosing type's name — CS0542, which is how a constructor is declared — so
+/// `sig Level { level: … }` produced `public L Level` inside `class Level` and
+/// did not compile. The collision is one *we* create by capitalising, so the
+/// answer is to not: C# is case-sensitive, `level` and `Level` are distinct,
+/// and the extractor lowercases the leading character either way, so the Alloy
+/// name round-trips unchanged (#137).
+pub fn cs_property_name(owner: &str, field: &str) -> String {
+    let upper = capitalize(field);
+    if upper == owner { field.to_string() } else { upper }
 }
 
 pub fn capitalize(s: &str) -> String {

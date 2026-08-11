@@ -206,7 +206,7 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
             writeln!(out, "    // @alloy: seq").unwrap();
         }
         let type_str = mult_to_cs_type(&f.target, &f.mult);
-        writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
+        writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
     }
 
     // Generate Validate() method for constraint validation
@@ -344,7 +344,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
         writeln!(out, "{{").unwrap();
         for f in parent_fields {
             let type_str = mult_to_cs_type(&f.target, &f.mult);
-            writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
+            writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();
         if let Some(variants) = variants {
@@ -359,7 +359,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
                         writeln!(out, "    // @alloy: seq").unwrap();
                     }
                     let type_str = mult_to_cs_type(&f.target, &f.mult);
-                    writeln!(out, "    public {} {} {{ get; set; }}", type_str, capitalize(&f.name)).unwrap();
+                    writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
                 }
                 writeln!(out, "}}").unwrap();
             }
@@ -486,7 +486,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
         for (f, val) in &init_fields {
-            writeln!(out, "            {} = {},", capitalize(&f.name), val).unwrap();
+            writeln!(out, "            {} = {},", expr_translator::cs_property_name(&s.name, &f.name), val).unwrap();
         }
         writeln!(out, "        }};").unwrap();
         writeln!(out, "    }}").unwrap();
@@ -499,7 +499,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out, "        {{").unwrap();
         for f in &s.fields {
             let val = boundary_value_for(ir, &s.name, f, &fixture_types, ctx);
-            writeln!(out, "            {} = {},", capitalize(&f.name), val).unwrap();
+            writeln!(out, "            {} = {},", expr_translator::cs_property_name(&s.name, &f.name), val).unwrap();
         }
         writeln!(out, "        }};").unwrap();
         writeln!(out, "    }}").unwrap();

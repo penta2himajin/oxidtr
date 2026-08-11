@@ -445,3 +445,24 @@ fn cs_boundary_fixture_honours_the_bound() {
         "two distinct elements, as the bound asks:\n{fixtures}"
     );
 }
+
+/// A member may not share its enclosing type's name — CS0542, which is how a
+/// constructor is declared. The collision is one oxidtr creates by
+/// capitalising, so the field keeps Alloy's spelling: C# is case-sensitive,
+/// and the extractor lowercases the leading character either way (#137).
+#[test]
+fn cs_field_named_after_its_own_sig_keeps_alloy_casing() {
+    let files = generate_cs("sig L {}\nsig Level { level: one L, other: one L }");
+    let models = find_file(&files, "Models.cs");
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(
+        models.contains("public class Level\n{\n    public L level { get; set; }"),
+        "the colliding field stays lowercase:\n{models}"
+    );
+    assert!(
+        models.contains("public L Other { get; set; }"),
+        "while every other field is still title-cased:\n{models}"
+    );
+    assert!(fixtures.contains("level = "), "and the initialiser agrees:\n{fixtures}");
+}
