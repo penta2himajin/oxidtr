@@ -287,15 +287,20 @@ fn rust_tests_use_fixture_factory_for_sig_with_fields() {
         "test should populate vec with fixture:\n{content}");
 }
 
+/// A field-less sig has a unit factory (`default_token() -> Token { Token }`),
+/// so there is no reason to leave its domain empty — and an empty domain makes
+/// `all t: Token | ..` vacuously true, the #81 defect in Rust's own path (#105).
 #[test]
-fn rust_tests_empty_vec_for_sig_without_fields() {
+fn rust_tests_populate_a_sig_without_fields() {
     let files = generate_from(r#"
         sig Token {}
         assert AllTokens { all t: Token | t = t }
     "#);
     let content = find_file(&files, "tests.rs");
-    assert!(content.contains("Vec::new()"),
-        "test should use Vec::new() for Token (no fields):\n{content}");
+    assert!(content.contains("vec![default_token()]"),
+        "a field-less sig still has a factory:\n{content}");
+    assert!(!content.contains("let tokens: Vec<Token> = Vec::new();"),
+        "an empty domain asserts nothing:\n{content}");
 }
 
 // ── Newtype + TryFrom generation (Item 2) ────────────────────────────────────
@@ -1964,9 +1969,10 @@ fn rust_non_elementwise_comparison_does_not_suppress_the_exhaustive_check() {
 #[test]
 fn rust_one_sig_is_atom_local_only_when_it_renders_as_a_value() {
     // A `one sig` name is admissible in a validator body only where the Rust
-    // translator can put a value. A field-less variant of a field-less enum
-    // parent becomes `L::Low`; the rest emit a *type* name where a value
-    // belongs and do not compile.
+    // translator can put a value the wrapper itself holds. Being a variant of
+    // an enum parent is a property of the wrapped atom — payload or not, it is
+    // a `matches!` on the field. A singleton struct and a cardinality are about
+    // the sig's whole extent, which one wrapped value cannot stand in for.
     let cases: &[(&str, &str, bool)] = &[
         ("fieldless_variant",
          "abstract sig L {}\none sig High extends L {}\none sig Low extends L {}\n\
@@ -1978,13 +1984,28 @@ fn rust_one_sig_is_atom_local_only_when_it_renders_as_a_value() {
          "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }", false),
         ("variant_carrying_inherited_fields",
          "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
-          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", false),
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }", true),
     ];
     for (name, model, expected) in cases {
         let files = generate_from(model);
         let nt = files.iter().find(|f| f.path == "newtypes.rs").map(|f| f.content.as_str()).unwrap_or("");
         assert_eq!(nt.contains("struct Validated"), *expected, "{name}:\n{nt}");
     }
+}
+
+#[test]
+fn rust_single_inlined_conjunct_is_not_parenthesised() {
+    // The parens exist to join several conjuncts with `&&`. With one conjunct
+    // there is nothing to join, and `if (cond)` is an `unused_parens` warning
+    // in every crate that consumes the generated code (#105).
+    let files = generate_from("sig Team { size: one Int }\nfact Big { all t: Team | t.size > 3 }");
+    let nt = find_file(&files, "newtypes.rs");
+
+    assert!(nt.contains("struct ValidatedTeam"), "wrapper not generated:\n{nt}");
+    assert!(
+        !nt.contains("if ((") && !nt.contains("})) {"),
+        "a lone conjunct needs no parentheses:\n{nt}"
+    );
 }
 
 #[test]
@@ -2139,5 +2160,103 @@ fn rust_self_recursive_lone_field_still_has_a_default() {
     assert!(
         !fixtures.contains("no finite default"),
         "a `lone` field bottoms out at None, so Node is constructible:\n{fixtures}"
+    );
+}
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// `#Person` is the cardinality of the sig itself, not of a bound variable.
+/// Nothing materialised a domain for it, so the test read `Person.len()` —
+/// `Person` is a type, and `E0423: expected value, found struct`.
+#[test]
+fn rust_whole_sig_cardinality_uses_a_materialised_domain() {
+    let files = generate_from("sig Person { age: one Int }\nfact NonEmpty { #Person > 0 }");
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        !tests.contains("Person.len()"),
+        "`Person` is a type, not a value:\n{tests}"
+    );
+    assert!(
+        tests.contains("persons.len() as i64 > 0"),
+        "the sig's cardinality is that of the sample the test builds:\n{tests}"
+    );
+    assert!(
+        tests.contains("let persons: Vec<Person> = vec![default_person()];"),
+        "and the sample has to exist:\n{tests}"
+    );
+}
+
+/// Alloy's `#e` is an `Int`, which oxidtr maps to `i64`. `Vec::len` is a
+/// `usize`, so the moment a cardinality met a field — `p.x = #P` — the
+/// comparison was `i64 == usize` and did not compile.
+#[test]
+fn rust_cardinality_is_an_int() {
+    let files = generate_from("one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }");
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        tests.contains("p.x == ps.len() as i64"),
+        "a cardinality is comparable with an Int field:\n{tests}"
+    );
+}
+
+/// `n.c = Config` compares an atom against the sig's whole extent. `Config` is
+/// a struct with fields, so `== Config` is `E0423` — the sample domain is the
+/// extent the comparison is really against.
+#[test]
+fn rust_equality_with_a_whole_sig_is_membership_in_its_domain() {
+    let files = generate_from(
+        "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+         fact UsesConfig { all n: N | n.c = Config }",
+    );
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(!tests.contains("== Config"), "`Config` is a type, not a value:\n{tests}");
+    assert!(
+        tests.contains("configs.contains(&n.c)"),
+        "equality with a sig is membership in its extent:\n{tests}"
+    );
+    assert!(
+        tests.contains("let configs: Vec<Config> = vec![default_config()];"),
+        "and the extent has to exist:\n{tests}"
+    );
+}
+
+/// A variant that carries fields becomes `L::Low { .. }` in Rust, so the bare
+/// path `L::Low` is a constructor rather than a value — `E0533`. Which case an
+/// atom is is a pattern match, payload or not.
+#[test]
+fn rust_comparison_with_a_variant_matches_the_case() {
+    let files = generate_from(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+    );
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        !tests.contains("!= L::Low"),
+        "`L::Low` needs its payload to be a value:\n{tests}"
+    );
+    assert!(
+        tests.contains("!matches!(n.level, L::Low { .. })"),
+        "being the Low atom is being the Low case:\n{tests}"
+    );
+}
+
+/// A `one sig` domain was materialised empty and then indexed — `admins[0]` on
+/// an empty `Vec` panics, in a test that compiled cleanly.
+#[test]
+fn rust_one_sig_domain_is_not_empty() {
+    let files = generate_from("one sig Admin {}\nassert AdminUnique { all a: Admin | a = Admin }");
+    let tests = find_file(&files, "tests.rs");
+
+    assert!(
+        !tests.contains("let admins: Vec<Admin> = Vec::new();"),
+        "a `one sig` has exactly one value; an empty domain then indexed panics:\n{tests}"
+    );
+    assert!(
+        tests.contains("vec![default_admin()]"),
+        "the singleton is the domain, via the factory that already exists for it:\n{tests}"
     );
 }

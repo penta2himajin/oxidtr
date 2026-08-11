@@ -190,6 +190,24 @@ fn rust_adversarial_models_compile() {
          "sig Cap {}\nsig Account { cap: one Cap }\n\
           pred withinCap[a: one Account, c: one Cap] { a.cap = c }",
          "a.cap == (*c)"),
+        // A sig name used as a value is the set of its atoms. Rust has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises, and `#e` an `i64` rather than a `usize` (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x == ps.len() as i64"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.contains(&n.c)"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "!matches!(n.level, L::Low { .. })"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.contains(&t.lead)"),
     ];
 
     for (name, model, expected) in cases {
