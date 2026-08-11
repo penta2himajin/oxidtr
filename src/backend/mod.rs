@@ -188,6 +188,76 @@ pub fn variants_used_as_field_targets(ir: &OxidtrIR) -> HashSet<String> {
         .collect()
 }
 
+/// Types whose `default{T}()` provably terminates, as a least fixed point:
+/// start with nothing constructible and keep adding types all of whose `one`
+/// fields are already constructible. A `lone` field bottoms out at nil/None and
+/// a set/seq at the empty collection, so neither is an edge here. An enum is
+/// constructible as soon as one of its cases is.
+///
+/// Anything left out has no finite value: every one of its `one` fields leads
+/// back to it. Emitting a factory for such a type produces code that compiles
+/// and then blows the stack — a single-step "does this variant look
+/// terminating" check cannot see a cycle that closes through another type
+/// (#109), which is why `A1 { b: B }` / `B1 { a: A }` slipped through.
+///
+/// Also records, per enum, the case that *made* it constructible — the one
+/// whose payload was already satisfiable when the enum was admitted. Selection
+/// cannot re-derive this from the finished set: once `Expr` is known
+/// constructible, a self-recursive case like `.loop(expr: defaultExpr())` looks
+/// satisfiable too.
+pub fn terminating_types(ir: &OxidtrIR) -> (HashSet<String>, HashMap<String, String>) {
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for s in &ir.structures {
+        if let Some(parent) = &s.parent {
+            children.entry(parent.clone()).or_default().push(s.name.clone());
+        }
+    }
+    let enum_parents: HashSet<&str> = ir.structures.iter()
+        .filter(|s| s.is_enum).map(|s| s.name.as_str()).collect();
+    let variant_names: HashSet<String> = ir.structures.iter()
+        .filter(|s| s.parent.as_deref().is_some_and(|p| enum_parents.contains(p)))
+        .map(|s| s.name.clone())
+        .collect();
+
+    let mut done: HashSet<String> = HashSet::new();
+    let mut witness: HashMap<String, String> = HashMap::new();
+    let edge_ok = |f: &crate::ir::nodes::IRField, done: &HashSet<String>| {
+        // A variant is a case of its parent, not a type — constructibility is
+        // the parent's (#93).
+        let target = variant_parent(ir, &f.target).unwrap_or_else(|| f.target.clone());
+        f.value_type.is_some()
+            || f.mult != Multiplicity::One
+            || is_native_type_alias(&target)
+            || done.contains(&target)
+            // A target with no structure of its own has nothing to recurse into.
+            || !ir.structures.iter().any(|s| s.name == target)
+    };
+
+    loop {
+        let mut changed = false;
+        for s in &ir.structures {
+            if done.contains(&s.name) || variant_names.contains(&s.name) { continue; }
+            let ok = if s.is_enum {
+                let found = children.get(&s.name).and_then(|vs| vs.iter().find(|v| {
+                    let own = ir.structures.iter().find(|c| &c.name == *v);
+                    s.fields.iter()
+                        .chain(own.into_iter().flat_map(|c| c.fields.iter()))
+                        .all(|f| edge_ok(f, &done))
+                }));
+                if let Some(v) = found { witness.insert(s.name.clone(), v.clone()); }
+                found.is_some()
+            } else {
+                s.fields.iter().all(|f| edge_ok(f, &done))
+            };
+            if ok {
+                done.insert(s.name.clone());
+                changed = true;
+            }
+        }
+        if !changed { return (done, witness); }
+    }
+}
+
 /// The parent an emitted variant belongs to, if `target` is one.
 ///
 /// Backends that fold an abstract sig's children into a single type (Rust's
