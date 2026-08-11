@@ -361,3 +361,20 @@ fn cs_comparison_with_a_variant_tests_the_case() {
     assert!(tests.contains("!(v.Level is Low)"),
         "being the Low atom is being the Low case:\n{tests}");
 }
+
+/// Alloy's `Schedule.Morning` is the union of `morning` over every `Schedule`
+/// atom, not member access on a type — `Morning` is an instance property, so
+/// the receiver form was CS0120 (#142).
+#[test]
+fn cs_relational_image_flat_maps_the_extent() {
+    let files = generate_cs(
+        "sig Task {}\nsig Schedule { morning: set Task }\n\
+         assert R { no Schedule.morning }\ncheck R for 3",
+    );
+    let tests = find_file(&files, "Tests.cs");
+
+    assert!(
+        tests.contains("schedules.SelectMany(s => s.Morning).ToList().Count == 0"),
+        "the image is a list built over the extent:\n{tests}"
+    );
+}

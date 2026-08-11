@@ -969,6 +969,16 @@ fn go_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "contains(persons, t.Lead)"),
+        // `Schedule.Morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "flatMap(schedules, func(s Schedule) []Task { return s.Morning })"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Task {}\nsig Schedule { chief: one Task }\n\
+          assert R { no Schedule.chief }\ncheck R for 3",
+         "flatMap(schedules, func(s Schedule) []Task { return oneOf(s.Chief) })"),
     ];
 
     for (name, model, expected) in cases {
@@ -1557,6 +1567,13 @@ fn cs_adversarial_models_compile() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.Contains(t.Lead)"),
+        // `Schedule.Morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type — `Morning` is an instance
+        // property, so the receiver form was CS0120 (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.SelectMany(s => s.Morning).ToList().Count == 0"),
     ];
 
     for (name, model, expected) in cases {
