@@ -418,10 +418,14 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
                 if !all_fields.is_empty() {
                     writeln!(out, "type {} struct {{", v).unwrap();
                     for f in &all_fields {
+                        // A variant's field needs its native alias resolved
+                        // just as a struct's does — `Int` is not a Go type
+                        // (#105).
+                        let resolved = resolve_type(TargetLang::Go, &f.target);
                         let type_str = if let Some(vt) = &f.value_type {
-                            format!("map[{}]{}", f.target, vt)
+                            format!("map[{}]{}", resolved, resolve_type(TargetLang::Go, vt))
                         } else {
-                            mult_to_go_type(&f.target, &f.mult, false)
+                            mult_to_go_type(&resolved, &f.mult, false)
                         };
                         if f.is_var {
                             writeln!(out, "\t// @alloy: var").unwrap();
@@ -567,6 +571,15 @@ fn generate_collection_helpers(out: &mut String) {
     writeln!(out, "\t\treturn nil").unwrap();
     writeln!(out, "\t}}").unwrap();
     writeln!(out, "\treturn []T{{*p}}").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "// isVariant reports whether v is the given case of a sum interface.").unwrap();
+    writeln!(out, "// A sum's cases are struct types, so `v == Low` would compare a value").unwrap();
+    writeln!(out, "// against a type; which case an atom is, is a type assertion.").unwrap();
+    writeln!(out, "func isVariant[T any](v any) bool {{").unwrap();
+    writeln!(out, "\t_, ok := v.(T)").unwrap();
+    writeln!(out, "\treturn ok").unwrap();
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
@@ -773,7 +786,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out).unwrap();
 
     for prop in &ir.properties {
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
         // An `assert` carries temporal operators just as a `fact` does, and
@@ -841,7 +854,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "// @temporal Transition constraint: {fact_name}").unwrap();
@@ -883,7 +896,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check if all related constraints are type-guaranteed in Go
@@ -973,7 +986,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -1136,8 +1149,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
 
             // Extract all params from both facts to declare all needed variables
-            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
-            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names, ir);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names, ir);
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names_seen: HashSet<String> = HashSet::new();
             for (pname, tname) in params_a.iter().chain(params_b.iter()) {

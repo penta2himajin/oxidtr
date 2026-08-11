@@ -861,6 +861,24 @@ fn go_adversarial_models_compile() {
          "sig Tag {}\nsig Person { tags: set Tag }\n\
           assert R { all disj a, b: Person | a != b }",
          "!equal(a, b)"),
+        // A sig name used as a value is the set of its atoms. Go has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.X == int64(len(ps))"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "contains(configs, n.C)"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Level { level: one L }\nfact NotLow { all v: Level | v.level != Low }",
+         "!isVariant[Low](v.Level)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "contains(persons, t.Lead)"),
     ];
 
     for (name, model, expected) in cases {
