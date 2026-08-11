@@ -987,8 +987,40 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out).unwrap();
         } else {
         writeln!(out, "func Test_{}_{}(t *testing.T) {{", test_prefix, fact_name).unwrap();
+        // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
+        // true of a sample of two unrelated defaults. Build the link first, as
+        // the TypeScript backend already does — otherwise seeding the domains
+        // turns a vacuous pass into a false failure rather than a real check.
+        let ownership = crate::backend::detect_ownership_pattern(
+            &constraint.expr, ir, expr_translator::to_camel_plural);
+        let mut linked: HashSet<String> = HashSet::new();
+        if let Some((owned_var, owner_var, _, field_name)) = &ownership {
+            let owned = params.iter().find(|(p, _)| p == owned_var);
+            let owner = params.iter().find(|(p, _)| p == owner_var);
+            if let (Some((opname, otname)), Some((cpname, ctname))) = (owned, owner) {
+                let field = expr_translator::capitalize(field_name);
+                writeln!(out, "\titem := Default{otname}()").unwrap();
+                writeln!(out, "\towner := Default{ctname}()").unwrap();
+                writeln!(out, "\towner.{field} = []{otname}{{item}}").unwrap();
+                writeln!(out, "\t{opname} := []{otname}{{item}}").unwrap();
+                writeln!(out, "\t{cpname} := []{ctname}{{owner}}").unwrap();
+                linked.insert(opname.clone());
+                linked.insert(cpname.clone());
+            }
+        }
         for (pname, tname) in &params {
-            writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+            // The `assert` path above already seeds from the factory; this one
+            // wrote an empty slice unconditionally, so `forAll` was vacuously
+            // true and the test proved nothing about the fact (#136, #81).
+            if linked.contains(pname) {
+                // already materialised as the owner/owned pair
+            } else if fixture_types.contains(tname) {
+                writeln!(out, "\t{pname} := []{tname}{{Default{tname}()}}").unwrap();
+            } else {
+                writeln!(out, "\t// @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "\t// this quantifier is vacuously satisfied.").unwrap();
+                writeln!(out, "\t{pname} := []{tname}{{}}").unwrap();
+            }
         }
         writeln!(out, "\tif !({body}) {{").unwrap();
         writeln!(out, "\t\tt.Error(\"{} {} violated\")", test_prefix, fact_name).unwrap();
@@ -1087,10 +1119,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "// --- Anomaly tests: edge-case coverage ---").unwrap();
         writeln!(out).unwrap();
 
-        let has_fixture: HashSet<String> = ir.structures.iter()
-            .filter(|s| !s.fields.is_empty() && !s.is_enum)
-            .map(|s| s.name.clone())
-            .collect();
+        let has_fixture = crate::backend::collect_fixture_types(ir);
 
         let mut anomaly_sigs: std::collections::BTreeMap<String, Vec<&analyze::AnomalyPattern>> =
             std::collections::BTreeMap::new();
@@ -1142,10 +1171,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out, "// --- Coverage tests: fact × fact pairwise ---").unwrap();
         writeln!(out).unwrap();
 
-        let has_fixture: HashSet<String> = ir.structures.iter()
-            .filter(|s| !s.fields.is_empty() && !s.is_enum)
-            .map(|s| s.name.clone())
-            .collect();
+        let has_fixture = crate::backend::collect_fixture_types(ir);
 
         let mut cover_names_seen: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {
