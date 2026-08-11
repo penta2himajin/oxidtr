@@ -1338,7 +1338,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
                             analyze::BoundKind::AtMost(n) => *n,
                             analyze::BoundKind::AtLeast(n) => *n,
                         };
-                        swift_boundary_value(&f.target, &f.mult, count)
+                        swift_boundary_value(ir, &f.target, &f.mult, count)
                     } else {
                         swift_default_value(&f.target, &f.mult)
                     }
@@ -1365,7 +1365,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
                             analyze::BoundKind::AtMost(n) => n + 1,
                             analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
                         };
-                        swift_boundary_value(&f.target, &f.mult, violation)
+                        swift_boundary_value(ir, &f.target, &f.mult, violation)
                     } else {
                         swift_default_value(&f.target, &f.mult)
                     }
@@ -1415,33 +1415,73 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
     out
 }
 
-fn swift_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String {
-    // Native aliases have no factory — `Set([defaultInt()])` does not compile —
-    // and repeating one literal would collapse the set, so vary by index.
-    let element = |i: usize| match target {
-        "Int" => i.to_string(),
-        "Float" => format!("{i}.0"),
-        "Str" => format!("\"item{i}\""),
-        "Bool" => (i % 2 == 0).to_string(),
-        _ => format!("default{target}()"),
+/// A native-alias literal that differs per index. `Bool` is not among them:
+/// two values cannot carry a cardinality of three.
+fn swift_native_element(target: &str, i: usize) -> Option<String> {
+    match target {
+        "Int" => Some(i.to_string()),
+        "Float" => Some(format!("{i}.0")),
+        "Str" => Some(format!("\"item{i}\"")),
+        _ => None,
+    }
+}
+
+/// `count` elements of `target`, each distinct from the others.
+///
+/// #92 varied native elements, but a struct element still fell back to
+/// `default{target}()` repeated — and `Set` deduplicates structurally
+/// identical values, so the fixture never reached the cardinality it was
+/// named for (#96). A struct varies its first native-scalar field instead;
+/// Swift has no `..default` update syntax, so the whole memberwise
+/// initializer is written out with the other fields at their defaults.
+///
+/// A target offering nothing to vary still repeats: there is no second value
+/// to give it without inventing a field the sig does not have.
+fn swift_distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
+    let fallback = || vec![format!("default{target}()"); count];
+    if swift_native_element(target, 0).is_some() {
+        return (0..count).filter_map(|i| swift_native_element(target, i)).collect();
+    }
+    if is_native_type_alias(target) {
+        // `Bool`, which has no per-index literal.
+        return fallback();
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == target) else {
+        return fallback();
     };
+    let scalar = s.fields.iter().position(|f| {
+        f.value_type.is_none()
+            && f.mult == Multiplicity::One
+            && swift_native_element(&f.target, 0).is_some()
+    });
+    let Some(idx) = scalar else { return fallback() };
+
+    (0..count)
+        .map(|i| {
+            let args: Vec<String> = s.fields.iter().enumerate()
+                .map(|(j, f)| {
+                    let val = if j == idx {
+                        swift_native_element(&f.target, i).unwrap()
+                    } else if f.value_type.is_some() {
+                        "[:]".to_string()
+                    } else {
+                        swift_default_value(&f.target, &f.mult)
+                    };
+                    format!("{}: {val}", to_swift_arg_label(&f.name))
+                })
+                .collect();
+            format!("{target}({})", args.join(", "))
+        })
+        .collect()
+}
+
+fn swift_boundary_value(ir: &OxidtrIR, target: &str, mult: &Multiplicity, count: usize) -> String {
+    let items = swift_distinct_elements(ir, target, count);
     match mult {
-        Multiplicity::Set => {
-            let items: Vec<String> = (0..count).map(element).collect();
-            if items.is_empty() {
-                "Set()".to_string()
-            } else {
-                format!("Set([{}])", items.join(", "))
-            }
-        }
-        Multiplicity::Seq => {
-            let items: Vec<String> = (0..count).map(element).collect();
-            if items.is_empty() {
-                "[]".to_string()
-            } else {
-                format!("[{}]", items.join(", "))
-            }
-        }
+        Multiplicity::Set if items.is_empty() => "Set()".to_string(),
+        Multiplicity::Set => format!("Set([{}])", items.join(", ")),
+        Multiplicity::Seq if items.is_empty() => "[]".to_string(),
+        Multiplicity::Seq => format!("[{}]", items.join(", ")),
         _ => swift_default_value(target, mult),
     }
 }

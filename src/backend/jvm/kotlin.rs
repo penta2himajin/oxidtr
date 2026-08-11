@@ -41,6 +41,8 @@ impl JvmLang for KotlinLang {
     // Kotlin's `==` is `equals()`, so value equality needs nothing special.
     fn value_eq(&self, l: &str, r: &str) -> String { format!("{l} == {r}") }
     fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
+    // Alloy's `Int` is `Long` here, and Kotlin will not compare the two.
+    fn int_literal(&self, n: i64) -> String { format!("{n}L") }
     // A sealed class hierarchy: the case is a smart-castable type test.
     fn is_variant(&self, subject: &str, variant: &str) -> String {
         format!("{subject} is {variant}")
@@ -232,7 +234,12 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
                             let mut parts = Vec::new();
                             if let Some(n) = min { parts.push(format!("min = {n}")); }
                             if let Some(n) = max { parts.push(format!("max = {n}")); }
-                            annotations.push(format!("@Size({})", parts.join(", ")));
+                            // A comment, as Java's emitter and every other
+                            // annotation here already are: a live `@Size` is
+                            // `jakarta.validation.constraints.Size`, which is
+                            // an external dependency the generated project
+                            // does not carry — `Unresolved reference 'Size'`.
+                            annotations.push(format!("/* @Size({}) */", parts.join(", ")));
                         } else {
                             annotations.push(format!("/* @Size see fact: {fact_name} */"));
                         }
@@ -1212,7 +1219,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                             analyze::BoundKind::AtMost(n) => *n,
                             analyze::BoundKind::AtLeast(n) => *n,
                         };
-                        kt_boundary_value(&f.target, &f.mult, count)
+                        kt_boundary_value(ir, &f.target, &f.mult, count)
                     } else {
                         kt_default_value(&f.target, &f.mult)
                     }
@@ -1237,7 +1244,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                             analyze::BoundKind::AtMost(n) => n + 1,
                             analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
                         };
-                        kt_boundary_value(&f.target, &f.mult, violation)
+                        kt_boundary_value(ir, &f.target, &f.mult, violation)
                     } else {
                         kt_default_value(&f.target, &f.mult)
                     }
@@ -1283,24 +1290,52 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn kt_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String {
+/// `count` elements of `target`, each distinct from the others.
+///
+/// `setOf(defaultItem(), defaultItem())` collapses to one element — a data
+/// class has structural `equals` — so the fixture never reached the
+/// cardinality it was named for. A native element had it worse still: it
+/// emitted `defaultInt()`, a call to a factory that does not exist (#96).
+fn kt_distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
+    let fallback = || vec![format!("default{target}()"); count];
+    if super::jvm_native_element(target, 0).is_some() {
+        return (0..count).filter_map(|i| super::jvm_native_element(target, i)).collect();
+    }
+    if crate::backend::is_native_type_alias(target) {
+        // `Bool`, which has no per-index literal; `kt_default_value` knows it.
+        return vec![kt_default_value(target, &Multiplicity::One); count];
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == target) else {
+        return fallback();
+    };
+    let Some(idx) = super::jvm_diversity_field(s) else { return fallback() };
+
+    (0..count)
+        .map(|i| {
+            let args: Vec<String> = s.fields.iter().enumerate()
+                .map(|(j, f)| {
+                    let val = if j == idx {
+                        super::jvm_native_element(&f.target, i).unwrap()
+                    } else if f.value_type.is_some() {
+                        "emptyMap()".to_string()
+                    } else {
+                        kt_default_value(&f.target, &f.mult)
+                    };
+                    format!("{} = {val}", f.name)
+                })
+                .collect();
+            format!("{target}({})", args.join(", "))
+        })
+        .collect()
+}
+
+fn kt_boundary_value(ir: &OxidtrIR, target: &str, mult: &Multiplicity, count: usize) -> String {
+    let items = kt_distinct_elements(ir, target, count);
     match mult {
-        Multiplicity::Set => {
-            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
-            if items.is_empty() {
-                "emptySet()".to_string()
-            } else {
-                format!("setOf({})", items.join(", "))
-            }
-        }
-        Multiplicity::Seq => {
-            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
-            if items.is_empty() {
-                "emptyList()".to_string()
-            } else {
-                format!("listOf({})", items.join(", "))
-            }
-        }
+        Multiplicity::Set if items.is_empty() => "emptySet()".to_string(),
+        Multiplicity::Set => format!("setOf({})", items.join(", ")),
+        Multiplicity::Seq if items.is_empty() => "emptyList()".to_string(),
+        Multiplicity::Seq => format!("listOf({})", items.join(", ")),
         _ => kt_default_value(target, mult),
     }
 }
