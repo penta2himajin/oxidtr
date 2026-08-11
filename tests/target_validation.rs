@@ -1936,6 +1936,26 @@ fn lean_adversarial_models_compile() {
         ("quantifier_domain_is_still_the_type",
          "sig Leaf { n: one Int }\npred allPos[a: Leaf] { all x: Leaf | x.n > 0 }",
          "def allPos (a : Leaf) : Prop :=\n  ∀ x : Leaf, x.n > 0"),
+        // `analyze` strips the `all a: Account |` prefix and rewrites the bound
+        // variable to the *sig name*, which every other backend maps back to
+        // its own receiver (`value`, `this`, `self`). The theorem re-binds
+        // `∀ (x : Sig)` and left the body reading `Account.active` — the
+        // projection *function*, compared against a value (#117).
+        ("implication_theorem_binds_its_own_variable",
+         "sig Account { active: one Int, balance: one Int }\n          fact Rule { all a: Account | a.active > 0 implies a.balance > 0 }",
+         "∀ (x : Account), x.active > 0 → x.balance > 0"),
+        ("iff_theorem_binds_its_own_variable",
+         "sig Account { active: one Int, balance: one Int }\n          fact Iffy { all a: Account | a.active > 0 iff a.balance > 0 }",
+         "∀ (x : Account), x.active > 0 ↔ x.balance > 0"),
+        ("prohibition_theorem_binds_its_own_variable",
+         "sig Account { balance: one Int }\nfact Never { no a: Account | a.balance < 0 }",
+         "∀ (x : Account), ¬(x.balance < 0)"),
+        // `no (A.xs & B.ys)` is about the *elements*, read across every atom of
+        // A and of B — an extent this encoding has no term for, and `Additive`
+        // is a constructor of `Cat` rather than a type to bind (#117).
+        ("disjointness_over_an_extent_defers",
+         "sig Item {}\nabstract sig Cat { covers: set Item }\n          sig Additive extends Cat {}\nsig Multiplicative extends Cat {}\n          fact NoOverlap { no (Additive.covers & Multiplicative.covers) }",
+         "-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
     ];
 
     for (name, model, expected) in cases {

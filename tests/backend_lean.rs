@@ -410,3 +410,72 @@ fn lean_quantifier_domain_is_still_the_type() {
 
     assert!(ops.contains("∀ x : Leaf, x.n > 0"), "the domain is the type:\n{ops}");
 }
+
+// ── Constraint theorems bind their own variable (#117) ────────────────────
+
+/// `analyze` strips the `all a: Sig |` prefix and rewrites the bound variable
+/// to the *sig name*, which every other backend maps back to its own receiver.
+/// Lean had no such step, so the theorem bound `∀ (x : Account)` and then read
+/// `Account.active` — the projection function, compared against a value.
+#[test]
+fn lean_constraint_theorems_bind_their_own_variable() {
+    let implication = find_file(
+        &generate_lean(
+            "sig Account { active: one Int, balance: one Int }\n\
+             fact Rule { all a: Account | a.active > 0 implies a.balance > 0 }",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(!implication.contains("Account.active"),
+        "`Account.active` is the projection function:\n{implication}");
+    assert!(implication.contains("∀ (x : Account), x.active > 0 → x.balance > 0"),
+        "the theorem's own binder is what the body reads:\n{implication}");
+
+    let iff = find_file(
+        &generate_lean(
+            "sig Account { active: one Int, balance: one Int }\n\
+             fact Iffy { all a: Account | a.active > 0 iff a.balance > 0 }",
+        ),
+        "Constraints.lean",
+    ).to_string();
+    assert!(iff.contains("∀ (x : Account), x.active > 0 ↔ x.balance > 0"), "iff too:\n{iff}");
+
+    let prohibition = find_file(
+        &generate_lean("sig Account { balance: one Int }\nfact Never { no a: Account | a.balance < 0 }"),
+        "Constraints.lean",
+    ).to_string();
+    assert!(prohibition.contains("∀ (x : Account), ¬(x.balance < 0)"),
+        "and prohibition:\n{prohibition}");
+}
+
+/// A binder of the theorem's own name shadows the receiver, so the body under
+/// it must be left alone.
+#[test]
+fn lean_rebinding_stops_at_a_shadowing_binder() {
+    let files = generate_lean(
+        "sig Item {}\nsig Box { items: set Item, ok: one Int }\n\
+         fact R { all b: Box | b.ok > 0 implies (all x: Item | x = x) }",
+    );
+    let src = find_file(&files, "Constraints.lean");
+
+    assert!(src.contains("∀ x : Item, x = x"),
+        "the inner binder is its own:\n{src}");
+}
+
+/// `no (A.xs & B.ys)` is about the *elements*, read across every atom of A and
+/// of B. This encoding has no term for a sig's extent, and a variant has no
+/// type to bind — the theorem named `Additive`, a constructor of `Cat`.
+#[test]
+fn lean_disjointness_over_an_extent_defers() {
+    let files = generate_lean(
+        "sig Item {}\nabstract sig Cat { covers: set Item }\n\
+         sig Additive extends Cat {}\nsig Multiplicative extends Cat {}\n\
+         fact NoOverlap { no (Additive.covers & Multiplicative.covers) }",
+    );
+    let src = find_file(&files, "Constraints.lean");
+
+    assert!(!src.contains("theorem disjoint_"),
+        "the theorem cannot be stated here:\n{src}");
+    assert!(src.contains("-- oxidtr: `no (Additive.covers & Multiplicative.covers)` reads a sig's extent"),
+        "the gap must be stated, not silently mistranslated:\n{src}");
+}

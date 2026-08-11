@@ -503,6 +503,72 @@ fn write_fact_sorry(out: &mut String) {
 /// to a Lean type, so `x ∈ Circle` is a membership test against a `Type` and
 /// never elaborates; the variant test is a pattern match. Falls back to `∈` for
 /// a category that is not a variant (a genuine set-valued expression).
+/// The variable every constraint theorem binds. `analyze` has already stripped
+/// the `all a: Sig |` prefix, so the theorem re-introduces one of its own.
+const THEOREM_BINDER: &str = "x";
+
+/// Rewrite the receiver `analyze` left behind into the theorem's own binder.
+///
+/// `analyze_body_for_sig` substitutes the quantified variable with the *sig
+/// name*, so `all a: Account | a.active > 0 implies …` is stored as
+/// `Account.active > 0`. Every other backend maps that back to its own receiver
+/// — `value` in Rust, `this` in Kotlin, `self` in Swift. Lean had no such step,
+/// so the theorem bound `∀ (x : Account)` and then compared `Account.active`,
+/// the projection *function*, against a value (#117).
+fn rebind_receiver(expr: &crate::parser::ast::Expr, sig_name: &str) -> crate::parser::ast::Expr {
+    use crate::parser::ast::Expr as E;
+    let rec = |e: &E| Box::new(rebind_receiver(e, sig_name));
+    match expr {
+        E::VarRef(name) if name == sig_name => E::VarRef(THEOREM_BINDER.to_string()),
+        E::VarRef(_) | E::IntLiteral(_) => expr.clone(),
+        E::FieldAccess { base, field } => E::FieldAccess {
+            base: rec(base), field: field.clone(),
+        },
+        E::Comparison { op, left, right } => E::Comparison {
+            op: op.clone(), left: rec(left), right: rec(right),
+        },
+        E::BinaryLogic { op, left, right } => E::BinaryLogic {
+            op: op.clone(), left: rec(left), right: rec(right),
+        },
+        E::SetOp { op, left, right } => E::SetOp {
+            op: *op, left: rec(left), right: rec(right),
+        },
+        E::Product { left, right } => E::Product { left: rec(left), right: rec(right) },
+        E::TemporalBinary { op, left, right } => E::TemporalBinary {
+            op: *op, left: rec(left), right: rec(right),
+        },
+        E::Not(i) => E::Not(rec(i)),
+        E::Cardinality(i) => E::Cardinality(rec(i)),
+        E::TransitiveClosure(i) => E::TransitiveClosure(rec(i)),
+        E::ReflexiveClosure(i) => E::ReflexiveClosure(rec(i)),
+        E::Prime(i) => E::Prime(rec(i)),
+        E::MultFormula { kind, expr: i } => E::MultFormula {
+            kind: kind.clone(), expr: rec(i),
+        },
+        E::TemporalUnary { op, expr: i } => E::TemporalUnary { op: *op, expr: rec(i) },
+        // A binder of its own shadows the receiver, so the body below it is
+        // left alone; only the domains, which are outside that scope, recurse.
+        E::Quantifier { kind, bindings, body } => E::Quantifier {
+            kind: kind.clone(),
+            bindings: bindings.iter().map(|b| crate::parser::ast::QuantBinding {
+                vars: b.vars.clone(),
+                domain: rebind_receiver(&b.domain, sig_name),
+                disj: b.disj,
+            }).collect(),
+            body: if bindings.iter().any(|b| b.vars.iter().any(|v| v == THEOREM_BINDER)) {
+                body.clone()
+            } else {
+                rec(body)
+            },
+        },
+        E::FunApp { name, receiver, args } => E::FunApp {
+            name: name.clone(),
+            receiver: receiver.as_ref().map(|r| rec(r)),
+            args: args.iter().map(|a| rebind_receiver(a, sig_name)).collect(),
+        },
+    }
+}
+
 fn category_test(ctx: &LeanContext, category: &str) -> String {
     if ctx.is_variant(category) {
         format!("x matches .{} ..", lean_field(category))
@@ -571,8 +637,8 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Implication { sig_name, condition, consequent } => {
-                let cond_str = expr_translator::translate_with_ir(condition, ir);
-                let cons_str = expr_translator::translate_with_ir(consequent, ir);
+                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
+                let cons_str = expr_translator::translate_with_ir(&rebind_receiver(consequent, sig_name), ir);
                 writeln!(out, "theorem implication_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {cond_str} → {cons_str} := by").unwrap();
@@ -582,8 +648,8 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Iff { sig_name, left, right } => {
-                let left_str = expr_translator::translate_with_ir(left, ir);
-                let right_str = expr_translator::translate_with_ir(right, ir);
+                let left_str = expr_translator::translate_with_ir(&rebind_receiver(left, sig_name), ir);
+                let right_str = expr_translator::translate_with_ir(&rebind_receiver(right, sig_name), ir);
                 writeln!(out, "theorem iff_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), {left_str} ↔ {right_str} := by").unwrap();
@@ -595,7 +661,7 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Prohibition { sig_name, condition } => {
-                let cond_str = expr_translator::translate_with_ir(condition, ir);
+                let cond_str = expr_translator::translate_with_ir(&rebind_receiver(condition, sig_name), ir);
                 writeln!(out, "theorem prohibition_{sig_name}_{theorem_idx} :").unwrap();
                 let sig = lean_ident(sig_name);
                 writeln!(out, "    ∀ (x : {sig}), ¬({cond_str}) := by").unwrap();
@@ -605,6 +671,20 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
                 theorem_idx += 1;
             }
             analyze::ConstraintInfo::Disjoint { sig_name, left, right } => {
+                // `no (A.xs & B.ys)` says no *element* is in both collections,
+                // read across every atom of A and of B. This encoding has no
+                // term for a sig's extent, and where the sig is a variant it
+                // has no type to bind either — the theorem named `Additive`,
+                // which is a constructor of `Cat` (#105, #117).
+                let statable = !sig_name.is_empty()
+                    && !ctx.is_variant(sig_name)
+                    && ![left, right].iter().any(|c| c.contains('.'));
+                if !statable {
+                    writeln!(out, "-- oxidtr: `no ({left} & {right})` reads a sig's extent, \
+                        which has no term in this encoding").unwrap();
+                    writeln!(out).unwrap();
+                    continue;
+                }
                 writeln!(out, "theorem disjoint_{sig_name}_{theorem_idx} :").unwrap();
                 let (l, r) = (category_test(ctx, left), category_test(ctx, right));
                 let sig = lean_ident(sig_name);
