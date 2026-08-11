@@ -90,6 +90,7 @@ one sig UnhandledResponsePattern extends WarningKind {}
 one sig MissingErrorPropagation  extends WarningKind {}
 one sig KonpuSingletonIdentity   extends WarningKind {}
 one sig TautologicalFact         extends WarningKind {}
+one sig ShadowedNativeAlias      extends WarningKind {}
 
 abstract sig WarningLevel {}
 one sig Error extends WarningLevel {}
