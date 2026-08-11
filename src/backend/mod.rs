@@ -188,6 +188,21 @@ pub fn variants_used_as_field_targets(ir: &OxidtrIR) -> HashSet<String> {
         .collect()
 }
 
+/// The parent an emitted variant belongs to, if `target` is one.
+///
+/// Backends that fold an abstract sig's children into a single type (Rust's
+/// enum, Swift's enum, Lean's inductive) have no declaration for the variant
+/// itself, so a field declared to hold one must take the parent's type; that it
+/// is *that* variant becomes a constraint (#93).
+pub fn variant_parent(ir: &OxidtrIR, target: &str) -> Option<String> {
+    let s = ir.structures.iter().find(|s| s.name == target)?;
+    let parent = s.parent.as_ref()?;
+    ir.structures
+        .iter()
+        .any(|p| p.name == *parent && p.is_enum)
+        .then(|| parent.clone())
+}
+
 /// Collect fixture-eligible types: non-enum, non-variant sigs with fields.
 pub fn collect_fixture_types(ir: &OxidtrIR) -> HashSet<String> {
     let enum_parents: HashSet<String> = ir.structures.iter()
