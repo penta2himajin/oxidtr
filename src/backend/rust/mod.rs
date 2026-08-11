@@ -3031,7 +3031,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                             analyze::BoundKind::AtMost(n) => *n,
                             analyze::BoundKind::AtLeast(n) => *n,
                         };
-                        boundary_value_for_field(&f.target, &f.mult, count)
+                        boundary_value_for_field(ir, &f.target, &f.mult, count)
                     } else {
                         let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
                         let safe_targets: HashSet<String> = if is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
@@ -3065,7 +3065,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                             analyze::BoundKind::AtMost(n) => n + 1,
                             analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
                         };
-                        let val = boundary_value_for_field(&f.target, &f.mult, violation_count);
+                        let val = boundary_value_for_field(ir, &f.target, &f.mult, violation_count);
                         writeln!(out, "        {}: {},", f.name, val).unwrap();
                     } else {
                         let val = default_value_for_field(&f.target, &f.mult, is_boxed);
@@ -3197,12 +3197,69 @@ fn extract_equality_fields(expr: &Expr, var_name: &str, ir: &OxidtrIR) -> Vec<(S
     fields
 }
 
-fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> String {
+/// `count` elements of `target`, each distinct from the others.
+///
+/// Repeating `default_{target}()` is what a boundary fixture used to do, and a
+/// `BTreeSet` deduplicates structurally identical elements straight back down
+/// to one — so the fixture never reached the cardinality it was named for and
+/// the generated `boundary_*` test failed against its own bound (#96).
+///
+/// Distinctness comes from the first field that can carry it: a native scalar
+/// varies directly, a struct varies one of its own scalar fields through a
+/// `..default_{target}()` update, and a `one`-struct field recurses. A target
+/// offering none — no scalar anywhere beneath it — still repeats, because
+/// there is no second value to give it — a `seq` still reaches the count, a
+/// `set` still collapses, and no fixture can do better without inventing a
+/// field the sig does not have.
+fn distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
+    let default_call = format!("default_{}()", to_snake_case(target));
+    if count == 0 {
+        return Vec::new();
+    }
+    if is_native_type_alias(target) {
+        return (0..count as i64).map(|i| native_scalar_literal(target, i)).collect();
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == target) else {
+        return vec![default_call; count];
+    };
+    // The first `one` field that is a native scalar is the cheapest place to
+    // vary. `Bool` is deliberately not one: it has only two values, so it
+    // cannot carry a cardinality of three.
+    let scalar = s.fields.iter().find(|f| {
+        f.value_type.is_none()
+            && f.mult == Multiplicity::One
+            && matches!(f.target.as_str(), "Int" | "Str" | "Float")
+    });
+    if let Some(f) = scalar {
+        return (0..count as i64)
+            .map(|i| format!("{target} {{ {}: {}, ..{default_call} }}",
+                f.name, native_scalar_literal(&f.target, i)))
+            .collect();
+    }
+    // No scalar of its own: a `one` field pointing at another struct can carry
+    // the distinction instead, as long as it is not the cycle back to here.
+    let nested = s.fields.iter().find(|f| {
+        f.value_type.is_none()
+            && f.mult == Multiplicity::One
+            && !is_native_type_alias(&f.target)
+            && f.target != target
+            && ir.structures.iter().any(|st| st.name == f.target)
+    });
+    if let Some(f) = nested {
+        let inner = distinct_elements(ir, &f.target, count);
+        if inner.len() == count && inner.iter().collect::<HashSet<_>>().len() == count {
+            return inner.into_iter()
+                .map(|v| format!("{target} {{ {}: {v}, ..{default_call} }}", f.name))
+                .collect();
+        }
+    }
+    vec![default_call; count]
+}
+
+fn boundary_value_for_field(ir: &OxidtrIR, target: &str, mult: &Multiplicity, count: usize) -> String {
     match mult {
         Multiplicity::Set => {
-            let items: Vec<String> = (0..count)
-                .map(|_| format!("default_{}()", to_snake_case(target)))
-                .collect();
+            let items = distinct_elements(ir, target, count);
             if items.is_empty() {
                 "BTreeSet::new()".to_string()
             } else {
@@ -3210,9 +3267,7 @@ fn boundary_value_for_field(target: &str, mult: &Multiplicity, count: usize) -> 
             }
         }
         Multiplicity::Seq => {
-            let items: Vec<String> = (0..count)
-                .map(|_| format!("default_{}()", to_snake_case(target)))
-                .collect();
+            let items = distinct_elements(ir, target, count);
             if items.is_empty() {
                 "Vec::new()".to_string()
             } else {

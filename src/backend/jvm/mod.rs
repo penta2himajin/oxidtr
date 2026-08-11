@@ -74,6 +74,35 @@ impl JvmContext {
     }
 }
 
+/// A native-alias literal that differs per index, for telling the elements of
+/// a boundary fixture apart. `Bool` is deliberately absent: two values cannot
+/// carry a cardinality of three, and a `Set` would collapse the third anyway.
+///
+/// Both JVM languages spell these the same way.
+pub fn jvm_native_element(target: &str, i: usize) -> Option<String> {
+    match target {
+        "Int" => Some(format!("{i}L")),
+        "Str" => Some(format!("\"item{i}\"")),
+        "Float" => Some(format!("{i}.0")),
+        _ => None,
+    }
+}
+
+/// The field a boundary fixture varies to make its elements distinct: the
+/// first `one`-multiplicity native scalar the sig declares.
+///
+/// Repeating `default{T}()` is what both backends used to do, and neither
+/// container tolerates it — Kotlin's `setOf` deduplicates structurally equal
+/// data classes, and Java's `Set.of` throws `IllegalArgumentException:
+/// duplicate element` outright (#96).
+pub fn jvm_diversity_field(s: &StructureNode) -> Option<usize> {
+    s.fields.iter().position(|f| {
+        f.value_type.is_none()
+            && f.mult == Multiplicity::One
+            && jvm_native_element(&f.target, 0).is_some()
+    })
+}
+
 /// Abstract JVM type representation for a field.
 pub fn jvm_type_name(target: &str, mult: &Multiplicity) -> (String, bool) {
     // Returns (type_string_without_wrapper, is_collection)

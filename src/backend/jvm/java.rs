@@ -483,12 +483,30 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
     }
 }
 
+/// Java generics hold references only, so a native alias inside `Set`/`List`
+/// — or in a nullable position — needs its boxed form. `Set<long>` does not
+/// parse ("unexpected type"), which is what `set Int` emitted.
+fn java_boxed(target: &str) -> String {
+    match target {
+        "long" => "Long".to_string(),
+        "int" => "Integer".to_string(),
+        "double" => "Double".to_string(),
+        "float" => "Float".to_string(),
+        "boolean" => "Boolean".to_string(),
+        "char" => "Character".to_string(),
+        "byte" => "Byte".to_string(),
+        "short" => "Short".to_string(),
+        other => other.to_string(),
+    }
+}
+
 fn mult_to_java_type(target: &str, mult: &Multiplicity) -> String {
     match mult {
         Multiplicity::One => target.to_string(),
-        Multiplicity::Lone => format!("{target} /* @Nullable */"),
-        Multiplicity::Set => format!("Set<{target}>"),
-        Multiplicity::Seq => format!("List<{target}>"),
+        // A nullable primitive is a boxed one: `long x = null` does not compile.
+        Multiplicity::Lone => format!("{} /* @Nullable */", java_boxed(target)),
+        Multiplicity::Set => format!("Set<{}>", java_boxed(target)),
+        Multiplicity::Seq => format!("List<{}>", java_boxed(target)),
     }
 }
 
@@ -1265,7 +1283,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                                 analyze::BoundKind::AtMost(n) => *n,
                                 analyze::BoundKind::AtLeast(n) => *n,
                             };
-                            return java_boundary_value(&f.target, &f.mult, count);
+                            return java_boundary_value(ir, &f.target, &f.mult, count);
                         }
                     }
                     java_default_value(&f.target, &f.mult)
@@ -1289,7 +1307,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
                                 analyze::BoundKind::AtMost(n) => n + 1,
                                 analyze::BoundKind::AtLeast(n) => if *n > 0 { n - 1 } else { 0 },
                             };
-                            return java_boundary_value(&f.target, &f.mult, violation);
+                            return java_boundary_value(ir, &f.target, &f.mult, violation);
                         }
                     }
                     java_default_value(&f.target, &f.mult)
@@ -1338,24 +1356,51 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     out
 }
 
-fn java_boundary_value(target: &str, mult: &Multiplicity, count: usize) -> String {
+/// `count` elements of `target`, each distinct from the others.
+///
+/// `Set.of` does not merely deduplicate — it *throws*
+/// `IllegalArgumentException: duplicate element`, and records have structural
+/// `equals`, so `Set.of(defaultItem(), defaultItem())` killed every generated
+/// test that touched the fixture. A native element emitted `defaultInt()`,
+/// a call to a factory that does not exist (#96).
+fn java_distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
+    let fallback = || vec![format!("default{target}()"); count];
+    if super::jvm_native_element(target, 0).is_some() {
+        return (0..count).filter_map(|i| super::jvm_native_element(target, i)).collect();
+    }
+    if crate::backend::is_native_type_alias(target) {
+        // `Bool`, which has no per-index literal; `java_default_value` knows it.
+        return vec![java_default_value(target, &Multiplicity::One); count];
+    }
+    let Some(s) = ir.structures.iter().find(|st| st.name == target) else {
+        return fallback();
+    };
+    let Some(idx) = super::jvm_diversity_field(s) else { return fallback() };
+
+    (0..count)
+        .map(|i| {
+            let args: Vec<String> = s.fields.iter().enumerate()
+                .map(|(j, f)| {
+                    if j == idx {
+                        super::jvm_native_element(&f.target, i).unwrap()
+                    } else if f.value_type.is_some() {
+                        "Map.of()".to_string()
+                    } else {
+                        java_default_value(&f.target, &f.mult)
+                    }
+                })
+                .collect();
+            // A record's canonical constructor is positional.
+            format!("new {target}({})", args.join(", "))
+        })
+        .collect()
+}
+
+fn java_boundary_value(ir: &OxidtrIR, target: &str, mult: &Multiplicity, count: usize) -> String {
+    let items = java_distinct_elements(ir, target, count);
     match mult {
-        Multiplicity::Set => {
-            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
-            if items.is_empty() {
-                "Set.of()".to_string()
-            } else {
-                format!("Set.of({})", items.join(", "))
-            }
-        }
-        Multiplicity::Seq => {
-            let items: Vec<String> = (0..count).map(|_| format!("default{target}()")).collect();
-            if items.is_empty() {
-                "List.of()".to_string()
-            } else {
-                format!("List.of({})", items.join(", "))
-            }
-        }
+        Multiplicity::Set => format!("Set.of({})", items.join(", ")),
+        Multiplicity::Seq => format!("List.of({})", items.join(", ")),
         _ => java_default_value(target, mult),
     }
 }
