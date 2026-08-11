@@ -378,3 +378,70 @@ fn cs_relational_image_flat_maps_the_extent() {
         "the image is a list built over the extent:\n{tests}"
     );
 }
+
+// ── C# expression and naming gaps (#107, #111) ────────────────────────────
+
+/// `Models.cs` writes `.Any(`/`.Distinct()` in its validators — `System.Linq`
+/// extension methods — but imported only `System` and the collections
+/// namespace, so its own output was CS1061.
+#[test]
+fn cs_models_imports_linq_for_its_own_validators() {
+    let files = generate_cs(
+        "sig Task {}\nsig Schedule { morning: set Task, evening: set Task }\n\
+         fact NoOverlap { no (Schedule.morning & Schedule.evening) }",
+    );
+    let models = find_file(&files, "Models.cs");
+
+    assert!(models.contains(".Any("), "the validator uses LINQ:\n{models}");
+    assert!(models.contains("using System.Linq;"), "so it has to import it:\n{models}");
+}
+
+/// A `MultFormula` renders as a comparison, so the `!` an implication puts in
+/// front of its antecedent bound to the first token only. The operand is also
+/// a `List` here — `Union(...).ToList()` — not a nullable reference.
+#[test]
+fn cs_negated_multformula_is_parenthesized_and_counted() {
+    let files = generate_cs(
+        "sig Item {}\nsig Box { a: set Item, b: set Item }\n\
+         assert F { all x: Box | some (x.a + x.b) implies x.a = x.a }\ncheck F for 3",
+    );
+    let tests = find_file(&files, "Tests.cs");
+
+    assert!(
+        tests.contains("!(x.A.Union(x.B).ToList().Count > 0)"),
+        "a set operation is counted, and the negation is parenthesised:\n{tests}"
+    );
+}
+
+/// The type half of a factory's signature goes through `cs_ident`, which wraps
+/// a keyword in `@`. The method half must not — but it was taking the raw
+/// name, so `sig lock` produced `Defaultlock` beside every `DefaultFoo`.
+#[test]
+fn cs_escaped_sig_name_still_titlecases_its_factory() {
+    let files = generate_cs("sig Val {}\nsig lock { v: one Val }");
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(!fixtures.contains("Defaultlock"), "the method half is title-cased:\n{fixtures}");
+    assert!(
+        fixtures.contains("public static @lock DefaultLock()"),
+        "while the type half stays escaped:\n{fixtures}"
+    );
+}
+
+/// The boundary fixture emitted `new List<Item>()` whatever the bound said,
+/// so it never reached the boundary it was named for (#140). The elements are
+/// distinct even though `List<T>` would tolerate duplicates, because every
+/// other backend's boundary fixture now is.
+#[test]
+fn cs_boundary_fixture_honours_the_bound() {
+    let files = generate_cs(
+        "sig Item { tag: one Int }\nsig Box { items: set Item }\n\
+         fact ExactlyTwo { all b: Box | #b.items = 2 }",
+    );
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(
+        fixtures.contains("Items = new List<Item> { new Item { Tag = 0L }, new Item { Tag = 1L } },"),
+        "two distinct elements, as the bound asks:\n{fixtures}"
+    );
+}
