@@ -443,6 +443,16 @@ fn ts_adversarial_models_typecheck() {
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
          "persons.includes(t.lead)"),
+        // `Schedule.morning` is the union of `morning` over every `Schedule`
+        // atom, not member access on a type (#142).
+        ("relational_image_flat_maps_the_extent",
+         "sig Task {}\nsig Schedule { morning: set Task }\n\
+          assert R { no Schedule.morning }\ncheck R for 3",
+         "schedules.flatMap(s => [...s.morning]).length === 0"),
+        ("relational_image_of_a_one_field_is_lifted",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          assert R { no Team.lead }\ncheck R for 3",
+         "teams.map(s => s.lead).length === 0"),
     ];
 
     for (name, model, expected) in cases {

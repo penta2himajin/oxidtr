@@ -131,6 +131,28 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     Some(to_camel_plural(name))
 }
 
+/// `Sig.field`, as the union of `field` over every atom of `Sig`.
+///
+/// Alloy's `Schedule.morning` is the *relational image*, not member access on
+/// a type — `Schedule` is a TypeScript type, so the receiver form names
+/// nothing. #105 rendered a sig name as its materialised extent wherever the
+/// name stands alone; this is the position it left out (#142).
+fn relational_image(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    let Expr::FieldAccess { base, field } = expr else { return None };
+    let extent = whole_sig_extent_in(base, sig_names, ir, env)?;
+    let f = resolve_field(base, field, sig_names, ir, env)?;
+    let name = to_camel_case(field);
+    Some(match f.mult {
+        // A `set` lowers to `Set<T>`, a `seq` to an array; both spread.
+        Multiplicity::Set => format!("{extent}.flatMap(s => [...s.{name}])"),
+        Multiplicity::Seq => format!("{extent}.flatMap(s => s.{name})"),
+        Multiplicity::Lone => format!("{extent}.map(s => s.{name}).filter(v => v != null)"),
+        Multiplicity::One => format!("{extent}.map(s => s.{name})"),
+    })
+}
+
 /// `whole_sig_extent`, but also refusing a name a binder has shadowed.
 fn whole_sig_extent_in(
     expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
@@ -318,7 +340,12 @@ fn collect_params(
         Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
             collect_params(inner, sig_names, ir, params);
         }
-        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, ir, params),
+        Expr::FieldAccess { base, .. } => {
+            // The image reads the field across the sig's extent, so the domain
+            // has to be declared here as well (#142).
+            extent(base, params);
+            collect_params(base, sig_names, ir, params);
+        }
         Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
         Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
@@ -400,6 +427,11 @@ fn translate_inner(
 
         Expr::VarRef(name) => name.clone(),
 
+        // `Schedule.morning` reads a field across every atom of the sig (#142).
+        Expr::FieldAccess { .. } if relational_image(expr, sig_names, ir, env).is_some() => {
+            relational_image(expr, sig_names, ir, env).unwrap()
+        }
+
         Expr::FieldAccess { base, field } => {
             format!("{}.{}", ti(base, false), to_camel_case(field))
         }
@@ -407,6 +439,12 @@ fn translate_inner(
         // A sig's extent is the array the caller materialised for it (#105).
         Expr::Cardinality(inner) if whole_sig_extent_in(inner, sig_names, ir, env).is_some() => {
             format!("{}.length", whole_sig_extent_in(inner, sig_names, ir, env).unwrap())
+        }
+
+        // A relational image is built with `flatMap`/`map`, so it is an array
+        // whatever the field's own multiplicity is (#142).
+        Expr::Cardinality(inner) if relational_image(inner, sig_names, ir, env).is_some() => {
+            format!("{}.length", ti(inner, false))
         }
 
         Expr::Cardinality(inner) => {
@@ -520,6 +558,16 @@ fn translate_inner(
         // `some Person` is about the sig's extent, which is an array (#105).
         Expr::MultFormula { kind, expr } if whole_sig_extent_in(expr, sig_names, ir, env).is_some() => {
             let e = whole_sig_extent_in(expr, sig_names, ir, env).unwrap();
+            match kind {
+                QuantKind::Some => format!("{e}.length > 0"),
+                QuantKind::No => format!("{e}.length === 0"),
+                _ => e,
+            }
+        }
+
+        // Likewise for `some`/`no`: an image is an array, never nullable (#142).
+        Expr::MultFormula { kind, expr } if relational_image(expr, sig_names, ir, env).is_some() => {
+            let e = ti(expr, false);
             match kind {
                 QuantKind::Some => format!("{e}.length > 0"),
                 QuantKind::No => format!("{e}.length === 0"),
