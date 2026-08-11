@@ -768,7 +768,7 @@ fn collect_params(
     }
 }
 
-fn to_camel_plural(name: &str) -> String {
+pub fn to_camel_plural(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
         if i == 0 {

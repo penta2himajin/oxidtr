@@ -455,10 +455,14 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
     // it, and a variant that inherits every field has an empty *own* field list,
     // so the `fields.is_empty()` guard skipped it and left `DefaultChild`
     // referenced but never declared (CS0103) (#93).
+    // A plain field-less sig is not in that category: `sig Person {}` emits
+    // `public class Person {}`, which is a perfectly good value, and skipping
+    // its factory left every domain over it empty (#136).
     let needed_variants = backend::variants_used_as_field_targets(ir);
     for s in &ir.structures {
         if s.is_enum { continue; }
-        if s.fields.is_empty() && !needed_variants.contains(&s.name) { continue; }
+        let is_variant = backend::variant_parent(ir, &s.name).is_some();
+        if is_variant && s.fields.is_empty() && !needed_variants.contains(&s.name) { continue; }
 
         // Inherited fields are set through the object initialiser too — the
         // emitted class declares them on the abstract parent.
@@ -825,10 +829,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "{{").unwrap();
 
     let sig_names: HashSet<String> = ir.structures.iter().map(|s| s.name.clone()).collect();
-    let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !s.is_enum && !s.fields.is_empty())
-        .map(|s| s.name.clone())
-        .collect();
+    let has_fixture = backend::collect_fixture_types(ir);
     let all_constraints = analyze::analyze(ir);
 
     // Transitive-closure helpers (`^field` / `*field`): C# has no `check_*` fact-path
@@ -977,9 +978,34 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
         writeln!(out, "    public void {test_name}()").unwrap();
         writeln!(out, "    {{").unwrap();
+        // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
+        // true of a sample of two unrelated defaults. Build the link first, as
+        // the TypeScript backend already does — otherwise seeding the domains
+        // turns a vacuous pass into a false failure rather than a real check.
+        let ownership = backend::detect_ownership_pattern(
+            &constraint.expr, ir, expr_translator::to_camel_plural);
+        let mut linked: HashSet<String> = HashSet::new();
+        if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
+            let owned = params.iter().find(|(p, _)| p == owned_var);
+            let owner = params.iter().find(|(p, _)| p == owner_var);
+            if let (Some((opname, otname)), Some((cpname, ctname))) = (owned, owner) {
+                let prop = expr_translator::cs_property_name(owner_type, field_name);
+                let ocs = cs_ident(otname);
+                let ccs = cs_ident(ctname);
+                writeln!(out, "        var item = Fixtures.Default{}();", cs_factory_suffix(otname)).unwrap();
+                writeln!(out, "        var owner = Fixtures.Default{}();", cs_factory_suffix(ctname)).unwrap();
+                writeln!(out, "        owner.{prop} = new List<{ocs}>{{ item }};").unwrap();
+                writeln!(out, "        var {opname} = new List<{ocs}>{{ item }};").unwrap();
+                writeln!(out, "        var {cpname} = new List<{ccs}>{{ owner }};").unwrap();
+                linked.insert(opname.clone());
+                linked.insert(cpname.clone());
+            }
+        }
         for (pname, tname) in &params {
             let tcs = cs_ident(tname);
-            if has_fixture.contains(tname) {
+            if linked.contains(pname) {
+                // already materialised as the owner/owned pair
+            } else if has_fixture.contains(tname) {
                 writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname)).unwrap();
             } else {
                 writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
