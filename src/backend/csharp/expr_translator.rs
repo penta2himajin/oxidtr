@@ -191,9 +191,15 @@ pub fn translate_trace_body(expr: &Expr, ir: &OxidtrIR) -> String {
 /// See #102 round 3 defect 1. Call this only on the output of
 /// `rewrite_prime_as_post_state`, where every `next_`-prefixed `VarRef` is
 /// known to be this rewrite's own synthesis.
-pub fn finalize_post_state_idents(expr: &Expr) -> Expr {
-    let r = finalize_post_state_idents;
+pub fn finalize_post_state_idents(expr: &Expr, bound: &HashSet<String>) -> Expr {
+    let r = |e: &Expr| finalize_post_state_idents(e, bound);
     match expr {
+        // `rewrite_prime_as_post_state` names a post-state `next_x`, and this
+        // pass gives it C# casing. A *user* binder called `next_c` reaches the
+        // same tree and is indistinguishable afterwards, so it was renamed to
+        // `nextC` — an identifier nothing declares (#110). The binders in
+        // scope are the one thing that tells the two apart.
+        Expr::VarRef(name) if bound.contains(name) => expr.clone(),
         Expr::VarRef(name) => match name.strip_prefix("next_") {
             Some(rest) => Expr::VarRef(compose_ident("next", rest)),
             None => expr.clone(),

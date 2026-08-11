@@ -871,28 +871,47 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 writeln!(out, "        var {next_pname} = new List<{tcs}>({pname});").unwrap();
             }
             if let Some((_kind, bindings, inner_body)) = analyze::strip_outer_quantifier(&constraint.expr) {
-                let rewritten_body = expr_translator::finalize_post_state_idents(
-                    &analyze::rewrite_prime_as_post_state(inner_body),
-                );
-                let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
                 let bind_vars: Vec<String> = bindings.iter()
                     .flat_map(|b| b.vars.clone())
                     .collect();
-                if bind_vars.len() == 1 {
-                    let v = &bind_vars[0];
-                    let pname = &params[0].0;
-                    let next_pname = compose_ident("next", pname);
-                    let next_v = compose_ident("next", v);
-                    writeln!(out, "        foreach (var ({v}, {next_v}) in {pname}.Zip({next_pname}))").unwrap();
-                    writeln!(out, "        {{").unwrap();
-                    writeln!(out, "            Assert.True({body_str});").unwrap();
-                    writeln!(out, "        }}").unwrap();
-                } else {
-                    writeln!(out, "        Assert.True({body_str});").unwrap();
+                let bound: HashSet<String> = bind_vars.iter().cloned().collect();
+                let rewritten_body = expr_translator::finalize_post_state_idents(
+                    &analyze::rewrite_prime_as_post_state(inner_body), &bound,
+                );
+                let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
+                // The pre/post pair is walked over the *binding's own* domain.
+                // Taking `params[0]` paired the binder with whichever sig
+                // sorted first, so `all f: Foo` iterated `auxs` (#110).
+                let domain = match &bindings[0].domain {
+                    crate::parser::ast::Expr::VarRef(sig) => Some(sig.clone()),
+                    _ => None,
+                };
+                let pname = domain.as_ref()
+                    .and_then(|sig| params.iter().find(|(_, t)| t == sig).map(|(p, _)| p.clone()));
+                match (bind_vars.as_slice(), pname) {
+                    ([v], Some(pname)) => {
+                        let next_pname = compose_ident("next", &pname);
+                        let v_id = cs_ident(v);
+                        let next_v = cs_ident(&compose_ident("next", v));
+                        writeln!(out, "        foreach (var ({v_id}, {next_v}) in {pname}.Zip({next_pname}))").unwrap();
+                        writeln!(out, "        {{").unwrap();
+                        writeln!(out, "            Assert.True({body_str});").unwrap();
+                        writeln!(out, "        }}").unwrap();
+                    }
+                    // Anything else has no pre/post pairing to walk: two
+                    // binders over one domain leave it ambiguous which side of
+                    // the transition each names, and a domain that is not a
+                    // bare sig has no materialised list. Emitting the body
+                    // unbound is worse than emitting nothing — Rust already
+                    // declines this shape and says so (#110, #104).
+                    _ => {
+                        writeln!(out, "        // oxidtr: skipped — a transition over {} binding(s) \
+                            has no pre/post pairing to walk. See #104.", bind_vars.len()).unwrap();
+                    }
                 }
             } else {
                 let rewritten = expr_translator::finalize_post_state_idents(
-                    &analyze::rewrite_prime_as_post_state(&constraint.expr),
+                    &analyze::rewrite_prime_as_post_state(&constraint.expr), &HashSet::new(),
                 );
                 let body = expr_translator::translate_with_ir(&rewritten, ir);
                 writeln!(out, "        Assert.True({body});").unwrap();
