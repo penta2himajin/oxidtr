@@ -519,3 +519,40 @@ fn lean_value_bound_gets_a_theorem() {
     // `analyze` normalises `> 3` to `AtLeast(4)`, the same claim over an Int.
     assert!(src.contains("∀ (x : Cfg), x.size ≥ 4"), "the bound is a theorem:\n{src}");
 }
+
+// ── Uninhabited types derive nothing (#122) ───────────────────────────────
+
+/// A `one` field is stored by value, so `structure Node where next : Node` is
+/// infinitely sized: nothing constructs it and `Repr`/`BEq` cannot be derived.
+#[test]
+fn lean_self_referential_one_field_derives_nothing() {
+    let files = generate_lean("sig Node { next: one Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("deriving"), "no instance can be synthesised:\n{types}");
+    assert!(types.contains("-- oxidtr: no finite value of Node exists"),
+        "and the reason must be stated:\n{types}");
+}
+
+/// The gap is transitive exactly as `DecidableEq`'s is: a holder inherits it
+/// through a container as readily as through a bare field.
+#[test]
+fn lean_holder_of_an_uninhabited_type_derives_nothing() {
+    let files = generate_lean("sig Node { next: one Node }\nsig Box { maybe: lone Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(!types.contains("deriving"), "`Repr (Option Node)` needs `Repr Node`:\n{types}");
+    assert!(types.contains("-- oxidtr: nothing derives for Box — it holds a type with no finite value"),
+        "Box itself is finite; what it holds is not:\n{types}");
+}
+
+/// A `lone`/`set` self-reference still breaks the cycle, so it keeps deriving
+/// what it always did.
+#[test]
+fn lean_lone_self_reference_still_derives() {
+    let files = generate_lean("sig Node { next: lone Node }");
+    let types = find_file(&files, "Types.lean");
+
+    assert!(types.contains("  next : Option Node\n  deriving Repr, BEq\n"),
+        "`Option Node` is finite:\n{types}");
+}

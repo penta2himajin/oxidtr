@@ -150,6 +150,16 @@ struct DeclGroup {
     /// the property is *transitive*: a plain `structure` holding a recursive
     /// type cannot derive it either, because the field's own instance is missing.
     decidable_eq: bool,
+    /// Whether anything derives. A `one` field is stored *by value*, so
+    /// `structure Node where next : Node` is infinitely sized: nothing can
+    /// construct it and `Repr`/`BEq` cannot be derived. The gap is transitive
+    /// the same way `DecidableEq`'s is — a holder inherits it through a
+    /// container as readily as through a bare field (#122).
+    inhabited: bool,
+    /// Whether these types have a finite value of their own, as distinct from
+    /// merely holding something that has none. Only the wording of the emitted
+    /// note differs; both suppress `deriving`.
+    has_finite_value: bool,
 }
 
 /// Emitted declarations grouped into strongly-connected components and ordered
@@ -195,6 +205,13 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
     let on_cycle: HashSet<&str> = emitted.iter()
         .map(|n| n.as_str()).filter(|n| reaches(n, n)).collect();
 
+    // Types with no finite value: every one of their `one` fields leads back to
+    // them, and a `one` field is stored by value. `terminating_types` is the
+    // same least fixed point the fixture factories use (#109, #122).
+    let (terminating, _) = crate::backend::terminating_types(ir);
+    let uninhabited: HashSet<&str> = emitted.iter()
+        .map(|n| n.as_str()).filter(|n| !terminating.contains(*n)).collect();
+
     // Group by mutual reachability, keeping model order so output is deterministic.
     let mut groups: Vec<DeclGroup> = Vec::new();
     let mut placed: HashSet<&str> = HashSet::new();
@@ -211,7 +228,10 @@ fn declaration_groups(ir: &OxidtrIR, ctx: &LeanContext) -> Vec<DeclGroup> {
         }
         let decidable_eq = !on_cycle.contains(name.as_str())
             && !emitted.iter().any(|t| on_cycle.contains(t.as_str()) && reaches(name, t));
-        groups.push(DeclGroup { names, decidable_eq });
+        let has_finite_value = !uninhabited.contains(name.as_str());
+        let inhabited = has_finite_value
+            && !emitted.iter().any(|t| uninhabited.contains(t.as_str()) && reaches(name, t));
+        groups.push(DeclGroup { names, decidable_eq, inhabited, has_finite_value });
     }
 
     // Topological order over the groups: emit one whose remaining dependencies
@@ -262,9 +282,11 @@ fn generate_types(ir: &OxidtrIR, ctx: &LeanContext) -> String {
             }
 
             if s.is_enum {
-                generate_inductive(&mut out, s, ir, ctx, group.decidable_eq);
+                generate_inductive(&mut out, s, ir, ctx, group.decidable_eq,
+                    group.inhabited, group.has_finite_value);
             } else {
-                generate_structure(&mut out, s, ir, ctx, group.decidable_eq);
+                generate_structure(&mut out, s, ir, ctx, group.decidable_eq,
+                    group.inhabited, group.has_finite_value);
                 if s.sig_multiplicity == SigMultiplicity::One {
                     singletons.push(s);
                 }
@@ -290,14 +312,22 @@ fn generate_types(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
 /// `DecidableEq` derives only for a non-recursive type: Lean's handler has no
 /// case for a (nested-)recursive one, and `List T`/`Option T` count as nested.
-fn deriving_clause(decidable_eq: bool) -> &'static str {
-    if decidable_eq { "  deriving Repr, BEq, DecidableEq" } else { "  deriving Repr, BEq" }
+///
+/// Nothing derives for an uninhabited type, or for anything that holds one:
+/// the instance would have to inspect a value that cannot exist (#122).
+fn deriving_clause(decidable_eq: bool, inhabited: bool) -> Option<&'static str> {
+    if !inhabited { return None; }
+    Some(if decidable_eq { "  deriving Repr, BEq, DecidableEq" } else { "  deriving Repr, BEq" })
 }
 
-fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext, decidable_eq: bool) {
+fn generate_structure(
+    out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext,
+    decidable_eq: bool, inhabited: bool, has_finite_value: bool,
+) {
     if s.is_var {
         writeln!(out, "-- Alloy var sig: instances change across state transitions").unwrap();
     }
+    write_uninhabited_note(out, &s.name, inhabited, has_finite_value);
 
     writeln!(out, "structure {} where", lean_ident(&s.name)).unwrap();
     if s.fields.is_empty() {
@@ -311,7 +341,9 @@ fn generate_structure(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             writeln!(out, "  {} : {}", lean_field(&f.name), type_str).unwrap();
         }
     }
-    writeln!(out, "{}", deriving_clause(decidable_eq)).unwrap();
+    if let Some(clause) = deriving_clause(decidable_eq, inhabited) {
+        writeln!(out, "{clause}").unwrap();
+    }
 }
 
 fn generate_singleton_instance(out: &mut String, s: &StructureNode) {
@@ -347,7 +379,25 @@ fn generate_singleton_instance(out: &mut String, s: &StructureNode) {
     writeln!(out).unwrap();
 }
 
-fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext, decidable_eq: bool) {
+/// Say why nothing derives, where nothing does. A `one` field is stored by
+/// value, so a type every path out of which leads back to it is infinitely
+/// sized — and no instance can be synthesised for it, nor for anything holding
+/// one. Emitting the `deriving` line anyway was a hard error (#122).
+fn write_uninhabited_note(out: &mut String, name: &str, inhabited: bool, has_finite_value: bool) {
+    if inhabited { return; }
+    if has_finite_value {
+        writeln!(out, "-- oxidtr: nothing derives for {name} — it holds a type with no finite value").unwrap();
+    } else {
+        writeln!(out, "-- oxidtr: no finite value of {name} exists — a `one` field is stored by \
+            value, and every path out of this type leads back to it").unwrap();
+    }
+}
+
+fn generate_inductive(
+    out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: &LeanContext,
+    decidable_eq: bool, inhabited: bool, has_finite_value: bool,
+) {
+    write_uninhabited_note(out, &s.name, inhabited, has_finite_value);
     let kids = ctx.children.get(&s.name);
     let kid_list = match kids {
         Some(v) => v.clone(),
@@ -388,7 +438,9 @@ fn generate_inductive(out: &mut String, s: &StructureNode, _ir: &OxidtrIR, ctx: 
             }
         }
     }
-    writeln!(out, "{}", deriving_clause(decidable_eq)).unwrap();
+    if let Some(clause) = deriving_clause(decidable_eq, inhabited) {
+        writeln!(out, "{clause}").unwrap();
+    }
 }
 
 fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {

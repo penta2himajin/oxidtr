@@ -1973,6 +1973,20 @@ fn lean_adversarial_models_compile() {
         ("value_bound_gets_a_theorem",
          "sig Cfg { size: one Int }\nfact Big { all c: Cfg | c.size > 3 }",
          "∀ (x : Cfg), x.size ≥ 4"),
+        // `one Node` is stored by value, so `structure Node where next : Node`
+        // is infinitely sized and uninhabited. `Repr`/`BEq` cannot be derived
+        // for it, and the gap is transitive exactly as `DecidableEq`'s is —
+        // anything holding one, through a container or not, inherits it (#122).
+        ("self_referential_one_field_derives_nothing",
+         "sig Node { next: one Node }",
+         "-- oxidtr: no finite value of Node exists"),
+        ("holder_of_an_uninhabited_type_derives_nothing",
+         "sig Node { next: one Node }\nsig Team { lead: one Node, maybe: lone Node }",
+         "structure Team where\n  lead : Node\n  maybe : Option Node\n"),
+        // A `lone`/`set` self-reference still breaks the cycle and derives.
+        ("lone_self_reference_still_derives",
+         "sig Node { next: lone Node }",
+         "structure Node where\n  next : Option Node\n  deriving Repr, BEq\n"),
     ];
 
     for (name, model, expected) in cases {
