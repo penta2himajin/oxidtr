@@ -2736,6 +2736,10 @@ fn translate_validator_expr_rust(expr: &Expr, sig_name: &str, ir: &OxidtrIR) -> 
 fn generate_fixtures(ir: &OxidtrIR) -> String {
     let mut out = String::new();
 
+    // Which types have a finite value at all — a least fixed point, so a cycle
+    // that closes through a second type is caught (#109).
+    let (terminating, _witness) = super::terminating_types(ir);
+
     let enum_parents: HashSet<String> = ir.structures.iter()
         .filter(|s| s.is_enum).map(|s| s.name.clone()).collect();
     let variant_names: HashSet<String> = ir.structures.iter()
@@ -2828,6 +2832,20 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             .find(|v| is_unit(v) && existential_variants.contains(&format!("{}::{}", s.name, v)))
             .or_else(|| variants.iter().find(|v| is_unit(v)))
             .or_else(|| variants.first());
+        // Every case re-enters this type — directly or through another that
+        // leads back — so no finite value exists. A single-step "does this
+        // variant look terminating" check cannot see a cycle that closes
+        // through a second type, which is how `A1 { b: B }` / `B1 { a: A }`
+        // produced a factory pair that blew the stack (#109).
+        if !terminating.contains(&s.name) {
+            writeln!(out, "/// No finite default: every value of {} contains another.", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn default_{}() -> {} {{", enum_snake, s.name).unwrap();
+            writeln!(out, "    unimplemented!(\"oxidtr: {} has no finite default \\u{{2014}} every value of it contains another\")", s.name).unwrap();
+            writeln!(out, "}}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         if let Some(variant) = chosen {
             let fields = effective_fields(variant);
             writeln!(out, "/// Factory: default value for enum {}", s.name).unwrap();
@@ -2913,6 +2931,16 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             writeln!(out, "/// Factory: default value for unit struct {}", s.name).unwrap();
             writeln!(out, "#[allow(dead_code)]").unwrap();
             writeln!(out, "pub fn default_{}() -> {} {{ {} }}", struct_snake, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        if !terminating.contains(&s.name) {
+            writeln!(out, "/// No finite default: every value of {} contains another.", s.name).unwrap();
+            writeln!(out, "#[allow(dead_code)]").unwrap();
+            writeln!(out, "pub fn default_{}() -> {} {{", struct_snake, s.name).unwrap();
+            writeln!(out, "    unimplemented!(\"oxidtr: {} has no finite default \\u{{2014}} every value of it contains another\")", s.name).unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
             continue;
         }

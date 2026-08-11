@@ -420,6 +420,12 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
     let mut out = String::new();
+    // `NotSupportedException` lives in `System`, which Fixtures.cs did not
+    // import — it had no reason to before a factory could refuse to exist.
+    writeln!(out, "using System;").unwrap();
+    // Which types have a finite value at all — a least fixed point, so a cycle
+    // that closes through a second type is caught (#109).
+    let (terminating, _witness) = backend::terminating_types(ir);
     writeln!(out, "using System.Collections.Generic;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "public static class Fixtures").unwrap();
@@ -450,6 +456,16 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
                 (f, val)
             })
             .collect();
+
+        // Every value of this type contains another: a single-step check
+        // cannot see a cycle that closes through a second type (#109).
+        if !terminating.contains(&s.name) {
+            writeln!(out, "    /// <summary>{} has no finite default: every value of it contains another.</summary>", s.name).unwrap();
+            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), s.name).unwrap();
+            writeln!(out, "        throw new NotSupportedException(\"oxidtr: {} has no finite default: every value of it contains another\");", s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         // Default factory
         writeln!(out, "    public static {} Default{}()", cs_ident(&s.name), s.name).unwrap();
@@ -498,6 +514,21 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
                 continue;
             }
         };
+        // `terminates` below only rejected a *direct* self-reference, so a
+        // cycle closing through a second type (`A1 { b: B }` / `B1 { a: A }`)
+        // looked terminating and produced a mutually recursive factory pair
+        // (#109). The shared fixed point sees the whole cycle.
+        //
+        // Checked here rather than before the match: a variantless enum has no
+        // case to be constructible *through*, but C# gives it an implicit zero
+        // value, so `default` remains a real answer for it.
+        if !terminating.contains(&s.name) {
+            writeln!(out, "    /// <summary>{} has no finite default: every value of it contains another.</summary>", s.name).unwrap();
+            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), s.name).unwrap();
+            writeln!(out, "        throw new NotSupportedException(\"oxidtr: {} has no finite default: every value of it contains another\");", s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
         let effective_fields = |v: &str| -> usize {
             ctx.struct_map.get(v).map_or(0, |st| st.fields.len()) + s.fields.len()
         };

@@ -300,3 +300,25 @@ fn cs_emits_a_fixture_for_a_variant_used_as_a_field_type() {
         "and the factory must be declared, not just called:\n{fixtures}"
     );
 }
+
+// ── Mutually recursive defaults must not recurse forever (#109) ────────────
+
+/// `DefaultA()` built an `A1` holding `DefaultB()`, and `DefaultB()` called
+/// straight back — code that builds and blows the stack when run.
+#[test]
+fn cs_mutually_recursive_default_does_not_recurse() {
+    let files = generate_cs(
+        "abstract sig A {}\nsig A1 extends A { b: one B }\n\
+         abstract sig B {}\nsig B1 extends B { a: one A }",
+    );
+    let fixtures = find_file(&files, "Fixtures.cs");
+
+    assert!(
+        fixtures.contains("no finite default"),
+        "the impossibility must be stated, not silently skipped:\n{fixtures}"
+    );
+    assert!(
+        !fixtures.contains("B = DefaultB()"),
+        "no finite value of A exists, so its factory must not build one:\n{fixtures}"
+    );
+}

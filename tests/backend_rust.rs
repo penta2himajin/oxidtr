@@ -2098,3 +2098,46 @@ fn rust_variant_field_keeps_the_variant_constraint() {
         "the field must still be constrained to the variant it was declared as:\n{all}"
     );
 }
+
+// ── Mutually recursive defaults must not recurse forever (#109) ────────────
+
+const MUTUAL_RECURSION_MODEL: &str = "\
+abstract sig A {}
+sig A1 extends A { b: one B }
+abstract sig B {}
+sig B1 extends B { a: one A }
+";
+
+/// Every value of `A` contains a `B` and every value of `B` contains an `A`, so
+/// no finite value of either exists. The terminating-variant check looked one
+/// step ahead, saw `A1` had a constructible-looking payload, and emitted
+/// `default_a() -> A::A1 { b: default_b() }` against a `default_b()` that calls
+/// straight back — code that compiles and blows the stack when run.
+#[test]
+fn rust_mutually_recursive_default_does_not_recurse() {
+    let files = generate_from(MUTUAL_RECURSION_MODEL);
+    let fixtures = find_file(&files, "fixtures.rs");
+
+    assert!(
+        !fixtures.contains("b: default_b()"),
+        "no finite value of A exists, so its factory must not build one:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("no finite default"),
+        "the impossibility must be stated, not silently skipped:\n{fixtures}"
+    );
+}
+
+/// A type that *is* constructible must keep its ordinary factory — the fixed
+/// point must not be so conservative that it gives up on everything recursive.
+#[test]
+fn rust_self_recursive_lone_field_still_has_a_default() {
+    let files = generate_from("sig Node { parent: lone Node, tag: one Int }");
+    let fixtures = find_file(&files, "fixtures.rs");
+
+    assert!(fixtures.contains("pub fn default_node()"), "got:\n{fixtures}");
+    assert!(
+        !fixtures.contains("no finite default"),
+        "a `lone` field bottoms out at None, so Node is constructible:\n{fixtures}"
+    );
+}

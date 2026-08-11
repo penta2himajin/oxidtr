@@ -1169,6 +1169,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
 fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
     let mut out = String::new();
+    // Which types have a finite value at all — a least fixed point, so a cycle
+    // that closes through a second type is caught (#109).
+    let (terminating, _witness) = super::terminating_types(ir);
     writeln!(out, "package models").unwrap();
     writeln!(out).unwrap();
 
@@ -1232,6 +1235,14 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
                 }
             };
             writeln!(out, "// Default{} returns a default value for {}.", s.name, s.name).unwrap();
+            if !terminating.contains(&s.name) {
+                writeln!(out, "// Default{} has no finite default: every value of {} contains another.", s.name, s.name).unwrap();
+                writeln!(out, "func Default{}() {} {{", s.name, s.name).unwrap();
+                writeln!(out, "\tpanic(\"oxidtr: {} has no finite default: every value of it contains another\")", s.name).unwrap();
+                writeln!(out, "}}").unwrap();
+                writeln!(out).unwrap();
+                continue;
+            }
             writeln!(out, "func Default{}() {} {{ return {} }}", s.name, s.name, default_expr).unwrap();
             writeln!(out).unwrap();
         }
@@ -1248,6 +1259,19 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
         if s.fields.is_empty() {
             writeln!(out, "// Default{} creates a default valid {}.", s.name, s.name).unwrap();
             writeln!(out, "func Default{}() {} {{ return {}{{}} }}", s.name, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
+
+        // Every value of this type contains another: a single-step check
+        // cannot see a cycle that closes through a second type, which is how
+        // `A1 { b: B }` / `B1 { a: A }` produced a factory pair that blew the
+        // stack (#109).
+        if !terminating.contains(&s.name) {
+            writeln!(out, "// Default{} has no finite default: every value of {} contains another.", s.name, s.name).unwrap();
+            writeln!(out, "func Default{}() {} {{", s.name, s.name).unwrap();
+            writeln!(out, "\tpanic(\"oxidtr: {} has no finite default: every value of it contains another\")", s.name).unwrap();
+            writeln!(out, "}}").unwrap();
             writeln!(out).unwrap();
             continue;
         }

@@ -677,10 +677,18 @@ fn go_one_multiplicity_transitive_closure_compiles() {
         helpers.contains("result = append(result, *current)"),
         "a boxed `one` self-reference must be dereferenced before append:\n{helpers}"
     );
+    // `next: one Node` says every Node has exactly one next Node, so no finite
+    // value exists. The old `Next: nil` was a value that violates the very
+    // multiplicity it was generated from; Swift already refused to emit one,
+    // and Rust and Go now agree (#109).
     let fixtures = find_file(&files, "fixtures.go");
     assert!(
-        fixtures.contains("Next: nil"),
-        "a self-referential `one` field cannot be built eagerly:\n{fixtures}"
+        fixtures.contains("no finite default"),
+        "a self-referential `one` field has no finite value:\n{fixtures}"
+    );
+    assert!(
+        !fixtures.contains("Next: nil"),
+        "nil does not satisfy `one`:\n{fixtures}"
     );
 }
 
@@ -759,5 +767,32 @@ fn go_emits_a_fixture_for_a_variant_used_as_a_field_type() {
     assert!(
         fixtures.contains("func DefaultChild() Child"),
         "a variant used as a field type needs a factory:\n{fixtures}"
+    );
+}
+
+// ── Mutually recursive defaults must not recurse forever (#109) ────────────
+
+const GO_MUTUAL_RECURSION_MODEL: &str = "\
+abstract sig A {}
+sig A1 extends A { b: one B }
+abstract sig B {}
+sig B1 extends B { a: one A }
+";
+
+/// `DefaultA()` returned `A1{B: DefaultB()}` and `DefaultB()` called straight
+/// back — code that vets clean and blows the stack when run (`go test` dies in
+/// 15s on this model).
+#[test]
+fn go_mutually_recursive_default_does_not_recurse() {
+    let files = generate_go(GO_MUTUAL_RECURSION_MODEL);
+    let fixtures = find_file(&files, "fixtures.go");
+
+    assert!(
+        !fixtures.contains("A1{B: DefaultB()}"),
+        "no finite value of A exists, so its factory must not build one:\n{fixtures}"
+    );
+    assert!(
+        fixtures.contains("no finite default"),
+        "the impossibility must be stated, not silently skipped:\n{fixtures}"
     );
 }
