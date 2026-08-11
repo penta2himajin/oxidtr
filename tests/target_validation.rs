@@ -1557,12 +1557,42 @@ fn cs_adversarial_models_compile() {
          "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
           fact UsesConfig { all n: N | n.c = Config }",
          "configs.Contains(n.C)"),
-        // `sig Level { level: … }` would be CS0542 — a member may not share its
-        // enclosing type's name — which is a separate escape gap, not this one.
         ("comparison_with_a_payload_carrying_variant",
          "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
           sig Holder { level: one L }\nfact NotLow { all v: Holder | v.level != Low }",
          "!(v.Level is Low)"),
+        // A member may not share its enclosing type's name — CS0542, which is
+        // how a constructor is declared. The collision is one *we* create by
+        // capitalising, so the field keeps Alloy's spelling instead (#137).
+        // A user binder called `next_c` is indistinguishable from a synthetic
+        // post-state name once `rewrite_prime_as_post_state` has run, so it was
+        // renamed to `nextC` — an identifier nothing declares (#110 item 1).
+        ("user_binder_named_next_survives_post_state_finalization",
+         "sig Foo { var tag: one Int }\n\
+          fact R { always all next_c: Foo | next_c.tag' = next_c.tag }",
+         "Assert.True(nextNext_c.Tag == next_c.Tag);"),
+        // The tuple binder was written raw while the body was escaped, so the
+        // two halves disagreed (#110 item 2).
+        ("temporal_tuple_binder_is_escaped",
+         "sig Foo { var tag: one Int }\n\
+          fact R { always all event: Foo | event.tag' = event.tag }",
+         "foreach (var (@event, nextEvent) in foos.Zip(nextFoos))"),
+        // Two binders leave it ambiguous which side of the transition each
+        // names, and the body used to be emitted with nothing bound at all
+        // (#110 item 3).
+        ("multi_binding_transition_is_skipped_not_unbound",
+         "sig Foo { var tag: one Int }\nfact R { always all a, b: Foo | a.tag' = b.tag }",
+         "// oxidtr: skipped — a transition over 2 binding(s)"),
+        // `params[0]` paired the binder with whichever sig sorted first, so
+        // `all f: Foo` iterated `auxs` (#110 item 4).
+        ("transition_walks_the_bindings_own_domain",
+         "sig Aux {}\nsig Foo { var tag: one Int }\n\
+          fact R { always all f: Foo | f.tag' = f.tag and (all a: Aux | a = a) }",
+         "foreach (var (f, nextF) in foos.Zip(nextFoos))"),
+        ("field_named_after_its_own_sig_keeps_alloy_casing",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Level { level: one L }\nfact NotLow { all v: Level | v.level != Low }",
+         "public class Level\n{\n    public L level { get; set; }"),
         ("membership_in_a_whole_sig",
          "sig Person {}\nsig Team { lead: one Person }\n\
           fact LeadIsAPerson { all t: Team | t.lead in Person }",
