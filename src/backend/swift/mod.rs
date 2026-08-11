@@ -786,7 +786,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
     writeln!(out, "final class PropertyTests: XCTestCase {{").unwrap();
 
     for prop in &ir.properties {
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         if let Some(t) = variant_domain(&params, ctx) {
             writeln!(out, "    // oxidtr: skipped test_{} — `{t}` is an enum case, not a Swift type", prop.name).unwrap();
             continue;
@@ -866,7 +866,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
 
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             if let Some(t) = variant_domain(&params, ctx) {
                 writeln!(out, "    // oxidtr: skipped test_transition_{fact_name} — `{t}` is an enum case, not a Swift type").unwrap();
                 continue;
@@ -905,7 +905,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             continue;
         }
 
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         if let Some(t) = variant_domain(&params, ctx) {
             writeln!(out, "    // oxidtr: skipped tests for {fact_name} — `{t}` is an enum case, not a Swift type").unwrap();
             continue;
@@ -997,7 +997,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         if variant_domain(&params, ctx).is_some() { continue; }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
         if unrenderable_case_ref(&body, &case_refs).is_some() { continue; }
@@ -1150,8 +1150,8 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             let (Some(ca), Some(cb)) = (constraint_a, constraint_b) else { continue; };
 
             // Extract all params from both facts to declare all needed variables
-            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
-            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names, ir);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names, ir);
             if variant_domain(&params_a, ctx).is_some() || variant_domain(&params_b, ctx).is_some() {
                 continue;
             }

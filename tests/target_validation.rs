@@ -1057,6 +1057,26 @@ fn swift_adversarial_models_compile() {
          "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
           assert Reflexive { all n: Node | n = n }",
          "func anomalyEmptyNode() -> Node {\n    Node(\n        `inout`: defaultVal(),"),
+        // A sig name used as a value is the set of its atoms. Swift has no such
+        // value — the name is a type — so it becomes the sample domain the test
+        // materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x == ps.count"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.contains(n.c)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.contains(t.lead)"),
+        // The case test used to need a bound variable on the other side, so the
+        // shape the issue reports — a `one` field — was skipped outright.
+        ("variant_comparison_against_a_field",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "!n.level.isLow"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
          "func boundaryBox() -> Box {\n    Box(\n        marks: Set([0, 1])"),
