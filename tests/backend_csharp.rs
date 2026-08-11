@@ -322,3 +322,42 @@ fn cs_mutually_recursive_default_does_not_recurse() {
         "no finite value of A exists, so its factory must not build one:\n{fixtures}"
     );
 }
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// In Alloy a sig name in an expression is the set of its atoms. C# has no
+/// such value — the name is a type — so `#P` became `P.Count`.
+#[test]
+fn cs_whole_sig_expressions_use_the_materialised_domain() {
+    let card = find_file(
+        &generate_cs("one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }"),
+        "Tests.cs",
+    ).to_string();
+    assert!(!card.contains("P.Count"), "`P` is a type, not a value:\n{card}");
+    assert!(card.contains("p.X == ps.Count"),
+        "the sig's cardinality is that of the sample the test builds:\n{card}");
+
+    let eq = find_file(
+        &generate_cs(
+            "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+             fact UsesConfig { all n: N | n.c = Config }",
+        ),
+        "Tests.cs",
+    ).to_string();
+    assert!(eq.contains("configs.Contains(n.C)"),
+        "equality with a sig is membership in its extent:\n{eq}");
+}
+
+/// A variant is a subclass, so `v.Level != Low` compared a value against a
+/// type. Which case an atom is, is a pattern match.
+#[test]
+fn cs_comparison_with_a_variant_tests_the_case() {
+    let files = generate_cs(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         sig Holder { level: one L }\nfact NotLow { all v: Holder | v.level != Low }",
+    );
+    let tests = find_file(&files, "Tests.cs");
+
+    assert!(tests.contains("!(v.Level is Low)"),
+        "being the Low atom is being the Low case:\n{tests}");
+}

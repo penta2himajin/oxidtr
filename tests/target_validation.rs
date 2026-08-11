@@ -1437,6 +1437,26 @@ fn cs_adversarial_models_compile() {
         ("quantifier_over_native_domain",
          "assert R { all i: Int | i = i }",
          "new List<long>{ 0 }.TrueForAll(i => i == i)"),
+        // A sig name used as a value is the set of its atoms. C# has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.X == ps.Count"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.Contains(n.C)"),
+        // `sig Level { level: … }` would be CS0542 — a member may not share its
+        // enclosing type's name — which is a separate escape gap, not this one.
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Holder { level: one L }\nfact NotLow { all v: Holder | v.level != Low }",
+         "!(v.Level is Low)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.Contains(t.Lead)"),
     ];
 
     for (name, model, expected) in cases {
