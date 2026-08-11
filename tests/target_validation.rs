@@ -190,6 +190,24 @@ fn rust_adversarial_models_compile() {
          "sig Cap {}\nsig Account { cap: one Cap }\n\
           pred withinCap[a: one Account, c: one Cap] { a.cap = c }",
          "a.cap == (*c)"),
+        // A sig name used as a value is the set of its atoms. Rust has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises, and `#e` an `i64` rather than a `usize` (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x == ps.len() as i64"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.contains(&n.c)"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "!matches!(n.level, L::Low { .. })"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.contains(&t.lead)"),
     ];
 
     for (name, model, expected) in cases {
@@ -338,6 +356,88 @@ fn ts_self_hosted_tests_pass() {
     );
 }
 
+/// Models TypeScript had no type gate for. `bun test` parses `tests.ts` and
+/// runs it, so a sig name used as a value — a reference to a *type* — only
+/// showed up as a `ReferenceError` inside whichever assertion reached it, and
+/// a fact whose fixtures happen not to satisfy it never got that far (#105).
+/// `tsc --noEmit` is the TypeScript equivalent of `cargo check --all-targets`.
+#[test]
+#[ignore]
+fn ts_adversarial_models_typecheck() {
+    // (name, model, expected substring proving the semantics, not just the syntax)
+    let cases: &[(&str, &str, &str)] = &[
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x === ps.length"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.some(e => JSON.stringify(e) === JSON.stringify(n.c))"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "n.level.kind !== \"Low\""),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.includes(t.lead)"),
+    ];
+
+    for (name, model, expected) in cases {
+        let parsed = parser::parse(model).unwrap_or_else(|e| panic!("{name}: parse failed: {e:?}"));
+        let lowered = ir::lower(&parsed).unwrap_or_else(|e| panic!("{name}: lower failed: {e:?}"));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let config = typescript::TsBackendConfig { test_runner: typescript::TsTestRunner::Bun };
+        let files = typescript::generate_with_config(&lowered, &config);
+        for file in &files {
+            std::fs::write(dir.join(&file.path), &file.content).unwrap();
+        }
+        let validators = typescript::generate_validators(&lowered);
+        if !validators.is_empty() {
+            std::fs::write(dir.join("validators.ts"), &validators).unwrap();
+        }
+        // `bun:test` ships no ambient types outside a bun project; without a
+        // declaration for it every file fails on the import instead of on the
+        // defect under test.
+        std::fs::write(dir.join("bun-test.d.ts"), BUN_TEST_SHIM).unwrap();
+        let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+        let sources: Vec<String> = std::fs::read_dir(dir).unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.ends_with(".ts"))
+            .collect();
+        let out = std::process::Command::new("tsc")
+            .args(["--noEmit", "--skipLibCheck", "--target", "es2022",
+                   "--module", "esnext", "--moduleResolution", "bundler"])
+            .args(&sources)
+            .current_dir(dir)
+            .output()
+            .expect("failed to run tsc (is typescript installed?)");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "{name}: generated TS does not type-check\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+             --- generated ---\n{all}"
+        );
+        // A clean type-check alone would also pass for a vacuous translation,
+        // so pin the fragment that proves the resolution.
+        assert!(
+            all.contains(expected),
+            "{name}: type-checked, but expected {expected:?} in the generated TS:\n{all}"
+        );
+    }
+}
+
+const BUN_TEST_SHIM: &str = "declare module 'bun:test' {\n\
+    \x20 export const describe: any;\n\
+    \x20 export const it: any;\n\
+    \x20 export const test: any;\n\
+    \x20 export const expect: any;\n\
+    }\n";
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Kotlin — gradle test
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -409,9 +509,184 @@ rootProject.name = "oxidtr-kt-test"
     );
 }
 
+/// The shapes `models/oxidtr.als` does not exercise, in one model so that a
+/// single compile covers them all. Every name is distinct, so the sigs never
+/// collide even though the facts are unrelated (#105).
+const JVM_ADVERSARIAL_MODEL: &str = "\
+one sig P { x: one Int }
+fact CardOne { all p: P | p.x = #P }
+
+one sig Config { limit: one Int }
+sig N { c: one Config }
+fact UsesConfig { all n: N | n.c = Config }
+
+abstract sig L { tag: one Int }
+one sig High extends L {}
+one sig Low extends L {}
+sig Level { level: one L }
+fact NotLow { all v: Level | v.level != Low }
+
+sig Person {}
+sig Team { lead: one Person }
+fact LeadIsAPerson { all t: Team | t.lead in Person }
+";
+
+/// The fragments that prove the resolution, not merely a clean build.
+const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
+    ("whole_sig_cardinality", "ps.size"),
+    ("equality_with_a_singleton_sig", "configs.contains("),
+    ("comparison_with_a_payload_carrying_variant", "Low)"),
+    ("membership_in_a_whole_sig", "persons.contains("),
+];
+
+/// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
+/// name in value position, so `#P`, `n.c = Config` and `v.level != Low` — each
+/// a *type* where a value belongs — were never compiled (#105).
+#[test]
+#[ignore]
+fn kotlin_adversarial_models_compile() {
+    let parsed = parser::parse(JVM_ADVERSARIAL_MODEL).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+    let files = kotlin::generate(&lowered);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let src_main = dir.join("src/main/kotlin");
+    let src_test = dir.join("src/test/kotlin");
+    std::fs::create_dir_all(&src_main).unwrap();
+    std::fs::create_dir_all(&src_test).unwrap();
+
+    std::fs::write(dir.join("build.gradle.kts"), r#"
+plugins { kotlin("jvm") version "2.1.20" }
+repositories { mavenCentral() }
+dependencies {
+    testImplementation("org.junit.jupiter:junit-jupiter:5.10.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+tasks.test { useJUnitPlatform() }
+kotlin { jvmToolchain(21) }
+"#).unwrap();
+    std::fs::write(dir.join("settings.gradle.kts"), r#"
+pluginManagement { repositories { mavenCentral(); gradlePluginPortal() } }
+rootProject.name = "oxidtr-kt-adversarial"
+"#).unwrap();
+
+    for file in &files {
+        let dest = if file.path == "Tests.kt" { &src_test } else { &src_main };
+        std::fs::write(dest.join(&file.path), &file.content).unwrap();
+    }
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    // Compiling the test source set is the point: `Tests.kt` is where these
+    // defects land, and `compileKotlin` alone never reaches it.
+    let out = std::process::Command::new("gradle")
+        .args(["compileTestKotlin", "--no-daemon", "-q"])
+        .current_dir(dir)
+        .output()
+        .expect("failed to run gradle (is gradle installed?)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "generated Kotlin does not compile\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+         --- generated ---\n{all}"
+    );
+    for (name, expected) in JVM_ADVERSARIAL_EXPECTED {
+        assert!(all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated Kotlin:\n{all}");
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // Java — gradle test
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// The Java half of `kotlin_adversarial_models_compile`. `javac` needs only the
+/// JUnit annotations the generated tests name, so this compiles in a second
+/// rather than waiting on gradle to resolve a test runtime.
+#[test]
+#[ignore]
+fn java_adversarial_models_compile() {
+    let parsed = parser::parse(JVM_ADVERSARIAL_MODEL).expect("parse");
+    let lowered = ir::lower(&parsed).expect("lower");
+    let files = java::generate(&lowered);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    let junit = dir.join("org/junit/jupiter/api");
+    std::fs::create_dir_all(&junit).unwrap();
+    for (path, content) in JUNIT_STUBS {
+        std::fs::write(junit.join(path), content).unwrap();
+    }
+    for file in &files {
+        std::fs::write(dir.join(&file.path), &file.content).unwrap();
+    }
+    let all: String = files.iter().map(|f| f.content.clone()).collect::<Vec<_>>().join("\n");
+
+    let sources: Vec<String> = walk_java(dir);
+    let out = std::process::Command::new("javac")
+        .args(["-nowarn", "-d"]).arg(dir.join("classes"))
+        .args(&sources)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run javac (is a JDK installed?)");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "generated Java does not compile\nstdout:\n{stdout}\nstderr:\n{stderr}\n\
+         --- generated ---\n{all}"
+    );
+    for (name, expected) in JVM_ADVERSARIAL_EXPECTED {
+        let expected = match *name {
+            "whole_sig_cardinality" => "ps.size()",
+            "comparison_with_a_payload_carrying_variant" => "instanceof Low",
+            _ => expected,
+        };
+        assert!(all.contains(expected),
+            "{name}: compiled, but expected {expected:?} in the generated Java:\n{all}");
+    }
+}
+
+/// Just enough of JUnit 5 for the generated tests to name: this gate is about
+/// whether the *translation* compiles, not about running anything.
+const JUNIT_STUBS: &[(&str, &str)] = &[
+    ("Test.java", "package org.junit.jupiter.api;\npublic @interface Test {}\n"),
+    ("Disabled.java",
+     "package org.junit.jupiter.api;\npublic @interface Disabled { String value() default \"\"; }\n"),
+    ("Assertions.java", "\
+package org.junit.jupiter.api;
+public class Assertions {
+    public static void assertTrue(boolean c) {}
+    public static void assertTrue(boolean c, String m) {}
+    public static void assertFalse(boolean c) {}
+    public static void assertFalse(boolean c, String m) {}
+    public static void assertEquals(Object a, Object b) {}
+    public static void assertEquals(Object a, Object b, String m) {}
+    public static void assertNotNull(Object a) {}
+    public static void assertNotNull(Object a, String m) {}
+    public static void assertNull(Object a) {}
+    public static void fail(String m) {}
+}
+"),
+];
+
+fn walk_java(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|e| e == "java") {
+                out.push(p.to_string_lossy().into_owned());
+            }
+        }
+    }
+    out.sort();
+    out
+}
 
 /// Generate Java code from oxidtr.als and run gradle test.
 #[test]
@@ -586,6 +861,24 @@ fn go_adversarial_models_compile() {
          "sig Tag {}\nsig Person { tags: set Tag }\n\
           assert R { all disj a, b: Person | a != b }",
          "!equal(a, b)"),
+        // A sig name used as a value is the set of its atoms. Go has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.X == int64(len(ps))"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "contains(configs, n.C)"),
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Level { level: one L }\nfact NotLow { all v: Level | v.level != Low }",
+         "!isVariant[Low](v.Level)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "contains(persons, t.Lead)"),
     ];
 
     for (name, model, expected) in cases {
@@ -782,6 +1075,26 @@ fn swift_adversarial_models_compile() {
          "sig Val {}\nsig Node { inout: one Val, values: set Val, next: lone Node }\n\
           assert Reflexive { all n: Node | n = n }",
          "func anomalyEmptyNode() -> Node {\n    Node(\n        `inout`: defaultVal(),"),
+        // A sig name used as a value is the set of its atoms. Swift has no such
+        // value — the name is a type — so it becomes the sample domain the test
+        // materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.x == ps.count"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.contains(n.c)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.contains(t.lead)"),
+        // The case test used to need a bound variable on the other side, so the
+        // shape the issue reports — a `one` field — was skipped outright.
+        ("variant_comparison_against_a_field",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+         "!n.level.isLow"),
         ("boundary_set_of_natives",
          "sig Box { marks: set Int }\nfact ExactlyTwo { all b: Box | #b.marks = 2 }",
          "func boundaryBox() -> Box {\n    Box(\n        marks: Set([0, 1])"),
@@ -1124,6 +1437,26 @@ fn cs_adversarial_models_compile() {
         ("quantifier_over_native_domain",
          "assert R { all i: Int | i = i }",
          "new List<long>{ 0 }.TrueForAll(i => i == i)"),
+        // A sig name used as a value is the set of its atoms. C# has no such
+        // value — the name is a type — so it becomes the sample domain the
+        // test materialises (#105).
+        ("whole_sig_cardinality",
+         "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
+         "p.X == ps.Count"),
+        ("equality_with_a_singleton_sig",
+         "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+          fact UsesConfig { all n: N | n.c = Config }",
+         "configs.Contains(n.C)"),
+        // `sig Level { level: … }` would be CS0542 — a member may not share its
+        // enclosing type's name — which is a separate escape gap, not this one.
+        ("comparison_with_a_payload_carrying_variant",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          sig Holder { level: one L }\nfact NotLow { all v: Holder | v.level != Low }",
+         "!(v.Level is Low)"),
+        ("membership_in_a_whole_sig",
+         "sig Person {}\nsig Team { lead: one Person }\n\
+          fact LeadIsAPerson { all t: Team | t.lead in Person }",
+         "persons.Contains(t.Lead)"),
     ];
 
     for (name, model, expected) in cases {
@@ -1585,6 +1918,24 @@ fn lean_adversarial_models_compile() {
          "abstract sig Shape {}\nsig Circle extends Shape {}\nsig Square extends Shape {}\n\
           fact Covers { all x: Shape | x in Circle or x in Square }",
          "∀ (x : Shape), x matches .circle .. ∨ x matches .square .."),
+        // `v = Low` asks which case an atom is. `Low` is a *constructor* of the
+        // parent `inductive`, not a type, so the bare name does not elaborate
+        // where a value belongs (#105).
+        ("equality_with_a_variant_is_a_pattern_match",
+         "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+          pred notLow[v: L] { v != Low }",
+         "def notLow (v : L) : Prop :=\n  ¬(v matches .low ..)"),
+        // A sig name outside a quantifier domain is the set of its atoms, and
+        // this encoding has no term for that — `P.length` names a type where a
+        // value belongs. Deferring is the honest answer; emitting it is not.
+        ("whole_sig_extent_defers_instead_of_naming_the_type",
+         "one sig P { x: one Int }\npred cardOk[p: P] { p.x = #P }",
+         "def cardOk (p : P) : Prop :=\n  sorry -- oxidtr: cardOk reads a sig's extent"),
+        // The quantifier domain is the one position where the type *is* what is
+        // meant, so it must not be swept up by the same rule.
+        ("quantifier_domain_is_still_the_type",
+         "sig Leaf { n: one Int }\npred allPos[a: Leaf] { all x: Leaf | x.n > 0 }",
+         "def allPos (a : Leaf) : Prop :=\n  ∀ x : Leaf, x.n > 0"),
     ];
 
     for (name, model, expected) in cases {

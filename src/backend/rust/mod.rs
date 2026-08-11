@@ -1302,9 +1302,16 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         .filter(|s| s.parent.as_ref().map_or(false, |p| enum_parents.contains(p)))
         .map(|s| s.name.clone()).collect();
     let concrete_singletons = concrete_parent_singletons(ir, &enum_parents);
+    // Which sigs a test can build a sample of. A field-less sig has a unit
+    // factory (`pub fn default_admin() -> Admin { Admin }`), so excluding it
+    // left a `one sig` domain empty — and the generated test then indexed it,
+    // panicking at run time in code that compiled (#105). A non-terminating
+    // type's factory exists but only to refuse (#109), so it stays out.
+    let (terminating_for_fixtures, _) = super::terminating_types(ir);
     let has_fixture: HashSet<String> = ir.structures.iter()
-        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum && !s.fields.is_empty()
-            && !is_native_type_alias(&s.name))
+        .filter(|s| !variant_names_set.contains(&s.name) && !s.is_enum
+            && !is_native_type_alias(&s.name)
+            && terminating_for_fixtures.contains(&s.name))
         .map(|s| s.name.clone()).collect();
     let cyclic = find_cyclic_fields(ir);
 
@@ -1335,7 +1342,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     // Property tests from asserts — translated expressions
     for prop in &ir.properties {
         let test_name = to_snake_case(&prop.name);
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         // Skip tests that reference enum variants (not standalone types in Rust)
         if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
             continue;
@@ -1447,7 +1454,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // and generates zip-based pre/post assertion.
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("transition_{}", to_snake_case(&fact_name));
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
                 continue;
             }
@@ -1524,7 +1531,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             _ => "invariant",
         };
         let test_name = format!("{}_{}", test_prefix, to_snake_case(&fact_name));
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         // Skip tests that reference enum variants (not standalone types in Rust)
         if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
             continue;
@@ -1734,7 +1741,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // Every consumer of a translated body needs the same eligibility gate,
         // or a fact the primary emitter declined still gets flattened here.
         if !analyze::snapshot_is_sound(&constraint.expr, ir) { continue; }
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check if any param type has boundary fixtures
@@ -1827,7 +1834,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 None => continue,
             };
             if expr_refs_any(&constraint.expr, &concrete_singletons) { continue; }
-            let fact_params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let fact_params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             if fact_params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
                 continue;
             }
@@ -1988,8 +1995,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
 
             // Extract all params from both facts to declare all needed variables
-            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
-            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names, ir);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names, ir);
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names_seen: HashSet<String> = HashSet::new();
             for (pname, tname) in params_a.iter().chain(params_b.iter()) {
@@ -2074,7 +2081,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             let before = newtype_pairs.len();
             for conj in &sound {
                 if !expr_has_comparison(conj) { continue; }
-                let params = expr_translator::extract_params(conj, &sig_names);
+                let params = expr_translator::extract_params(conj, &sig_names, ir);
                 // A wrapper substitutes one value for the whole sig universe,
                 // so the conjunct must say the same thing about each atom
                 // independently. A conjunct spanning two sigs, a global
@@ -2169,18 +2176,24 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             // made `ValidatedP` reject every P.
             let mine: Vec<&Expr> = analyze::sound_conjuncts(&c.expr, ir).into_iter()
                 .filter(|e| {
-                    let params = expr_translator::extract_params(e, &sig_names);
+                    let params = expr_translator::extract_params(e, &sig_names, ir);
                     params.len() == 1 && params[0].1 == *sig_name
                         && analyze::elementwise_over(e, sig_name, ir)
                 })
                 .collect();
             if mine.is_empty() { return None; }
-            let body = mine.iter()
-                .map(|e| format!("({})", expr_translator::translate_with_ir(e, ir)))
-                .collect::<Vec<_>>().join(" && ");
+            // The parens are there to join conjuncts with `&&`; with one
+            // conjunct they are `unused_parens` in the consuming crate (#105).
+            let body = if let [only] = mine.as_slice() {
+                expr_translator::translate_with_ir(only, ir)
+            } else {
+                mine.iter()
+                    .map(|e| format!("({})", expr_translator::translate_with_ir(e, ir)))
+                    .collect::<Vec<_>>().join(" && ")
+            };
             let mut params = Vec::new();
             for e in &mine {
-                for p in expr_translator::extract_params(e, &sig_names) {
+                for p in expr_translator::extract_params(e, &sig_names, ir) {
                     if !params.contains(&p) { params.push(p); }
                 }
             }

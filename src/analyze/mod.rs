@@ -822,17 +822,17 @@ fn mentions_any_sig_in(e: &Expr, all: &std::collections::HashSet<&str>) -> bool 
 
 pub fn elementwise_over(expr: &Expr, sig: &str, ir: &OxidtrIR) -> bool {
     // Every sig name in a body is a dependency on that sig, *except* a `one
-    // sig` the Rust translator can render as a plain value — a field-less
-    // variant of a field-less enum parent, e.g. `L::Low`. A singleton struct
-    // (`n.c == Config`), a payload-carrying variant (`L::Low` needing
-    // arguments) and any cardinality use (`#P` → `P.len()`) all emit a type
-    // name where a value belongs and do not compile.
+    // sig` variant of an enum parent: being that atom is being that case, and
+    // the Rust translator asks it of the wrapped value alone, as
+    // `matches!(x, L::Low { .. })` — payload or not (#105).
+    //
+    // A singleton struct (`n.c = Config`) and a cardinality (`#P`) are about
+    // the sig's whole extent, which one wrapped value cannot stand in for.
     let atom_valued = |name: &str| ir.structures.iter().any(|s| {
         s.name == name
             && s.sig_multiplicity == SigMultiplicity::One
-            && s.fields.is_empty()
             && s.parent.as_ref().is_some_and(|p| ir.structures.iter()
-                .any(|par| &par.name == p && par.is_enum && par.fields.is_empty()))
+                .any(|par| &par.name == p && par.is_enum))
     });
     let sig_names: std::collections::HashSet<&str> = ir.structures.iter()
         .filter(|s| !atom_valued(&s.name))

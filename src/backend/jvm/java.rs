@@ -45,6 +45,10 @@ impl JvmLang for JavaLang {
     fn value_neq(&self, l: &str, r: &str) -> String {
         format!("!java.util.Objects.equals({l}, {r})")
     }
+    // A sealed interface permitting records: the case is an `instanceof`.
+    fn is_variant(&self, subject: &str, variant: &str) -> String {
+        format!("{subject} instanceof {variant}")
+    }
     // Java has no extension methods: the value arrives as a leading parameter.
     fn receiver_expr(&self) -> &str { "self" }
     fn neq_op(&self) -> &str { "!=" }
@@ -689,7 +693,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "class PropertyTests {{").unwrap();
 
     for prop in &ir.properties {
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
         // An `assert` carries temporal operators just as a `fact` does, and
@@ -753,7 +757,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /** @temporal Transition constraint: {fact_name} */").unwrap();
@@ -790,7 +794,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
         // Use temporal classification for test name prefix
@@ -857,7 +861,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -1025,7 +1029,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let mut params: Vec<(String, String)> = Vec::new();
             let mut param_names: HashSet<String> = HashSet::new();
             for constraint in [constraint_a, constraint_b].into_iter().flatten() {
-                for (pname, tname) in expr_translator::extract_params(&constraint.expr, &sig_names) {
+                for (pname, tname) in expr_translator::extract_params(&constraint.expr, &sig_names, ir) {
                     if param_names.insert(pname.clone()) {
                         params.push((pname, tname));
                     }
@@ -1150,7 +1154,15 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     writeln!(out).unwrap();
     writeln!(out, "class Fixtures {{").unwrap();
 
-    let fixture_types = super::super::collect_fixture_types(ir);
+    // Having no field is not having no value, and what has no factory is what
+    // has no finite value at all (#109, #105).
+    let (terminating, enum_witness) = crate::backend::terminating_types(ir);
+    let fixture_types: std::collections::HashSet<String> = ir.structures.iter()
+        .filter(|s| !ctx.is_variant(&s.name) && !s.is_enum
+            && !crate::backend::is_native_type_alias(&s.name)
+            && terminating.contains(&s.name))
+        .map(|s| s.name.clone())
+        .collect();
 
     // Generate enum default fixtures
     {
@@ -1163,48 +1175,57 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             }
             map
         };
-        let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
-            .map(|s| (s.name.as_str(), s))
-            .collect();
         for s in &ir.structures {
             if !s.is_enum { continue; }
             let variants = match children.get(&s.name) {
                 Some(v) if !v.is_empty() => v,
                 _ => continue,
             };
-            let all_unit = variants.iter().all(|v| {
-                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
-            let first_unit = variants.iter().find(|v| {
-                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
-            if let Some(variant) = first_unit {
-                if all_unit {
-                    // Java enum → qualified access: EnumName.Variant
-                    writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
-                    writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
-                    writeln!(out, "        return {}.{};", s.name, variant).unwrap();
-                    writeln!(out, "    }}").unwrap();
-                    writeln!(out).unwrap();
-                } else {
-                    // Sealed interface → first unit variant as record instance
-                    let has_fields = struct_map.get(variant.as_str())
-                        .map_or(false, |st| !st.fields.is_empty());
-                    if !has_fields {
-                        writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
-                        writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
-                        writeln!(out, "        return new {}();", variant).unwrap();
-                        writeln!(out, "    }}").unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
+            writeln!(out, "    /** Factory: default value for {} */", s.name).unwrap();
+            writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
+            if ctx.enum_is_flat(s) {
+                // Java enum → qualified access. Any variant will do; none of
+                // them carries a field.
+                let Some(variant) = variants.first() else { continue };
+                writeln!(out, "        return {}.{};", s.name, variant).unwrap();
+            } else {
+                // Sealed interface → the case whose payload was satisfiable
+                // when the enum was admitted; any other may lead straight back
+                // into it.
+                let Some(variant) = enum_witness.get(&s.name) else { continue };
+                let args: Vec<String> = ctx.variant_fields(s, variant).iter()
+                    .map(|f| if f.value_type.is_some() {
+                        "Map.of()".to_string()
+                    } else {
+                        java_default_value(&f.target, &f.mult)
+                    })
+                    .collect();
+                writeln!(out, "        return new {}({});", variant, args.join(", ")).unwrap();
             }
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
         }
     }
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        // A field-less sig is still a value, and a fixture with a field of that
+        // type calls the factory whether or not one was emitted (#105).
+        if !terminating.contains(&s.name) { continue; }
+        if s.fields.is_empty() {
+            // `one sig` is an enum holding INSTANCE; anything else a record.
+            let value = if s.sig_multiplicity == SigMultiplicity::One {
+                format!("{}.INSTANCE", s.name)
+            } else {
+                format!("new {}()", s.name)
+            };
+            writeln!(out, "    /** Factory: create a default valid {} */", s.name).unwrap();
+            writeln!(out, "    static {} default{}() {{", s.name, s.name).unwrap();
+            writeln!(out, "        return {value};").unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         let params: Vec<String> = s.fields.iter()
             .map(|f| {

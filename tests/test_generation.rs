@@ -82,13 +82,17 @@ fn coverage_test_warns_vacuously_true() {
 
 /// #75 half 2: `is_vacuously_true` previously only ran at the fact×fact
 /// coverage-test call site. A plain `invariant_*` test over a sig with no
-/// fixture (e.g. an empty-fields sig) hits the exact same `Vec::new()`
-/// domain-emptiness shape and should get the same honest disclosure.
+/// fixture hits the exact same `Vec::new()` domain-emptiness shape and should
+/// get the same honest disclosure.
+///
+/// `Knot` is the fixture-less shape: its one `one` field leads back to itself,
+/// so no finite value exists (#109). A field-less sig is *not* — it has a
+/// factory, and materialising its domain empty was itself a bug (#105).
 #[test]
 fn invariant_test_warns_vacuously_true_for_empty_fixture_domain() {
     let files = generate_from(r#"
-        sig Empty {}
-        fact TrivialFact { all e: Empty | e = e }
+        sig Knot { other: one Knot }
+        fact TrivialFact { all k: Knot | k = k }
     "#);
     let content = find_file(&files, "tests.rs");
     assert!(
@@ -97,7 +101,7 @@ fn invariant_test_warns_vacuously_true_for_empty_fixture_domain() {
     );
     assert!(
         content.contains("WARNING: vacuously true"),
-        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+        "expected a vacuous-truth warning since Knot has no fixture:\n{content}"
     );
 }
 
@@ -105,8 +109,8 @@ fn invariant_test_warns_vacuously_true_for_empty_fixture_domain() {
 #[test]
 fn transition_test_warns_vacuously_true_for_empty_fixture_domain() {
     let files = generate_from(r#"
-        var sig Empty {}
-        fact TrivialTransition { all e: Empty | e = e' }
+        var sig Knot { other: one Knot }
+        fact TrivialTransition { all k: Knot | k = k' }
     "#);
     let content = find_file(&files, "tests.rs");
     assert!(
@@ -115,7 +119,7 @@ fn transition_test_warns_vacuously_true_for_empty_fixture_domain() {
     );
     assert!(
         content.contains("WARNING: vacuously true"),
-        "expected a vacuous-truth warning since Empty has no fixture:\n{content}"
+        "expected a vacuous-truth warning since Knot has no fixture:\n{content}"
     );
 }
 

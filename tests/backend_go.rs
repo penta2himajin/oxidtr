@@ -796,3 +796,49 @@ fn go_mutually_recursive_default_does_not_recurse() {
         "the impossibility must be stated, not silently skipped:\n{fixtures}"
     );
 }
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// In Alloy a sig name in an expression is the set of its atoms. Go has no
+/// such value — the name is a type — so `#P` became `len(P)`.
+#[test]
+fn go_whole_sig_expressions_use_the_materialised_domain() {
+    let card = find_file(
+        &generate_go("one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }"),
+        "models_test.go",
+    ).to_string();
+    assert!(!card.contains("len(P)"), "`P` is a type, not a value:\n{card}");
+    assert!(card.contains("p.X == int64(len(ps))"),
+        "the sig's cardinality is that of the sample the test builds:\n{card}");
+
+    let eq = find_file(
+        &generate_go(
+            "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+             fact UsesConfig { all n: N | n.c = Config }",
+        ),
+        "models_test.go",
+    ).to_string();
+    assert!(eq.contains("contains(configs, n.C)"),
+        "equality with a sig is membership in its extent:\n{eq}");
+}
+
+/// A sum's cases are struct types, so `v.Level != Low` compared a value
+/// against a type. Which case an atom is, is a type assertion.
+#[test]
+fn go_comparison_with_a_variant_asserts_the_case() {
+    let files = generate_go(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         sig Level { level: one L }\nfact NotLow { all v: Level | v.level != Low }",
+    );
+    let tests = find_file(&files, "models_test.go");
+    let helpers = find_file(&files, "helpers.go");
+    let models = find_file(&files, "models.go");
+
+    assert!(tests.contains("!isVariant[Low](v.Level)"),
+        "being the Low atom is being the Low case:\n{tests}");
+    assert!(helpers.contains("func isVariant[T any](v any) bool"),
+        "and the helper has to exist:\n{helpers}");
+    // The parent's field is inherited by every case, and `Int` is not a Go type.
+    assert!(models.contains("Tag int64"),
+        "a variant's field needs its native alias resolved:\n{models}");
+}

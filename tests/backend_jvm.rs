@@ -735,3 +735,72 @@ fn kotlin_assert_temporal_gets_trace_checkers() {
         "until must not collapse to a conjunction:\n{src}"
     );
 }
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+const WHOLE_SIG_CARDINALITY: &str = "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }";
+const SINGLETON_EQUALITY: &str =
+    "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+     fact UsesConfig { all n: N | n.c = Config }";
+const VARIANT_COMPARISON: &str =
+    "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+     sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }";
+
+/// In Alloy a sig name in an expression is the set of its atoms. Neither JVM
+/// language has such a value — the name is a type — so `#P` became `P.size()`.
+#[test]
+fn kt_whole_sig_expressions_use_the_materialised_domain() {
+    let card = find_file(&generate_kt(WHOLE_SIG_CARDINALITY), "Tests.kt").to_string();
+    assert!(card.contains("ps.size.toLong()"), "`P` is a type, not a value:\n{card}");
+
+    let eq = find_file(&generate_kt(SINGLETON_EQUALITY), "Tests.kt").to_string();
+    assert!(eq.contains("configs.contains(n.c)"),
+        "equality with a sig is membership in its extent:\n{eq}");
+
+    let variant = find_file(&generate_kt(VARIANT_COMPARISON), "Tests.kt").to_string();
+    assert!(variant.contains("!(n.level is Low)"),
+        "being the Low atom is being the Low case:\n{variant}");
+}
+
+#[test]
+fn java_whole_sig_expressions_use_the_materialised_domain() {
+    let card = find_file(&generate_java(WHOLE_SIG_CARDINALITY), "Tests.java").to_string();
+    assert!(card.contains("ps.size()"), "`P` is a type, not a value:\n{card}");
+
+    let eq = find_file(&generate_java(SINGLETON_EQUALITY), "Tests.java").to_string();
+    assert!(eq.contains("configs.contains(n.c())"),
+        "equality with a sig is membership in its extent:\n{eq}");
+
+    let variant = find_file(&generate_java(VARIANT_COMPARISON), "Tests.java").to_string();
+    assert!(variant.contains("!(n.level() instanceof Low)"),
+        "being the Low atom is being the Low case:\n{variant}");
+}
+
+/// The fixture factory has to agree with the type emitter on whether an enum
+/// is flat. It looked only at the variants' *own* fields, so an abstract parent
+/// carrying one produced a sealed hierarchy and a fixture reading `L.High` off
+/// it — and `defaultInt()` named nothing at all.
+#[test]
+fn jvm_enum_fixture_matches_the_shape_of_its_hierarchy() {
+    let kt = find_file(&generate_kt(VARIANT_COMPARISON), "Fixtures.kt").to_string();
+    assert!(kt.contains("High(tag = 0L)"), "a sealed class needs its case built:\n{kt}");
+    assert!(!kt.contains("defaultInt()"), "`Int` has no factory:\n{kt}");
+
+    let java = find_file(&generate_java(VARIANT_COMPARISON), "Fixtures.java").to_string();
+    assert!(java.contains("return new High(0L);"), "a sealed interface too:\n{java}");
+}
+
+/// Having no field is not having no value, and a fixture with a field of that
+/// type called a factory that was never generated.
+#[test]
+fn jvm_field_less_sig_gets_a_factory() {
+    const MODEL: &str = "sig Person {}\nsig Team { lead: one Person }";
+
+    let kt = find_file(&generate_kt(MODEL), "Fixtures.kt").to_string();
+    assert!(kt.contains("fun defaultPerson(): Person = Person"),
+        "a field-less sig is an `object`, so the singleton is the value:\n{kt}");
+
+    let java = find_file(&generate_java(MODEL), "Fixtures.java").to_string();
+    assert!(java.contains("return new Person();"),
+        "a field-less sig is an empty record:\n{java}");
+}

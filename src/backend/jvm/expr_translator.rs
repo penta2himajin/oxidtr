@@ -23,6 +23,11 @@ pub trait JvmLang {
     /// both languages.
     fn value_eq(&self, left: &str, right: &str) -> String;
     fn value_neq(&self, left: &str, right: &str) -> String;
+    /// Whether a value is a given case of a sealed hierarchy.
+    ///
+    /// `n.level = Low` asks which case an atom is; a variant's bare name is a
+    /// *type* in both languages, so the question is a type test (#105).
+    fn is_variant(&self, subject: &str, variant: &str) -> String;
     /// How Alloy's implicit receiver (`this` in `fun Sig.op { this... }`) is
     /// named in the emitted method. Kotlin uses an extension function, so it is
     /// `this`; Java passes the value as a leading `self` parameter.
@@ -53,10 +58,72 @@ pub fn translate_with_env(
     translate_inner(expr, false, &sig_names, ir, lang, env)
 }
 
-pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
+pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Vec<(String, String)> {
     let mut params = BTreeSet::new();
-    collect_params(expr, sig_names, &mut params);
+    collect_params(expr, sig_names, ir, &mut params);
     params.into_iter().collect()
+}
+
+/// The name of the sample domain a bare sig reference stands for.
+///
+/// In Alloy a sig name in an expression is the set of its atoms — `#P`,
+/// `n.c = Config`, `x in Person`. Neither language has such a value: the name
+/// is a type, and `P.size()` does not resolve. What the reference denotes is
+/// the list the caller materialised for it (#105).
+///
+/// A variant of a sealed parent is excluded: it is a *case*, and a comparison
+/// against it is a type test.
+fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Option<String> {
+    let Expr::VarRef(name) = expr else { return None };
+    if !sig_names.contains(name) { return None; }
+    if crate::backend::is_native_type_alias(name) { return None; }
+    if crate::backend::variant_parent(ir, name).is_some() { return None; }
+    Some(to_camel_plural(name))
+}
+
+/// `whole_sig_extent`, but also refusing a name a binder has shadowed.
+fn whole_sig_extent_in(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    match expr {
+        Expr::VarRef(name) if env.sig_of(name).is_some() => None,
+        _ => whole_sig_extent(expr, sig_names, ir),
+    }
+}
+
+/// `x = Variant` / `x != Variant`, as a test on the case.
+fn variant_case_test<F>(
+    left: &Expr, right: &Expr, ir: &OxidtrIR, lang: &dyn JvmLang, negated: bool, ti: &F,
+) -> Option<String>
+where F: Fn(&Expr) -> String {
+    let variant_of = |e: &Expr| match e {
+        Expr::VarRef(name) => crate::backend::variant_parent(ir, name).map(|_| name.clone()),
+        _ => None,
+    };
+    let (variant, subject) = match (variant_of(left), variant_of(right)) {
+        (Some(_), Some(_)) | (None, None) => return None,
+        (Some(v), None) => (v, right),
+        (None, Some(v)) => (v, left),
+    };
+    let test = lang.is_variant(&ti(subject), &variant);
+    Some(if negated { format!("!({test})") } else { test })
+}
+
+/// `x = Sig` / `x != Sig`, as membership in the sig's materialised extent.
+fn whole_sig_membership<F>(
+    left: &Expr, right: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+    lang: &dyn JvmLang, negated: bool, ti: &F,
+) -> Option<String>
+where F: Fn(&Expr) -> String {
+    let l = whole_sig_extent_in(left, sig_names, ir, env);
+    let r = whole_sig_extent_in(right, sig_names, ir, env);
+    let (extent, subject) = match (l, r) {
+        (Some(_), Some(_)) | (None, None) => return None,
+        (Some(e), None) => (e, right),
+        (None, Some(e)) => (e, left),
+    };
+    let test = lang.contains(&extent, &ti(subject));
+    Some(if negated { format!("!({test})") } else { test })
 }
 
 pub fn collect_sig_names(ir: &OxidtrIR) -> HashSet<String> {
@@ -183,7 +250,18 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
     }
 }
 
-fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSet<(String, String)>) {
+fn collect_params(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR,
+    params: &mut BTreeSet<(String, String)>,
+) {
+    // Positions where `translate_inner` renders a bare sig name as its extent.
+    // The two must agree: a domain rendered but never materialised does not
+    // resolve, and one materialised but never rendered is unused.
+    let extent = |e: &Expr, params: &mut BTreeSet<(String, String)>| {
+        if let (Expr::VarRef(name), Some(plural)) = (e, whole_sig_extent(e, sig_names, ir)) {
+            params.insert((plural, name.clone()));
+        }
+    };
     match expr {
         Expr::Quantifier { bindings, body, .. } => {
             for b in bindings {
@@ -192,31 +270,48 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
                         params.insert((to_camel_plural(name), name.clone()));
                     }
                 }
-                collect_params(&b.domain, sig_names, params);
+                collect_params(&b.domain, sig_names, ir, params);
             }
-            collect_params(body, sig_names, params);
+            collect_params(body, sig_names, ir, params);
         }
-        Expr::BinaryLogic { left, right, .. } | Expr::Comparison { left, right, .. }
+        Expr::Comparison { op, left, right } => {
+            match op {
+                CompareOp::Eq | CompareOp::NotEq => {
+                    extent(left, params);
+                    extent(right, params);
+                }
+                CompareOp::In => extent(right, params),
+                _ => {}
+            }
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
+        }
+        Expr::BinaryLogic { left, right, .. }
         | Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
-            collect_params(left, sig_names, params);
-            collect_params(right, sig_names, params);
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
-            collect_params(inner, sig_names, params);
+        Expr::Cardinality(inner) => {
+            extent(inner, params);
+            collect_params(inner, sig_names, ir, params);
         }
         Expr::MultFormula { expr: inner, .. } => {
-            collect_params(inner, sig_names, params);
+            extent(inner, params);
+            collect_params(inner, sig_names, ir, params);
         }
-        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, params),
-        Expr::Prime(inner) => collect_params(inner, sig_names, params),
-        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
+        Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
+            collect_params(inner, sig_names, ir, params);
+        }
+        Expr::FieldAccess { base, .. } => collect_params(base, sig_names, ir, params),
+        Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
+        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
-            collect_params(left, sig_names, params);
-            collect_params(right, sig_names, params);
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
         }
         Expr::FunApp { receiver, args, .. } => {
-            if let Some(r) = receiver { collect_params(r, sig_names, params); }
-            for arg in args { collect_params(arg, sig_names, params); }
+            if let Some(r) = receiver { collect_params(r, sig_names, ir, params); }
+            for arg in args { collect_params(arg, sig_names, ir, params); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -251,7 +346,10 @@ fn translate_inner(
             lang.field_access(&ti(base, false), field, mutable_owner)
         }
 
-        Expr::Cardinality(inner) => lang.cardinality(&ti(inner, false)),
+        // A sig's extent is the list the caller materialised for it (#105).
+        Expr::Cardinality(inner) => lang.cardinality(
+            &whole_sig_extent_in(inner, sig_names, ir, env).unwrap_or_else(|| ti(inner, false))
+        ),
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
@@ -271,8 +369,19 @@ fn translate_inner(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => lang.value_eq(&ti(left, false), &ti(right, false)),
-                CompareOp::NotEq => lang.value_neq(&ti(left, false), &ti(right, false)),
+                CompareOp::Eq | CompareOp::NotEq => {
+                    let negated = matches!(op, CompareOp::NotEq);
+                    if let Some(s) = variant_case_test(left, right, ir, lang, negated, &|e| ti(e, false)) {
+                        return s;
+                    }
+                    // `n.c = Config` compares an atom against the sig's whole
+                    // extent; for a `one sig` that is membership in it.
+                    if let Some(s) = whole_sig_membership(left, right, sig_names, ir, env, lang, negated, &|e| ti(e, false)) {
+                        return s;
+                    }
+                    let (l, r) = (ti(left, false), ti(right, false));
+                    if negated { lang.value_neq(&l, &r) } else { lang.value_eq(&l, &r) }
+                }
                 CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
                 CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
                 CompareOp::Lte => format!("{} <= {}", ti(left, false), ti(right, false)),
@@ -287,7 +396,8 @@ fn translate_inner(
                             return lang.lone_eq(&r_base, field, &l);
                         }
                     }
-                    let r = ti(right, false);
+                    let r = whole_sig_extent_in(right, sig_names, ir, env)
+                        .unwrap_or_else(|| ti(right, false));
                     lang.contains(&r, &l)
                 }
             }
@@ -325,6 +435,15 @@ fn translate_inner(
         }
 
         Expr::MultFormula { kind, expr } => {
+            // `some Person` is about the sig's extent, which is a list — not a
+            // nullable reference (#105).
+            if let Some(e) = whole_sig_extent_in(expr, sig_names, ir, env) {
+                return match kind {
+                    QuantKind::Some => format!("!{e}.isEmpty()"),
+                    QuantKind::No => format!("{e}.isEmpty()"),
+                    _ => e,
+                };
+            }
             let inner = ti(expr, false);
             match kind {
                 QuantKind::Some => format!("{inner} != null"),

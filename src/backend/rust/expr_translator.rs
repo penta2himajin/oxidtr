@@ -25,9 +25,9 @@ pub fn translate_ctx(expr: &Expr, sig_names: &HashSet<String>) -> String {
 }
 
 /// Extract the collection parameters needed by an expression.
-pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>) -> Vec<(String, String)> {
+pub fn extract_params(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Vec<(String, String)> {
     let mut params = BTreeSet::new();
-    collect_params(expr, sig_names, &mut params);
+    collect_params(expr, sig_names, ir, &mut params);
     params.into_iter().collect()
 }
 
@@ -146,7 +146,46 @@ fn collect_tc_fields(expr: &Expr, ir: &OxidtrIR, out: &mut Vec<TCField>) {
     }
 }
 
-fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSet<(String, String)>) {
+/// The name of the sample domain a bare sig reference stands for.
+///
+/// In Alloy a sig name in an expression is the set of its atoms — `#Person`,
+/// `n.c = Config`, `x in Person`. Rust has no such value: the name is a type,
+/// so the reference has to become the collection the caller materialised for
+/// it, under the plural name `extract_params` hands out (#105).
+///
+/// A variant of an enum parent is excluded: it is a *case* of its parent, not
+/// an extent of its own, and comparisons against it become `matches!`.
+fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> Option<String> {
+    let Expr::VarRef(name) = expr else { return None };
+    if !sig_names.contains(name) { return None; }
+    if crate::backend::is_native_type_alias(name) { return None; }
+    if crate::backend::variant_parent(ir, name).is_some() { return None; }
+    if is_nullary_fun(name, ir) { return None; }
+    Some(to_snake_plural(name))
+}
+
+/// `whole_sig_extent`, but also refusing a name a binder has shadowed.
+fn whole_sig_extent_in(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+) -> Option<String> {
+    match expr {
+        Expr::VarRef(name) if env.sig_of(name).is_some() => None,
+        _ => whole_sig_extent(expr, sig_names, ir),
+    }
+}
+
+fn collect_params(
+    expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR,
+    params: &mut BTreeSet<(String, String)>,
+) {
+    // Positions where `translate_inner_ir` renders a bare sig name as its
+    // extent. The two must agree: a domain rendered but never materialised is
+    // an undefined name, and one materialised but never rendered is unused.
+    let extent = |e: &Expr, params: &mut BTreeSet<(String, String)>| {
+        if let (Expr::VarRef(name), Some(plural)) = (e, whole_sig_extent(e, sig_names, ir)) {
+            params.insert((plural, name.clone()));
+        }
+    };
     match expr {
         Expr::Quantifier { bindings, body, .. } => {
             for b in bindings {
@@ -155,37 +194,53 @@ fn collect_params(expr: &Expr, sig_names: &HashSet<String>, params: &mut BTreeSe
                         params.insert((to_snake_plural(name), name.clone()));
                     }
                 }
-                collect_params(&b.domain, sig_names, params);
+                collect_params(&b.domain, sig_names, ir, params);
             }
-            collect_params(body, sig_names, params);
+            collect_params(body, sig_names, ir, params);
         }
         Expr::BinaryLogic { left, right, .. } => {
-            collect_params(left, sig_names, params);
-            collect_params(right, sig_names, params);
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
         }
-        Expr::Not(inner) | Expr::Cardinality(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
-            collect_params(inner, sig_names, params);
+        Expr::Cardinality(inner) => {
+            extent(inner, params);
+            collect_params(inner, sig_names, ir, params);
         }
         Expr::MultFormula { expr: inner, .. } => {
-            collect_params(inner, sig_names, params);
+            extent(inner, params);
+            collect_params(inner, sig_names, ir, params);
         }
-        Expr::Comparison { left, right, .. } | Expr::SetOp { left, right, .. }
-        | Expr::Product { left, right } => {
-            collect_params(left, sig_names, params);
-            collect_params(right, sig_names, params);
+        Expr::Not(inner) | Expr::TransitiveClosure(inner) | Expr::ReflexiveClosure(inner) => {
+            collect_params(inner, sig_names, ir, params);
+        }
+        Expr::Comparison { op, left, right } => {
+            match op {
+                CompareOp::Eq | CompareOp::NotEq => {
+                    extent(left, params);
+                    extent(right, params);
+                }
+                CompareOp::In => extent(right, params),
+                _ => {}
+            }
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
+        }
+        Expr::SetOp { left, right, .. } | Expr::Product { left, right } => {
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
         }
         Expr::FieldAccess { base, .. } => {
-            collect_params(base, sig_names, params);
+            collect_params(base, sig_names, ir, params);
         }
-        Expr::Prime(inner) => collect_params(inner, sig_names, params),
-        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, params),
+        Expr::Prime(inner) => collect_params(inner, sig_names, ir, params),
+        Expr::TemporalUnary { expr: inner, .. } => collect_params(inner, sig_names, ir, params),
         Expr::TemporalBinary { left, right, .. } => {
-            collect_params(left, sig_names, params);
-            collect_params(right, sig_names, params);
+            collect_params(left, sig_names, ir, params);
+            collect_params(right, sig_names, ir, params);
         }
         Expr::FunApp { receiver, args, .. } => {
-            if let Some(r) = receiver { collect_params(r, sig_names, params); }
-            for arg in args { collect_params(arg, sig_names, params); }
+            if let Some(r) = receiver { collect_params(r, sig_names, ir, params); }
+            for arg in args { collect_params(arg, sig_names, ir, params); }
         }
         Expr::VarRef(_) | Expr::IntLiteral(_) => {}
     }
@@ -849,7 +904,13 @@ fn translate_inner_ir(
             }
         }
 
-        Expr::Cardinality(inner) => format!("{}.len()", ti(inner, false)),
+        // Alloy's `#e` is an `Int`, which is `i64` here — `Vec::len` is a
+        // `usize`, so without the cast `p.x = #P` compares two integer types.
+        Expr::Cardinality(inner) => {
+            let base = whole_sig_extent_in(inner, sig_names, ir, env)
+                .unwrap_or_else(|| ti(inner, false));
+            format!("{base}.len() as i64")
+        }
 
         Expr::TransitiveClosure(inner) => {
             if let Expr::FieldAccess { base, field } = inner.as_ref() {
@@ -869,11 +930,21 @@ fn translate_inner_ir(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => {
-                    lone_comparison(left, right, "==", sig_names, ir, env, &|e, p| ti(e, p))
-                }
-                CompareOp::NotEq => {
-                    lone_comparison(left, right, "!=", sig_names, ir, env, &|e, p| ti(e, p))
+                CompareOp::Eq | CompareOp::NotEq => {
+                    let negated = matches!(op, CompareOp::NotEq);
+                    // `n.level = Low` asks which case an atom is; the payload
+                    // makes `L::Low` a constructor rather than a value, so the
+                    // question is a pattern match either way (#105).
+                    if let Some(s) = variant_case_test(left, right, ir, negated, &|e| ti(e, false)) {
+                        return s;
+                    }
+                    // `n.c = Config` compares an atom against the sig's whole
+                    // extent; for a `one sig` that is membership in it.
+                    if let Some(s) = whole_sig_membership(left, right, sig_names, ir, env, negated, &|e| ti(e, false)) {
+                        return s;
+                    }
+                    let op_str = if negated { "!=" } else { "==" };
+                    lone_comparison(left, right, op_str, sig_names, ir, env, &|e, p| ti(e, p))
                 }
                 CompareOp::Lt | CompareOp::Gt | CompareOp::Lte | CompareOp::Gte => {
                     let op_str = match op {
@@ -925,15 +996,20 @@ fn translate_inner_ir(
                             };
                         }
                     }
+                    // A whole-sig right-hand side is a `Vec` sample, not a set,
+                    // so `is_subset` is not available on it (#105).
+                    let extent = whole_sig_extent_in(right, sig_names, ir, env);
                     // If LHS is itself a set-typed expression, `A in B`
                     // is a subset test, not an element-containment test —
                     // BTreeSet::contains expects `&T`, not `&BTreeSet<T>`.
                     if is_set_expr(left, sig_names, ir, env) {
-                        let r = ti(right, false);
-                        return format!("{l}.is_subset(&{r})");
+                        return match extent {
+                            Some(r) => format!("{l}.iter().all(|e| {r}.contains(e))"),
+                            None => format!("{l}.is_subset(&{})", ti(right, false)),
+                        };
                     }
                     // Default: Set / One field → .contains()
-                    let r = ti(right, false);
+                    let r = extent.unwrap_or_else(|| ti(right, false));
                     format!("{r}.contains(&{l})")
                 }
             }
@@ -975,11 +1051,11 @@ fn translate_inner_ir(
         }
 
         Expr::MultFormula { kind, expr } => {
-            let inner = ti(expr, false);
-            // For set/seq-valued inner expressions, `some X` / `no X`
-            // lower to `.is_empty()`-based checks — `.is_some()` /
-            // `.is_none()` belong to Option, not BTreeSet / Vec.
-            let collection = is_collection_expr(expr, sig_names, ir, env);
+            // `some Person` is about the sig's extent, which is a collection
+            // whether or not the expression underneath looks like one (#105).
+            let extent = whole_sig_extent_in(expr, sig_names, ir, env);
+            let collection = extent.is_some() || is_collection_expr(expr, sig_names, ir, env);
+            let inner = extent.unwrap_or_else(|| ti(expr, false));
             match kind {
                 QuantKind::Some if collection => format!("!{inner}.is_empty()"),
                 QuantKind::No   if collection => format!("{inner}.is_empty()"),
@@ -1042,6 +1118,47 @@ fn is_operation_call(name: &str, ir: &OxidtrIR) -> bool {
 ///   one  == lone  → other.as_(de)ref() == Some(&field)  [symmetric]
 ///   lone == lone  → direct == (both are Option<T>, compare directly)
 ///   one  == one   → direct ==
+/// `x = Variant` / `x != Variant`, as a match on the case.
+///
+/// A `one sig` extending an abstract sig is one atom, so equality with it asks
+/// which case the other side is. Rust's enum gives the answer as a pattern —
+/// and it has to, because once the variant carries fields the path `L::Low` is
+/// a constructor, not a value (#105).
+fn variant_case_test<F>(
+    left: &Expr, right: &Expr, ir: &OxidtrIR, negated: bool, ti: &F,
+) -> Option<String>
+where F: Fn(&Expr) -> String {
+    let variant_of = |e: &Expr| match e {
+        Expr::VarRef(name) => crate::backend::variant_parent(ir, name).map(|p| (p, name.clone())),
+        _ => None,
+    };
+    let ((parent, variant), subject) = match (variant_of(left), variant_of(right)) {
+        // Two variant names compare statically; leave that to the enum itself.
+        (Some(_), Some(_)) | (None, None) => return None,
+        (Some(v), None) => (v, right),
+        (None, Some(v)) => (v, left),
+    };
+    let bang = if negated { "!" } else { "" };
+    Some(format!("{bang}matches!({}, {parent}::{variant} {{ .. }})", ti(subject)))
+}
+
+/// `x = Sig` / `x != Sig`, as membership in the sig's materialised extent.
+fn whole_sig_membership<F>(
+    left: &Expr, right: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR, env: &TypeEnv,
+    negated: bool, ti: &F,
+) -> Option<String>
+where F: Fn(&Expr) -> String {
+    let l = whole_sig_extent_in(left, sig_names, ir, env);
+    let r = whole_sig_extent_in(right, sig_names, ir, env);
+    let (extent, subject) = match (l, r) {
+        (Some(_), Some(_)) | (None, None) => return None,
+        (Some(e), None) => (e, right),
+        (None, Some(e)) => (e, left),
+    };
+    let bang = if negated { "!" } else { "" };
+    Some(format!("{bang}{extent}.contains(&{})", ti(subject)))
+}
+
 fn lone_comparison<F>(
     left: &Expr,
     right: &Expr,

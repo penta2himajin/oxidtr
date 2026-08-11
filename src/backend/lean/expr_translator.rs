@@ -11,6 +11,76 @@ pub fn translate_with_ir(expr: &Expr, ir: &OxidtrIR) -> String {
     translate_inner(expr, false, &sig_names, ir)
 }
 
+/// Whether a sig name is used where a *value* belongs.
+///
+/// In Alloy a sig name in an expression is the set of its atoms — `#P`,
+/// `x in Person`. This encoding gives a sig a Lean type and nothing else:
+/// there is no term for its extent, so `P.length` names a type where a value
+/// belongs and does not elaborate. A quantifier domain is the one position
+/// where the type *is* what is meant (`∀ p : P`), and a variant is a
+/// constructor of its parent rather than an extent (#105).
+///
+/// The caller emits `sorry` rather than a body that cannot type-check.
+pub fn mentions_whole_sig_as_value(expr: &Expr, ir: &OxidtrIR) -> bool {
+    let sig_names = collect_sig_names(ir);
+    fn walk(e: &Expr, sigs: &HashSet<String>, ir: &OxidtrIR) -> bool {
+        match e {
+            Expr::VarRef(name) => {
+                sigs.contains(name)
+                    && crate::backend::variant_parent(ir, name).is_none()
+                    && !crate::backend::is_native_type_alias(name)
+            }
+            Expr::Quantifier { bindings, body, .. } => {
+                bindings.iter().any(|b| match &b.domain {
+                    // `∀ p : P` — the type is what is meant here.
+                    Expr::VarRef(n) if sigs.contains(n) => false,
+                    d => walk(d, sigs, ir),
+                }) || walk(body, sigs, ir)
+            }
+            Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+            | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+            | Expr::TemporalBinary { left, right, .. } => {
+                walk(left, sigs, ir) || walk(right, sigs, ir)
+            }
+            Expr::Not(i) | Expr::Cardinality(i) | Expr::TransitiveClosure(i)
+            | Expr::ReflexiveClosure(i) | Expr::MultFormula { expr: i, .. }
+            | Expr::FieldAccess { base: i, .. } | Expr::TemporalUnary { expr: i, .. }
+            | Expr::Prime(i) => walk(i, sigs, ir),
+            Expr::FunApp { receiver, args, .. } => {
+                receiver.as_deref().is_some_and(|r| walk(r, sigs, ir))
+                    || args.iter().any(|a| walk(a, sigs, ir))
+            }
+            Expr::IntLiteral(_) => false,
+        }
+    }
+    walk(expr, &sig_names, ir)
+}
+
+/// `x = Variant` / `x != Variant`, as equality with the constructor.
+///
+/// A `one sig` extending an abstract sig is one atom, so equality with it asks
+/// which case the other side is. The variant is a *constructor* of the parent
+/// `inductive`, not a type, so the bare name does not elaborate where a value
+/// belongs (#105).
+fn variant_case_test<F>(
+    left: &Expr, right: &Expr, ir: &OxidtrIR, negated: bool, ti: &F,
+) -> Option<String>
+where F: Fn(&Expr) -> String {
+    let variant_of = |e: &Expr| match e {
+        Expr::VarRef(name) => crate::backend::variant_parent(ir, name).map(|_| name.clone()),
+        _ => None,
+    };
+    let (variant, subject) = match (variant_of(left), variant_of(right)) {
+        (Some(_), Some(_)) | (None, None) => return None,
+        (Some(v), None) => (v, right),
+        (None, Some(v)) => (v, left),
+    };
+    // `matches` is the same spelling the exhaustive-categories path already
+    // emits, and `..` covers a constructor's payload without naming it.
+    let test = format!("{} matches .{} ..", ti(subject), lean_field(&variant));
+    Some(if negated { format!("¬({test})") } else { test })
+}
+
 /// Lean tokens that cannot appear as a bare identifier. Swept empirically
 /// against Lean 4.31 — each one breaks the parse (or, for `Type`/`Prop`/`Sort`,
 /// elaborates to the wrong thing) in declaration, field, binder or projection
@@ -121,8 +191,19 @@ fn translate_inner(
 
         Expr::Comparison { op, left, right } => {
             match op {
-                CompareOp::Eq => format!("{} = {}", ti(left, false), ti(right, false)),
-                CompareOp::NotEq => format!("{} ≠ {}", ti(left, false), ti(right, false)),
+                CompareOp::Eq | CompareOp::NotEq => {
+                    let negated = matches!(op, CompareOp::NotEq);
+                    // The result flows into the `parens_if_complex` wrapping
+                    // below: an `∃` prefix binds looser than everything and
+                    // would swallow a conjunct if it escaped unparenthesised.
+                    match variant_case_test(left, right, ir, negated, &|e| ti(e, false)) {
+                        Some(t) => t,
+                        None => {
+                            let op_str = if negated { "≠" } else { "=" };
+                            format!("{} {op_str} {}", ti(left, false), ti(right, false))
+                        }
+                    }
+                }
                 CompareOp::Lt => format!("{} < {}", ti(left, false), ti(right, false)),
                 CompareOp::Gt => format!("{} > {}", ti(left, false), ti(right, false)),
                 CompareOp::Lte => format!("{} ≤ {}", ti(left, false), ti(right, false)),

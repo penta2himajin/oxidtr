@@ -160,6 +160,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: oven-sh/setup-bun@v2
+      # `ts_adversarial_models_typecheck` shells out to `tsc`: `bun test` runs
+      # the generated tests but never type-checks them, so a sig name used as a
+      # value only surfaced as a runtime error inside whichever assertion
+      # reached it (#105).
+      - name: Install TypeScript
+        run: npm install -g typescript
       - uses: gradle/actions/setup-gradle@v4
       - uses: actions/setup-java@v4
         with:

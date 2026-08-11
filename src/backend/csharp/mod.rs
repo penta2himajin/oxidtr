@@ -778,7 +778,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // Temporal facts with prime → transition test
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("Transition_{}", capitalize(&fact_name));
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /// @temporal Transition constraint: {fact_name}").unwrap();
@@ -837,7 +837,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(analyze::TemporalKind::Binary) => format!("Temporal_{}", capitalize(&fact_name)),
             _ => format!("Invariant_{}", capitalize(&fact_name)),
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
 
         // Check guarantee level — skip type-guaranteed constraints
@@ -900,7 +900,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     // --- Property tests ---
     for prop in &ir.properties {
         let test_name = capitalize(&prop.name);
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&prop.expr, ir);
 
         // An `assert` carries temporal operators just as a `fact` does, and
@@ -1017,8 +1017,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let body_b = expr_translator::translate_with_ir(&cb.expr, ir);
 
             // Extract all params from both facts to declare all needed variables
-            let params_a = expr_translator::extract_params(&ca.expr, &sig_names);
-            let params_b = expr_translator::extract_params(&cb.expr, &sig_names);
+            let params_a = expr_translator::extract_params(&ca.expr, &sig_names, ir);
+            let params_b = expr_translator::extract_params(&cb.expr, &sig_names, ir);
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names_seen: HashSet<String> = HashSet::new();
             for (pname, tname) in params_a.iter().chain(params_b.iter()) {

@@ -371,3 +371,42 @@ fn lean_variant_field_uses_the_parent_type() {
     assert!(types.contains("child : Parent"), "got:\n{types}");
     assert!(!types.contains("child : Child"), "`Child` names no Lean type:\n{types}");
 }
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// `v = Low` asks which case an atom is. `Low` is a constructor of the parent
+/// `inductive`, not a type, so the bare name does not elaborate as a value.
+#[test]
+fn lean_equality_with_a_variant_is_a_pattern_match() {
+    let files = generate_lean(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         pred notLow[v: L] { v != Low }",
+    );
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(!ops.contains("≠ Low"), "`Low` is a constructor, not a value:\n{ops}");
+    assert!(ops.contains("¬(v matches .low ..)"),
+        "being the Low atom is being the Low case:\n{ops}");
+}
+
+/// A sig name outside a quantifier domain is the set of its atoms, and this
+/// encoding has no term for that. Deferring is honest; `P.length` is not.
+#[test]
+fn lean_whole_sig_extent_defers() {
+    let files = generate_lean("one sig P { x: one Int }\npred cardOk[p: P] { p.x = #P }");
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(!ops.contains("P.length"), "`P` is a type, not a value:\n{ops}");
+    assert!(ops.contains("sorry -- oxidtr: cardOk reads a sig's extent"),
+        "the gap must be stated, not silently mistranslated:\n{ops}");
+}
+
+/// The quantifier domain is the one position where the type *is* what is
+/// meant, so the rule above must not sweep it up.
+#[test]
+fn lean_quantifier_domain_is_still_the_type() {
+    let files = generate_lean("sig Leaf { n: one Int }\npred allPos[a: Leaf] { all x: Leaf | x.n > 0 }");
+    let ops = find_file(&files, "Operations.lean");
+
+    assert!(ops.contains("∀ x : Leaf, x.n > 0"), "the domain is the type:\n{ops}");
+}

@@ -412,16 +412,28 @@ fn generate_derived_fields(out: &mut String, ir: &OxidtrIR) {
 
             let sig = lean_ident(sig);
             writeln!(out, "def {sig}.{fn_name} (self : {sig}){params_str} : {return_str} :=").unwrap();
-            if !op.body.is_empty() {
-                let body_expr = &op.body[op.body.len() - 1];
-                let body_str = expr_translator::translate_with_ir(body_expr, ir);
-                writeln!(out, "  {body_str}").unwrap();
-            } else {
-                writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
-            }
+            write_op_body(out, op, ir);
             writeln!(out).unwrap();
         }
     }
+}
+
+/// The body of a `def` lowered from a pred/fun, or `sorry` where the encoding
+/// has no term for what the Alloy expression names.
+fn write_op_body(out: &mut String, op: &OperationNode, ir: &OxidtrIR) {
+    let Some(body_expr) = op.body.last() else {
+        writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
+        return;
+    };
+    // A sig name outside a quantifier domain is the set of its atoms, and this
+    // encoding gives a sig a Lean *type* and no term for its extent. Emitting
+    // the type name where a value belongs does not elaborate (#105).
+    if expr_translator::mentions_whole_sig_as_value(body_expr, ir) {
+        writeln!(out, "  sorry -- oxidtr: {} reads a sig's extent, which has no term in this encoding",
+            op.name).unwrap();
+        return;
+    }
+    writeln!(out, "  {}", expr_translator::translate_with_ir(body_expr, ir)).unwrap();
 }
 
 fn field_type_str(f: &IRField, ctx: &LeanContext) -> String {
@@ -753,13 +765,7 @@ fn generate_operations(ir: &OxidtrIR) -> String {
         };
 
         writeln!(out, "def {fn_name} {params_str} : {return_str} :=").unwrap();
-        if !op.body.is_empty() {
-            let body_expr = &op.body[op.body.len() - 1];
-            let body_str = expr_translator::translate_with_ir(body_expr, ir);
-            writeln!(out, "  {body_str}").unwrap();
-        } else {
-            writeln!(out, "  sorry -- oxidtr: implement {}", op.name).unwrap();
-        }
+        write_op_body(&mut out, op, ir);
         writeln!(out).unwrap();
     }
 

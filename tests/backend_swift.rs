@@ -830,3 +830,42 @@ fn swift_variant_field_keeps_the_variant_constraint() {
         "the field must still be constrained to the case it was declared as:\n{all}"
     );
 }
+
+// ── Whole-sig expressions (#105) ──────────────────────────────────────────
+
+/// In Alloy a sig name in an expression is the set of its atoms. Swift has no
+/// such value — the name is a type — so `#P` became `P.count`.
+#[test]
+fn swift_whole_sig_expressions_use_the_materialised_domain() {
+    let card = find_file(
+        &generate_swift("one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }"),
+        "Tests.swift",
+    ).to_string();
+    assert!(card.contains("p.x == ps.count"), "`P` is a type, not a value:\n{card}");
+
+    let eq = find_file(
+        &generate_swift(
+            "one sig Config { limit: one Int }\nsig N { c: one Config }\n\
+             fact UsesConfig { all n: N | n.c = Config }",
+        ),
+        "Tests.swift",
+    ).to_string();
+    assert!(eq.contains("configs.contains(n.c)"),
+        "equality with a sig is membership in its extent:\n{eq}");
+}
+
+/// The case test used to need a bound variable on the other side, so the shape
+/// the issue reports — a `one` field — was skipped as unrepresentable.
+#[test]
+fn swift_variant_comparison_reaches_through_a_one_field() {
+    let files = generate_swift(
+        "abstract sig L { tag: one Int }\none sig High extends L {}\none sig Low extends L {}\n\
+         sig N { level: one L }\nfact NotLow { all n: N | n.level != Low }",
+    );
+    let tests = find_file(&files, "Tests.swift");
+
+    assert!(!tests.contains("is a case constructor"),
+        "the comparison is representable, so nothing is skipped:\n{tests}");
+    assert!(tests.contains("!n.level.isLow"),
+        "being the Low atom is being the Low case:\n{tests}");
+}

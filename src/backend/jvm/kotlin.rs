@@ -41,6 +41,10 @@ impl JvmLang for KotlinLang {
     // Kotlin's `==` is `equals()`, so value equality needs nothing special.
     fn value_eq(&self, l: &str, r: &str) -> String { format!("{l} == {r}") }
     fn value_neq(&self, l: &str, r: &str) -> String { format!("{l} != {r}") }
+    // A sealed class hierarchy: the case is a smart-castable type test.
+    fn is_variant(&self, subject: &str, variant: &str) -> String {
+        format!("{subject} is {variant}")
+    }
     // A derived field is an extension function, so the receiver is `this`.
     fn receiver_expr(&self) -> &str { "this" }
 }
@@ -180,7 +184,7 @@ fn generate_data_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_
             && f.mult == Multiplicity::One && f.target != s.name && f.value_type.is_none()
             && target_mult == SigMultiplicity::Default
         {
-            let type_str = mult_to_kt_type(&f.target, &f.mult);
+            let type_str = mult_to_kt_type(&resolve_type(TargetLang::Kotlin, &f.target), &f.mult);
             if s.is_var {
                 writeln!(out, "// @alloy: var sig").unwrap();
             }
@@ -386,10 +390,16 @@ fn generate_sealed_class(out: &mut String, s: &StructureNode, ctx: &JvmContext) 
                 if !all_fields.is_empty() {
                     writeln!(out, "data class {}(", v).unwrap();
                     for (i, f) in all_fields.iter().enumerate() {
+                        // A variant's field needs its native alias resolved
+                        // just as a data class's does — `Int` is a *32-bit*
+                        // type in Kotlin, so the unresolved name compiled and
+                        // then rejected the `Long` the fixture passes.
+                        let resolved = resolve_type(TargetLang::Kotlin, &f.target);
                         let type_str = if let Some(vt) = &f.value_type {
-                            format!("Map<{}, {}>", f.target, vt)
+                            format!("Map<{}, {}>", resolved,
+                                resolve_type(TargetLang::Kotlin, vt))
                         } else {
-                            mult_to_kt_type(&f.target, &f.mult)
+                            mult_to_kt_type(&resolved, &f.mult)
                         };
                         let comma = if i < all_fields.len() - 1 { "," } else { "" };
                         writeln!(out, "    val {}: {type_str}{comma}", f.name).unwrap();
@@ -614,7 +624,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     writeln!(out, "class PropertyTests {{").unwrap();
 
     for prop in &ir.properties {
-        let params = expr_translator::extract_params(&prop.expr, &sig_names);
+        let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&prop.expr, ir, &lang);
 
         // An `assert` carries temporal operators just as a `fact` does, and
@@ -681,7 +691,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         // Alloy 6: temporal facts with prime → generate transition test
         if analyze::expr_contains_prime(&constraint.expr) {
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let desc = analyze::describe_expr(&constraint.expr);
 
             writeln!(out, "    /** @temporal Transition constraint: {fact_name} */").unwrap();
@@ -716,7 +726,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             continue;
         }
 
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
         // Check if all related constraints are type-guaranteed in Kotlin
@@ -805,7 +815,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             Some(name) => name.clone(),
             None => continue,
         };
-        let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+        let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
         let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
 
         let has_boundary = params.iter().any(|(_, tname)| {
@@ -864,7 +874,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
         for constraint in &ir.constraints {
             let fact_name = match &constraint.name { Some(n) => n.clone(), None => continue };
-            let params = expr_translator::extract_params(&constraint.expr, &sig_names);
+            let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
             let body = expr_translator::translate_with_ir(&constraint.expr, ir, &lang);
             for op in &ir.operations {
                 writeln!(out, "    @Disabled(\"cross-test: operation stub not yet implemented\")").unwrap();
@@ -967,14 +977,14 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             let mut all_params: Vec<(String, String)> = Vec::new();
             let mut param_names: HashSet<String> = HashSet::new();
             if let Some(c) = constraint_a {
-                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                for p in expr_translator::extract_params(&c.expr, &sig_names, ir) {
                     if param_names.insert(p.0.clone()) {
                         all_params.push(p);
                     }
                 }
             }
             if let Some(c) = constraint_b {
-                for p in expr_translator::extract_params(&c.expr, &sig_names) {
+                for p in expr_translator::extract_params(&c.expr, &sig_names, ir) {
                     if param_names.insert(p.0.clone()) {
                         all_params.push(p);
                     }
@@ -1090,7 +1100,15 @@ fn translate_validator_expr_kt(expr: &crate::parser::ast::Expr, sig_name: &str) 
 fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
 
-    let fixture_types = super::super::collect_fixture_types(ir);
+    // Having no field is not having no value, and what has no factory is what
+    // has no finite value at all (#109, #105).
+    let (terminating, enum_witness) = crate::backend::terminating_types(ir);
+    let fixture_types: std::collections::HashSet<String> = ir.structures.iter()
+        .filter(|s| !ctx.is_variant(&s.name) && !s.is_enum
+            && !crate::backend::is_native_type_alias(&s.name)
+            && terminating.contains(&s.name))
+        .map(|s| s.name.clone())
+        .collect();
 
     // Generate enum default fixtures
     {
@@ -1103,44 +1121,59 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             }
             map
         };
-        let struct_map: HashMap<&str, &StructureNode> = ir.structures.iter()
-            .map(|s| (s.name.as_str(), s))
-            .collect();
         for s in &ir.structures {
             if !s.is_enum { continue; }
             let variants = match children.get(&s.name) {
                 Some(v) if !v.is_empty() => v,
                 _ => continue,
             };
-            let first_unit = variants.iter().find(|v| {
-                struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-            });
-            if let Some(variant) = first_unit {
-                let all_unit = variants.iter().all(|v| {
-                    struct_map.get(v.as_str()).map_or(true, |st| st.fields.is_empty())
-                });
-                if all_unit {
-                    // Enum class → qualified access: EnumName.Variant
-                    writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
-                    writeln!(out, "fun default{}(): {} = {}.{}", s.name, s.name, s.name, variant).unwrap();
-                    writeln!(out).unwrap();
-                } else {
-                    // Sealed class → data object variant (top-level)
-                    let has_fields = struct_map.get(variant.as_str())
-                        .map_or(false, |st| !st.fields.is_empty());
-                    if !has_fields {
-                        writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
-                        writeln!(out, "fun default{}(): {} = {}", s.name, s.name, variant).unwrap();
-                        writeln!(out).unwrap();
-                    }
-                }
+            if ctx.enum_is_flat(s) {
+                // Enum class → qualified access: EnumName.Variant. Any variant
+                // will do; none of them carries a field.
+                let Some(variant) = variants.first() else { continue };
+                writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
+                writeln!(out, "fun default{}(): {} = {}.{}", s.name, s.name, s.name, variant).unwrap();
+                writeln!(out).unwrap();
+                continue;
             }
+            // Sealed class → the case whose payload was satisfiable when the
+            // enum was admitted; any other may lead straight back into it.
+            let Some(variant) = enum_witness.get(&s.name) else { continue };
+            let fields = ctx.variant_fields(s, variant);
+            writeln!(out, "/** Factory: default value for {} */", s.name).unwrap();
+            if fields.is_empty() {
+                writeln!(out, "fun default{}(): {} = {}", s.name, s.name, variant).unwrap();
+            } else {
+                let args: Vec<String> = fields.iter()
+                    .map(|f| {
+                        let val = if f.value_type.is_some() {
+                            "emptyMap()".to_string()
+                        } else {
+                            kt_default_value(&f.target, &f.mult)
+                        };
+                        format!("{} = {val}", f.name)
+                    })
+                    .collect();
+                writeln!(out, "fun default{}(): {} = {}({})",
+                    s.name, s.name, variant, args.join(", ")).unwrap();
+            }
+            writeln!(out).unwrap();
         }
     }
 
     for s in &ir.structures {
         if ctx.is_variant(&s.name) || s.is_enum { continue; }
-        if s.fields.is_empty() { continue; }
+        // A field-less sig is still a value, and a fixture with a field of that
+        // type calls the factory whether or not one was emitted (#105).
+        if !terminating.contains(&s.name) { continue; }
+        if s.fields.is_empty() {
+            // A field-less sig is emitted as an `object`: the singleton is the
+            // value, and `Person()` would be a call to a constructor it has not.
+            writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();
+            writeln!(out, "fun default{}(): {} = {}", s.name, s.name, s.name).unwrap();
+            writeln!(out).unwrap();
+            continue;
+        }
 
         writeln!(out, "/** Factory: create a default valid {} */", s.name).unwrap();
         writeln!(out, "fun default{}(): {} = {}(", s.name, s.name, s.name).unwrap();
@@ -1291,7 +1324,28 @@ fn kt_default_value(target: &str, mult: &Multiplicity) -> String {
     kt_default_value_inner(target, mult, &HashSet::new())
 }
 
+/// The zero value for an Alloy marker sig, which has no generated factory:
+/// `defaultInt()` names nothing, so `Fixtures.kt` did not compile the moment a
+/// sig declared a primitive-typed field (#105).
+fn kt_native_zero(target: &str) -> Option<&'static str> {
+    match target {
+        "Int" => Some("0L"),
+        "Str" => Some("\"\""),
+        "Bool" => Some("false"),
+        "Float" => Some("0.0"),
+        _ => None,
+    }
+}
+
 fn kt_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    if let Some(zero) = kt_native_zero(target) {
+        return match mult {
+            Multiplicity::Lone => "null".to_string(),
+            Multiplicity::Set => format!("setOf({zero})"),
+            Multiplicity::Seq => format!("listOf({zero})"),
+            Multiplicity::One => zero.to_string(),
+        };
+    }
     match mult {
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set => {

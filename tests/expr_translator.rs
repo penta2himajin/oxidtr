@@ -443,7 +443,8 @@ fn translate_int_comparison_with_ir() {
     let ir = make_ir_two_sigs("Team", "members", Multiplicity::Set, "User");
     let expr = cmp(CompareOp::Lte, card(field(var("t"), "members")), int_lit(5));
     let result = translate_with_ir(&expr, &ir);
-    assert_eq!(result, "t.members.len() <= 5");
+    // `#e` is an Alloy `Int`; `Vec::len` is a `usize` (#105).
+    assert_eq!(result, "t.members.len() as i64 <= 5");
 }
 
 // ── Multi-variable quantifier translation tests ───────────────────────────────

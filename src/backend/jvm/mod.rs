@@ -52,6 +52,26 @@ impl JvmContext {
     pub fn is_variant(&self, name: &str) -> bool {
         self.variant_names.contains(name)
     }
+
+    /// Whether an enum parent becomes a flat `enum` rather than a sealed
+    /// hierarchy of records / data classes. Nothing carries a field — not the
+    /// parent, not any variant — so a case is a constant and `L.High` names it.
+    ///
+    /// The type emitter and the fixture factory both have to agree: the
+    /// factory used to look only at the variants' *own* fields, so an abstract
+    /// parent with a field emitted a sealed interface and a fixture reading
+    /// `L.High` off it (#105).
+    pub fn enum_is_flat(&self, s: &StructureNode) -> bool {
+        s.fields.is_empty() && self.children.get(&s.name).map_or(true, |vs| {
+            vs.iter().all(|v| self.struct_map.get(v).map_or(true, |st| st.fields.is_empty()))
+        })
+    }
+
+    /// Every field a variant carries: the parent's, then its own.
+    pub fn variant_fields<'a>(&'a self, parent: &'a StructureNode, variant: &str) -> Vec<&'a IRField> {
+        let own = self.struct_map.get(variant).map(|c| c.fields.iter()).into_iter().flatten();
+        parent.fields.iter().chain(own).collect()
+    }
 }
 
 /// Abstract JVM type representation for a field.
