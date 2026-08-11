@@ -579,6 +579,11 @@ fact NotLow { all v: Level | v.level != Low }
 sig Person {}
 sig Team { lead: one Person }
 fact LeadIsAPerson { all t: Team | t.lead in Person }
+
+sig Item { tag: one Int }
+sig Bag { items: set Item, tags: set Int }
+fact ExactlyTwo { all b: Bag | #b.items = 2 }
+fact AlsoTwo { all b: Bag | #b.tags = 2 }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -587,6 +592,9 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     ("equality_with_a_singleton_sig", "configs.contains("),
     ("comparison_with_a_payload_carrying_variant", "Low)"),
     ("membership_in_a_whole_sig", "persons.contains("),
+    // A boundary fixture used to repeat `default{T}()`, which for a native
+    // element is `defaultInt()` — a factory that does not exist (#96).
+    ("boundary_native_elements_are_distinct", "0L, 1L"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig

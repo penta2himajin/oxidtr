@@ -23,6 +23,10 @@ pub trait JvmLang {
     /// both languages.
     fn value_eq(&self, left: &str, right: &str) -> String;
     fn value_neq(&self, left: &str, right: &str) -> String;
+    /// An Alloy `Int` literal. Alloy's `Int` is `Long` on both languages, but
+    /// Kotlin will not compare a `Long` with an `Int` — `#items = 2` emitted
+    /// `size.toLong() == 2` and did not compile. Java widens silently.
+    fn int_literal(&self, n: i64) -> String { n.to_string() }
     /// Whether a value is a given case of a sealed hierarchy.
     ///
     /// `n.level = Low` asks which case an atom is; a variant's bare name is a
@@ -328,7 +332,7 @@ fn translate_inner(
     let ti = |e: &Expr, p: bool| translate_inner(e, p, sig_names, ir, lang, env);
 
     let result = match expr {
-        Expr::IntLiteral(n) => n.to_string(),
+        Expr::IntLiteral(n) => lang.int_literal(*n),
 
         Expr::VarRef(name) if name == "this" => lang.receiver_expr().to_string(),
 
