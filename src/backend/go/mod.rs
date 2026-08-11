@@ -881,19 +881,28 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 let body_str = expr_translator::translate_with_ir(&rewritten_body, ir);
                 let bind_vars: Vec<String> = bindings.iter()
                     .flat_map(|b| b.vars.clone()).collect();
-                if bind_vars.len() == 1 {
-                    let v = &bind_vars[0];
-                    let pname = &params[0].0;
-                    writeln!(out, "\tfor i, {v} := range {pname} {{").unwrap();
-                    writeln!(out, "\t\tnext_{v} := next_{pname}[i]").unwrap();
-                    writeln!(out, "\t\tif !({body_str}) {{").unwrap();
-                    writeln!(out, "\t\t\tt.Errorf(\"transition constraint {fact_name} violated at index %d\", i)").unwrap();
-                    writeln!(out, "\t\t}}").unwrap();
-                    writeln!(out, "\t}}").unwrap();
-                } else {
-                    writeln!(out, "\tif !({body_str}) {{").unwrap();
-                    writeln!(out, "\t\tt.Error(\"transition constraint {fact_name} violated\")").unwrap();
-                    writeln!(out, "\t}}").unwrap();
+                // The pre/post pair is walked over the *binding's own* domain.
+                // `params[0]` is whichever sig sorted first, so `all f: Foo`
+                // iterated some other sig's list entirely (#110 item 4).
+                let bound_pname = match &bindings[0].domain {
+                    crate::parser::ast::Expr::VarRef(sig) => {
+                        params.iter().find(|(_, t)| t == sig).map(|(p, _)| p.clone())
+                    }
+                    _ => None,
+                };
+                match (bind_vars.as_slice(), bound_pname) {
+                    ([v], Some(pname)) => {
+                        writeln!(out, "\tfor i, {v} := range {pname} {{").unwrap();
+                        writeln!(out, "\t\tnext_{v} := next_{pname}[i]").unwrap();
+                        writeln!(out, "\t\tif !({body_str}) {{").unwrap();
+                        writeln!(out, "\t\t\tt.Errorf(\"transition constraint {fact_name} violated at index %d\", i)").unwrap();
+                        writeln!(out, "\t\t}}").unwrap();
+                        writeln!(out, "\t}}").unwrap();
+                    }
+                    _ => {
+                        writeln!(out, "\t// oxidtr: skipped — a transition over {} binding(s) has no \
+                            pre/post pairing to walk. See #104.", bind_vars.len()).unwrap();
+                    }
                 }
             } else {
                 let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
