@@ -7,6 +7,7 @@ pub mod go;
 pub mod csharp;
 pub mod lean;
 pub mod schema;
+pub mod coverage;
 
 use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity};
 use crate::ir::nodes::{OxidtrIR, StructureNode};
