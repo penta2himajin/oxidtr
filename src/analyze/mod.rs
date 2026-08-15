@@ -538,28 +538,34 @@ pub fn strip_outer_quantifier(expr: &Expr) -> Option<(&QuantKind, &[QuantBinding
 
 /// Analyze all constraints in the IR and return structured info.
 pub fn analyze(ir: &OxidtrIR) -> Vec<ConstraintInfo> {
-    let mut results = Vec::new();
-    for c in &ir.constraints {
-        // `analyze_expr` unwraps temporal operators, so a constraint derived
-        // from `eventually all p | #p.items <= 1` becomes a plain cardinality
-        // bound and every validator built from it enforces the wrong thing in
-        // the current state. Every analyzer-derived consumer routes through
-        // here, so this is the one place the gate has to hold.
-        let name = c.name.clone().unwrap_or_default();
-        if snapshot_is_sound(&c.expr, ir) {
-            results.extend(analyze_expr(&c.expr, &name, ir));
-            continue;
-        }
-        // Mixed fact: keep whatever conjuncts *are* snapshot-sound rather than
-        // discarding the whole thing. `Named` is documentation, so it survives
-        // either way; the rest are enforced and must not.
-        results.extend(analyze_expr(&c.expr, &name, ir).into_iter()
-            .filter(|i| matches!(i, ConstraintInfo::Named { .. })));
-        for conj in conjuncts(&c.expr) {
-            if snapshot_is_sound(conj, ir) {
-                results.extend(analyze_expr(conj, &name, ir).into_iter()
-                    .filter(|i| !matches!(i, ConstraintInfo::Named { .. })));
-            }
+    ir.constraints.iter().flat_map(|c| analyze_constraint(c, ir)).collect()
+}
+
+/// What one fact says, as constraints a backend can act on.
+///
+/// Split out of `analyze` so a caller can ask about a *named* fact. The
+/// coverage manifest needs that: `can_guarantee_by_type` answers per constraint,
+/// but the element `check` reports on is the fact (#97).
+pub fn analyze_constraint(c: &ConstraintNode, ir: &OxidtrIR) -> Vec<ConstraintInfo> {
+    // `analyze_expr` unwraps temporal operators, so a constraint derived
+    // from `eventually all p | #p.items <= 1` becomes a plain cardinality
+    // bound and every validator built from it enforces the wrong thing in
+    // the current state. Every analyzer-derived consumer routes through
+    // here, so this is the one place the gate has to hold.
+    let name = c.name.clone().unwrap_or_default();
+    if snapshot_is_sound(&c.expr, ir) {
+        return analyze_expr(&c.expr, &name, ir);
+    }
+    // Mixed fact: keep whatever conjuncts *are* snapshot-sound rather than
+    // discarding the whole thing. `Named` is documentation, so it survives
+    // either way; the rest are enforced and must not.
+    let mut results: Vec<ConstraintInfo> = analyze_expr(&c.expr, &name, ir).into_iter()
+        .filter(|i| matches!(i, ConstraintInfo::Named { .. }))
+        .collect();
+    for conj in conjuncts(&c.expr) {
+        if snapshot_is_sound(conj, ir) {
+            results.extend(analyze_expr(conj, &name, ir).into_iter()
+                .filter(|i| !matches!(i, ConstraintInfo::Named { .. })));
         }
     }
     results

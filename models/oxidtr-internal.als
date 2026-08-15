@@ -417,6 +417,46 @@ sig AlgebraFact {
 }
 
 -------------------------------------------------------------------------------
+-- Coverage manifest
+--
+-- What each backend did with each element of the model. `check` reads this
+-- rather than searching the generated source for the element's name, which
+-- counted a `// skipped` comment as a proof.
+-------------------------------------------------------------------------------
+
+abstract sig ElementKind {}
+one sig Fact   extends ElementKind {}
+one sig Assert extends ElementKind {}
+
+abstract sig Verification {}
+one sig Verified extends Verification {}
+one sig ByType   extends Verification {}
+one sig Declined extends Verification {}
+
+sig CoverageEntry {
+  entryKind:   one ElementKind,
+  entryName:   one SigDecl,
+  entryStatus: one Verification,
+  entryReason: lone SigDecl
+}
+
+sig Coverage {
+  coverageEntries: set CoverageEntry
+}
+
+sig CoverageParseError {
+  parseErrorLine:    one SigDecl,
+  parseErrorText:    one SigDecl,
+  parseErrorProblem: one SigDecl
+}
+
+-- Only a declined element carries a reason: the other statuses have nothing
+-- to explain.
+fact ReasonBelongsToDecline {
+  all e: CoverageEntry | some e.entryReason implies e.entryStatus = Declined
+}
+
+-------------------------------------------------------------------------------
 -- Safety assertions
 -------------------------------------------------------------------------------
 

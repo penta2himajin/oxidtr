@@ -1,6 +1,7 @@
 use super::{JvmContext, expr_translator};
 use super::expr_translator::JvmLang;
 use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
+use crate::backend::coverage::{Coverage, ElementKind, Verification};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -85,16 +86,27 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         });
     }
 
+    let (tests, manifest) = generate_tests(ir);
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "Tests.kt".to_string(),
-            content: generate_tests(ir),
+            content: tests,
         });
     }
 
     files.push(GeneratedFile {
         path: "Fixtures.kt".to_string(),
         content: generate_fixtures(ir, &ctx),
+    });
+
+    // What became of each element of the model. `check` reads this rather than
+    // searching the source for the element's name, which counted the comment
+    // announcing a dropped guarantee as evidence of the guarantee (#97). It is
+    // emitted even when empty, so an absent manifest means "hand-written
+    // implementation", not "nothing was declined".
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
     });
 
     files
@@ -616,13 +628,18 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 // ── Tests.kt ───────────────────────────────────────────────────────────────
 
-fn generate_tests(ir: &OxidtrIR) -> String {
+fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
     let mut out = String::new();
     let fixture_types = crate::backend::collect_fixture_types(ir);
     let sig_names = expr_translator::collect_sig_names(ir);
     let lang = KotlinLang;
+    let mut manifest = Coverage::new();
 
-    let has_fixture = crate::backend::collect_fixture_types(ir);
+    // A quantifier over an empty list is true whatever the implementation does,
+    // so a test whose domain is unpopulated verifies nothing (#97).
+    let populated = |params: &[(String, String)]| -> bool {
+        params.iter().all(|(_, t)| fixture_types.contains(t))
+    };
 
     writeln!(out, "import org.junit.jupiter.api.Test").unwrap();
     writeln!(out, "import org.junit.jupiter.api.Disabled").unwrap();
@@ -663,12 +680,25 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                     writeln!(out, "        // oxidtr: no checker emitted for this shape").unwrap();
                 }
             }
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                format!("{label} needs a trace; the test only exercises the checker \
+                    against an empty one, which is not the property")));
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
             emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
             continue;
         }
 
+        if !populated(&params) {
+            writeln!(out, "    @Disabled(\"oxidtr: a quantifier domain has no fixture, \
+                so this would pass vacuously\")").unwrap();
+        }
+        manifest.record(ElementKind::Assert, &prop.name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{}`() {{", prop.name).unwrap();
         for (pname, tname) in &params {
@@ -728,16 +758,30 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                         writeln!(out, "        {pname}.zip(next_{pname}).forEach {{ ({v}, next_{v}) ->").unwrap();
                         writeln!(out, "            assertTrue({body_str})").unwrap();
                         writeln!(out, "        }}").unwrap();
+                        // The pre-state list is empty, so the walk has nothing to
+                        // pair and the body never runs.
+                        manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                            "a transition test needs a pre/post trace; the walk runs \
+                             over an empty pre-state".into()));
                     }
                     _ => {
                         writeln!(out, "        // oxidtr: skipped — a transition over {} binding(s) has no \
                             pre/post pairing to walk. See #104.", bind_vars.len()).unwrap();
+                        manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                            format!("a transition over {} bindings has no pre/post \
+                                pairing to walk (#104)", bind_vars.len())));
                     }
                 }
             } else {
                 let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
                 let body = expr_translator::translate_with_ir(&rewritten, ir, &lang);
                 writeln!(out, "        assertTrue({body})").unwrap();
+                manifest.record(ElementKind::Fact, &fact_name, if populated(&params) {
+                    Verification::Verified
+                } else {
+                    Verification::Declined("a transition test needs a pre/post trace; \
+                        the domain is empty".into())
+                });
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
@@ -764,6 +808,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if all_fully {
+            manifest.record(ElementKind::Fact, &fact_name, Verification::ByType);
             writeln!(out, "    // Type-guaranteed: {} — Kotlin type system handles this", fact_name).unwrap();
             writeln!(out).unwrap();
             continue;
@@ -803,6 +848,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    @Test").unwrap();
             writeln!(out, "    fun `{test_prefix} {fact_name}`() {{").unwrap();
             writeln!(out, "        // binary temporal: requires trace-based verification; see check{op_label}{fact_name}").unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "binary temporal needs a trace; the test body only names the checker".into()));
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
@@ -811,9 +858,21 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             writeln!(out, "    @Test").unwrap();
             writeln!(out, "    fun `{test_prefix} {fact_name}`() {{").unwrap();
             writeln!(out, "        // {}: requires trace-based verification; see check{kind_label}{fact_name}", test_prefix).unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "liveness needs a trace; the test body only names the checker".into()));
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         } else {
+        if !populated(&params) {
+            writeln!(out, "    @Disabled(\"oxidtr: a quantifier domain has no fixture, \
+                so this would pass vacuously\")").unwrap();
+        }
+        manifest.record(ElementKind::Fact, &fact_name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
         writeln!(out, "    @Test").unwrap();
         writeln!(out, "    fun `{test_prefix} {fact_name}`() {{").unwrap();
         // `all f: IRField | some sn: StructureNode | f in sn.irFields` is not
@@ -930,7 +989,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 writeln!(out, "    @Test").unwrap();
                 writeln!(out, "    fun `{fact_name} preserved after {}`() {{", op.name).unwrap();
                 for (pname, tname) in &params {
-                    if has_fixture.contains(tname) {
+                    if fixture_types.contains(tname) {
                         writeln!(out, "        val {pname}: List<{tname}> = listOf(default{tname}())").unwrap();
                     } else {
                         writeln!(out, "        val {pname}: List<{tname}> = emptyList()").unwrap();
@@ -965,7 +1024,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
 
         for (sig_name, patterns) in &anomaly_sigs {
-            if !has_fixture.contains(sig_name) { continue; }
+            if !fixture_types.contains(sig_name) { continue; }
             for pattern in patterns {
                 match pattern {
                     analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
@@ -1005,7 +1064,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
         let mut seen_cover_names: HashSet<String> = HashSet::new();
         for pair in &coverage.pairwise {
-            if !has_fixture.contains(&pair.sig_name) { continue; }
+            if !fixture_types.contains(&pair.sig_name) { continue; }
             let fact_a_snake = to_snake_case(&pair.fact_a);
             let fact_b_snake = to_snake_case(&pair.fact_b);
 
@@ -1056,7 +1115,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     }
 
     writeln!(out, "}}").unwrap();
-    out
+    (out, manifest)
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
