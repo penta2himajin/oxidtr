@@ -1,5 +1,6 @@
 pub mod expr_translator;
 
+use crate::backend::coverage::{Coverage, ElementKind, Verification};
 use crate::backend::{self, GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
@@ -23,16 +24,23 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
         });
     }
 
+    let (tests, manifest) = generate_tests(ir);
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "Tests.cs".to_string(),
-            content: generate_tests(ir),
+            content: tests,
         });
     }
 
     files.push(GeneratedFile {
         path: "Fixtures.cs".to_string(),
         content: generate_fixtures(ir, &ctx),
+    });
+
+    // What became of each element of the model; see `backend::coverage` (#97).
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
     });
 
     files
@@ -817,8 +825,9 @@ fn generate_rtc_function(out: &mut String, tc: &expr_translator::TCField) {
     writeln!(out).unwrap();
 }
 
-fn generate_tests(ir: &OxidtrIR) -> String {
+fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
     let mut out = String::new();
+    let mut manifest = Coverage::new();
     writeln!(out, "using Xunit;").unwrap();
     writeln!(out, "using System.Collections.Generic;").unwrap();
     // `Zip`/`Union`/`Intersect`/`Except` below are `System.Linq` extension
@@ -830,6 +839,11 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
     let sig_names: HashSet<String> = ir.structures.iter().map(|s| s.name.clone()).collect();
     let has_fixture = backend::collect_fixture_types(ir);
+    // A quantifier over an empty list is true whatever the implementation does,
+    // so a test whose domain is unpopulated verifies nothing (#97).
+    let populated = |params: &[(String, String)]| -> bool {
+        params.iter().all(|(_, t)| has_fixture.contains(t))
+    };
     let all_constraints = analyze::analyze(ir);
 
     // Transitive-closure helpers (`^field` / `*field`): C# has no `check_*` fact-path
@@ -910,12 +924,23 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                             has no pre/post pairing to walk. See #104.", bind_vars.len()).unwrap();
                     }
                 }
+                manifest.record(ElementKind::Fact, &fact_name, match bind_vars.as_slice() {
+                    // The walk is right, but a pre/post *trace* is what a
+                    // transition needs and a single snapshot is not one.
+                    [_] => Verification::Declined("a transition test needs a pre/post \
+                        trace; the post state is a copy of the pre state".into()),
+                    _ => Verification::Declined(format!("a transition over {} bindings \
+                        has no pre/post pairing to walk (#104)", bind_vars.len())),
+                });
             } else {
                 let rewritten = expr_translator::finalize_post_state_idents(
                     &analyze::rewrite_prime_as_post_state(&constraint.expr), &HashSet::new(),
                 );
                 let body = expr_translator::translate_with_ir(&rewritten, ir);
                 writeln!(out, "        Assert.True({body});").unwrap();
+                manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                    "a transition test needs a pre/post trace; the post state is a \
+                     copy of the pre state".into()));
             }
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
@@ -955,6 +980,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if all_fully {
+            manifest.record(ElementKind::Fact, &fact_name, Verification::ByType);
             writeln!(out, "    // Type-guaranteed: {} — no test needed", fact_name).unwrap();
             writeln!(out).unwrap();
             continue;
@@ -965,6 +991,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         // C# did not, which left the operator erased entirely (#78).
         if temporal_kind == Some(analyze::TemporalKind::Binary) || matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
             emit_temporal_test_and_checker(&mut out, &test_name, &fact_name, &constraint.expr, &params, ir, temporal_kind);
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "a temporal operator needs a trace; the test only exercises the \
+                 checker against an empty one, which is not the property".into()));
             continue;
         }
 
@@ -972,7 +1001,18 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             can_guarantee_by_type(c, TargetLang::CSharp) == Guarantee::PartiallyByType
         });
 
-        writeln!(out, "    [Fact]").unwrap();
+        manifest.record(ElementKind::Fact, &fact_name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
+        if populated(&params) {
+            writeln!(out, "    [Fact]").unwrap();
+        } else {
+            writeln!(out, "    [Fact(Skip = \"oxidtr: a quantifier domain has no \
+                fixture, so this would pass vacuously\")]").unwrap();
+        }
         if any_partial {
             writeln!(out, "    /// @regression Partially type-guaranteed — regression test only.").unwrap();
         }
@@ -1032,10 +1072,24 @@ fn generate_tests(ir: &OxidtrIR) -> String {
                 | Some(analyze::TemporalKind::Binary)
         ) {
             emit_temporal_test_and_checker(&mut out, &test_name, &prop.name, &prop.expr, &params, ir, temporal_kind);
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                "a temporal operator needs a trace; the test only exercises the \
+                 checker against an empty one, which is not the property".into()));
             continue;
         }
 
-        writeln!(out, "    [Fact]").unwrap();
+        manifest.record(ElementKind::Assert, &prop.name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
+        if populated(&params) {
+            writeln!(out, "    [Fact]").unwrap();
+        } else {
+            writeln!(out, "    [Fact(Skip = \"oxidtr: a quantifier domain has no \
+                fixture, so this would pass vacuously\")]").unwrap();
+        }
         writeln!(out, "    public void {test_name}()").unwrap();
         writeln!(out, "    {{").unwrap();
         for (pname, tname) in &params {
@@ -1165,7 +1219,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     }
 
     writeln!(out, "}}").unwrap();
-    out
+    (out, manifest)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
