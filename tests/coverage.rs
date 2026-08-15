@@ -136,3 +136,80 @@ fn comments_and_blank_lines_are_ignored() {
     let c = Coverage::parse("# oxidtr coverage\n\nverified fact F\n").expect("parse");
     assert_eq!(c.entries().count(), 1);
 }
+
+// ── backend wiring ─────────────────────────────────────────────────────────
+
+fn manifest_of(files: &[oxidtr::backend::GeneratedFile]) -> Coverage {
+    let raw = files.iter().find(|f| f.path == "coverage.txt")
+        .unwrap_or_else(|| panic!("no coverage.txt in {:?}",
+            files.iter().map(|f| &f.path).collect::<Vec<_>>()));
+    Coverage::parse(&raw.content).expect("the manifest a backend wrote must parse")
+}
+
+fn kotlin(model: &str) -> Vec<oxidtr::backend::GeneratedFile> {
+    let m = oxidtr::parser::parse(model).expect("parse");
+    let ir = oxidtr::ir::lower(&m).expect("lower");
+    oxidtr::backend::jvm::kotlin::generate(&ir)
+}
+
+/// The shape that started this: the whole test body is the note explaining that
+/// the guarantee was dropped, and the old substring check read that note as the
+/// proof.
+#[test]
+fn kotlin_records_a_multi_binding_transition_as_declined() {
+    let files = kotlin("sig Foo { var tag: one Int }\n\
+                        fact Paired { always all a, b: Foo | a.tag' = b.tag }");
+    let declined: Vec<_> = manifest_of(&files).declined().collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    assert_eq!(declined[0].name, "Paired");
+    assert!(declined[0].reason().unwrap().contains("pre/post pairing"),
+        "the reason must say what could not be expressed: {:?}", declined[0].reason());
+}
+
+/// A fact whose domain is populated really is asserted, so it is not a gap.
+#[test]
+fn kotlin_records_an_asserted_fact_as_verified() {
+    let files = kotlin("sig P { x: one Int }\nfact CardOne { all p: P | p.x = 0 }");
+    let m = manifest_of(&files);
+    assert_eq!(m.declined().count(), 0, "{}", m.render());
+    assert!(m.entries().any(|e| e.name == "CardOne"
+        && e.status == Verification::Verified), "{}", m.render());
+}
+
+/// `Knot` has no finite value, so its domain cannot be populated. The old
+/// output asserted over an empty list and went green; it must now be declined
+/// *and* not run.
+#[test]
+fn kotlin_declines_a_vacuous_domain_and_does_not_assert_it() {
+    let files = kotlin("sig Knot { other: one Knot }\n\
+                        fact Trivial { all k: Knot | k = k }");
+    let declined: Vec<_> = manifest_of(&files).declined().collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    assert_eq!(declined[0].name, "Trivial");
+
+    let tests = files.iter().find(|f| f.path == "Tests.kt").expect("Tests.kt").content.clone();
+    let body = tests.split("invariant Trivial").nth(1).unwrap_or(&tests);
+    assert!(tests.contains("@Disabled(\"oxidtr:"),
+        "a vacuous test must not run — the runner has to say so too:\n{tests}");
+    assert!(body.contains("assertTrue"),
+        "the assertion stays for the reader; @Disabled is what stops it:\n{tests}");
+}
+
+/// An element the type system covers is not a gap. Without this the manifest
+/// would make the strongest targets look like the worst.
+#[test]
+fn kotlin_records_a_type_guaranteed_fact_as_by_type() {
+    let files = kotlin("sig P { x: lone Int }\nfact Present { all p: P | some p.x }");
+    let m = manifest_of(&files);
+    let by_type: Vec<_> = m.entries().filter(|e| e.status == Verification::ByType).collect();
+    assert!(!by_type.is_empty(), "expected a by-type element:\n{}", m.render());
+    assert_eq!(m.declined().count(), 0, "{}", m.render());
+}
+
+/// The manifest exists even with nothing to say, so `check` can tell a
+/// generated implementation from a hand-written one.
+#[test]
+fn kotlin_writes_a_manifest_even_with_no_facts() {
+    let files = kotlin("sig Lonely {}");
+    assert_eq!(manifest_of(&files).entries().count(), 0);
+}
