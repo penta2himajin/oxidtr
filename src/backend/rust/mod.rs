@@ -9,6 +9,7 @@ fn module_path_to_rust(module_name: &str) -> String {
     module_name.replace('/', "::")
 }
 
+use super::coverage::{Coverage, ElementKind, Verification};
 use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type, variant_parent};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Expr, Multiplicity, SigMultiplicity, TemporalBinaryOp};
@@ -59,16 +60,23 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
         });
     }
 
+    let (tests, manifest) = generate_tests(ir);
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "tests.rs".to_string(),
-            content: generate_tests(ir),
+            content: tests,
         });
     }
 
     files.push(GeneratedFile {
         path: "fixtures.rs".to_string(),
         content: generate_fixtures(ir),
+    });
+
+    // What became of each element of the model; see `backend::coverage` (#97).
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
     });
 
     // Generate newtypes for named constraints
@@ -293,17 +301,23 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
             content: generate_operations_modular(ir, &module_order),
         });
     }
+    let (modular_tests, manifest) = generate_tests_modular(ir, &module_order);
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         writeln!(lib_rs, "#[cfg(test)]").unwrap();
         writeln!(lib_rs, "mod tests;").unwrap();
         files.push(GeneratedFile {
             path: "tests.rs".to_string(),
-            content: generate_tests_modular(ir, &module_order),
+            content: modular_tests,
         });
     }
     files.push(GeneratedFile {
         path: "fixtures.rs".to_string(),
         content: generate_fixtures_modular(ir, &module_order),
+    });
+    // What became of each element of the model; see `backend::coverage` (#97).
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
     });
     writeln!(lib_rs, "pub mod fixtures;").unwrap();
 
@@ -554,15 +568,15 @@ fn generate_operations_modular(ir: &OxidtrIR, modules: &[String]) -> String {
 }
 
 /// Generate tests.rs with modular imports
-fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> String {
+fn generate_tests_modular(ir: &OxidtrIR, modules: &[String]) -> (String, Coverage) {
     // For now, reuse the existing test generation but fix imports
-    let original = generate_tests(ir);
+    let (original, manifest) = generate_tests(ir);
     // Replace `use crate::models::*` with module imports
     let mut result = original.replace("use super::models::*;",
         &modules.iter().map(|m| format!("use super::{}::*;", module_path_to_rust(m))).collect::<Vec<_>>().join("\n    "));
     // Also update fixtures import
     result = result.replace("use super::fixtures::*;", "use super::fixtures::*;");
-    result
+    (result, manifest)
 }
 
 /// Generate fixtures.rs with modular imports
@@ -1291,9 +1305,10 @@ fn expr_refs_any(expr: &Expr, names: &HashSet<String>) -> bool {
     }
 }
 
-fn generate_tests(ir: &OxidtrIR) -> String {
+fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
+    let mut manifest = Coverage::new();
 
     // Collect which sigs have fixture factories (non-enum, non-variant, with fields)
     let enum_parents: HashSet<String> = ir.structures.iter()
@@ -1343,8 +1358,19 @@ fn generate_tests(ir: &OxidtrIR) -> String {
     for prop in &ir.properties {
         let test_name = to_snake_case(&prop.name);
         let params = expr_translator::extract_params(&prop.expr, &sig_names, ir);
-        // Skip tests that reference enum variants (not standalone types in Rust)
-        if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+        // A variant is a case of its parent enum, not a Rust type, so there is
+        // no `Vec<Variant>` to quantify over. This dropped the assertion with
+        // no comment at all — quieter than the Swift equivalent, which at least
+        // wrote one (#97).
+        if let Some(t) = params.iter().map(|(_, t)| t)
+            .find(|t| variant_names_set.contains(*t) || enum_parents.contains(*t))
+        {
+            writeln!(out, "// oxidtr: skipped {} — `{t}` is an enum case, not a Rust", prop.name).unwrap();
+            writeln!(out, "// type, so the quantifier has no domain to range over. See #97.").unwrap();
+            writeln!(out).unwrap();
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                format!("`{t}` is an enum case, not a Rust type, so the quantifier \
+                    has no domain to range over (#97)")));
             continue;
         }
         // Skip: references a concrete-parent singleton whose value can't be constructed.
@@ -1368,6 +1394,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         {
             writeln!(out, "// oxidtr: skipped {} — temporal content the snapshot path", prop.name).unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                "temporal content the snapshot path cannot express, possibly behind \
+                 a pred call (#104)".into()));
             writeln!(out).unwrap();
             continue;
         }
@@ -1376,6 +1405,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             // a prime translates to a `next_*` field that does not exist.
             writeln!(out, "// oxidtr: skipped {} — prime on the assert path needs transition", prop.name).unwrap();
             writeln!(out, "// handling, which only the fact path has. See #104.").unwrap();
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                "prime on the assert path needs the transition handling only the \
+                 fact path has (#104)".into()));
             writeln!(out).unwrap();
             continue;
         }
@@ -1385,9 +1417,29 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
         if emit_temporal_static_test(&mut out, &test_name, &prop.name, &prop.expr, &params, ir, temporal_kind) {
             emit_trace_checker(&mut out, &prop.name, &prop.expr, &params, &body, ir, temporal_kind);
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                "a temporal operator needs a trace; the static test only exercises \
+                 the checker against an empty one, which is not the property".into()));
             continue;
         }
 
+        // `is_vacuously_true` is Rust's own, sharper notion than "some domain is
+        // unpopulated": it asks whether *this* formula is true for that reason.
+        let assert_empty: HashSet<String> = params.iter()
+            .filter(|(_, tname)| !has_fixture.contains(tname))
+            .map(|(_, tname)| tname.clone())
+            .collect();
+        let assert_vacuous = analyze::is_vacuously_true(&prop.expr, &assert_empty);
+        manifest.record(ElementKind::Assert, &prop.name, if assert_vacuous {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        } else {
+            Verification::Verified
+        });
+        if assert_vacuous {
+            writeln!(out, "#[ignore = \"oxidtr: a quantifier domain has no fixture, \
+                so this would pass vacuously\"]").unwrap();
+        }
         writeln!(out, "#[test]").unwrap();
         writeln!(out, "fn {test_name}() {{").unwrap();
 
@@ -1445,6 +1497,8 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — a temporal operator combined with").unwrap();
             writeln!(out, "// prime is not a plain transition. See #104.").unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "a temporal operator combined with prime is not a plain transition (#104)".into()));
             writeln!(out).unwrap();
             continue;
         }
@@ -1455,7 +1509,15 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         if analyze::expr_contains_prime(&constraint.expr) {
             let test_name = format!("transition_{}", to_snake_case(&fact_name));
             let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
-            if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+            if let Some(t) = params.iter().map(|(_, t)| t)
+                .find(|t| variant_names_set.contains(*t) || enum_parents.contains(*t))
+            {
+                writeln!(out, "// oxidtr: skipped transition {fact_name} — `{t}` is an enum").unwrap();
+                writeln!(out, "// case, not a Rust type, so there is no domain to walk. See #97.").unwrap();
+                writeln!(out).unwrap();
+                manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                    format!("`{t}` is an enum case, not a Rust type, so the quantifier \
+                        has no domain to range over (#97)")));
                 continue;
             }
             let desc = analyze::describe_expr(&constraint.expr);
@@ -1466,8 +1528,23 @@ fn generate_tests(ir: &OxidtrIR) -> String {
 
             writeln!(out, "/// @temporal Transition constraint: {fact_name}").unwrap();
             writeln!(out, "/// Verifies: pre→post state relationship ({desc})").unwrap();
-            if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+            let vacuous = analyze::is_vacuously_true(&constraint.expr, &empty_domains);
+            if vacuous {
                 writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+            }
+            // Even a populated transition test compares a snapshot against a
+            // copy of itself; a pre/post *trace* is what the fact asks for.
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                if vacuous {
+                    "a quantifier domain has no fixture, so the assertion holds \
+                     whatever the implementation does"
+                } else {
+                    "a transition test needs a pre/post trace; the post state is a \
+                     copy of the pre state"
+                }.into()));
+            if vacuous {
+                writeln!(out, "#[ignore = \"oxidtr: a quantifier domain has no fixture, \
+                    so this would pass vacuously\"]").unwrap();
             }
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
@@ -1518,6 +1595,9 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         {
             writeln!(out, "// oxidtr: skipped {fact_name} — temporal content the snapshot path").unwrap();
             writeln!(out, "// cannot express (possibly behind a pred call). See #104.").unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "temporal content the snapshot path cannot express, possibly behind \
+                 a pred call (#104)".into()));
             writeln!(out).unwrap();
             continue;
         }
@@ -1532,8 +1612,15 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         };
         let test_name = format!("{}_{}", test_prefix, to_snake_case(&fact_name));
         let params = expr_translator::extract_params(&constraint.expr, &sig_names, ir);
-        // Skip tests that reference enum variants (not standalone types in Rust)
-        if params.iter().any(|(_, tname)| variant_names_set.contains(tname) || enum_parents.contains(tname)) {
+        if let Some(t) = params.iter().map(|(_, t)| t)
+            .find(|t| variant_names_set.contains(*t) || enum_parents.contains(*t))
+        {
+            writeln!(out, "// oxidtr: skipped {fact_name} — `{t}` is an enum case, not a").unwrap();
+            writeln!(out, "// Rust type, so the quantifier has no domain to range over. See #97.").unwrap();
+            writeln!(out).unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                format!("`{t}` is an enum case, not a Rust type, so the quantifier \
+                    has no domain to range over (#97)")));
             continue;
         }
         let body = expr_translator::translate_with_ir(&constraint.expr, ir);
@@ -1560,6 +1647,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         });
 
         if all_fully {
+            manifest.record(ElementKind::Fact, &fact_name, Verification::ByType);
             writeln!(out, "// Type-guaranteed: {} — no test needed (Rust type system encodes this)", fact_name).unwrap();
             writeln!(out).unwrap();
             continue;
@@ -1613,8 +1701,17 @@ fn generate_tests(ir: &OxidtrIR) -> String {
             .filter(|(_, tname)| !has_fixture.contains(tname))
             .map(|(_, tname)| tname.clone())
             .collect();
-        if analyze::is_vacuously_true(&constraint.expr, &empty_domains) {
+        let vacuous = analyze::is_vacuously_true(&constraint.expr, &empty_domains);
+        manifest.record(ElementKind::Fact, &fact_name, if vacuous {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        } else {
+            Verification::Verified
+        });
+        if vacuous {
             writeln!(out, "/// WARNING: vacuously true — fixture makes quantifier domain empty").unwrap();
+            writeln!(out, "#[ignore = \"oxidtr: a quantifier domain has no fixture, \
+                so this would pass vacuously\"]").unwrap();
         }
         writeln!(out, "#[test]").unwrap();
         writeln!(out, "fn {test_name}() {{").unwrap();
@@ -2048,7 +2145,7 @@ fn generate_tests(ir: &OxidtrIR) -> String {
         }
     }
 
-    out
+    (out, manifest)
 }
 
 /// Generate newtype wrappers for sigs that have named constraints.
