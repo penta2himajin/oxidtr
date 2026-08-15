@@ -1,6 +1,7 @@
 pub mod expr_translator;
 
 use super::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
+use super::coverage::{Coverage, ElementKind, Verification};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity, TemporalBinaryOp};
 use crate::analyze;
@@ -55,16 +56,23 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &TsBackendConfig) -> Vec<Gene
         });
     }
 
+    let (tests, manifest) = generate_tests(ir, config.test_runner);
     if !ir.properties.is_empty() || !ir.constraints.is_empty() {
         files.push(GeneratedFile {
             path: "tests.ts".to_string(),
-            content: generate_tests(ir, config.test_runner),
+            content: tests,
         });
     }
 
     files.push(GeneratedFile {
         path: "fixtures.ts".to_string(),
         content: generate_fixtures(ir),
+    });
+
+    // What became of each element of the model; see `backend::coverage` (#97).
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
     });
 
     files
@@ -567,9 +575,10 @@ fn generate_operations(ir: &OxidtrIR) -> String {
 
 // ── tests.ts ───────────────────────────────────────────────────────────────
 
-fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
+fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> (String, Coverage) {
     let mut out = String::new();
     let sig_names = collect_sig_names(ir);
+    let mut manifest = Coverage::new();
 
     // Collect which sigs have fixture factories (non-enum, non-variant, with fields)
     let enum_parents: HashSet<String> = ir.structures.iter()
@@ -585,6 +594,12 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
         .filter(|s| !variant_names.contains(&s.name) && !s.is_enum
             && terminating.contains(&s.name))
         .map(|s| s.name.clone()).collect();
+
+    // A quantifier over an empty array is true whatever the implementation
+    // does, so a test whose domain is unpopulated verifies nothing (#97).
+    let populated = |params: &[(String, String)]| -> bool {
+        params.iter().all(|(_, t)| has_fixture.contains(t))
+    };
 
     // Check if any expression uses TC functions → need helpers import
     let needs_helpers = ir_uses_tc(ir);
@@ -655,17 +670,29 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                     writeln!(out, "    // oxidtr: no checker emitted for this shape").unwrap();
                 }
             }
+            manifest.record(ElementKind::Assert, &prop.name, Verification::Declined(
+                format!("{label} needs a trace; the test only exercises the checker \
+                    against an empty one, which is not the property")));
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
             emit_temporal_trace_checkers(&mut out, &prop.name, &prop.expr, &params, ir, temporal_kind);
             continue;
         }
 
-        writeln!(out, "  it('{}', () => {{", test_name).unwrap();
+        let it = if populated(&params) { "it" } else { "it.skip" };
+        manifest.record(ElementKind::Assert, &prop.name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
+        writeln!(out, "  {it}('{}', () => {{", test_name).unwrap();
         for (pname, tname) in &params {
             if has_fixture.contains(tname) {
                 writeln!(out, "    const {pname}: M.{tname}[] = [fix.default{tname}()];").unwrap();
             } else {
+                writeln!(out, "    // @coverage empty domain: no fixture for `{tname}`;").unwrap();
+                writeln!(out, "    // this quantifier is vacuously satisfied.").unwrap();
                 writeln!(out, "    const {pname}: M.{tname}[] = [];").unwrap();
             }
         }
@@ -723,10 +750,21 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
                             pre/post pairing to walk. See #104.", bind_vars.len()).unwrap();
                     }
                 }
+                manifest.record(ElementKind::Fact, &fact_name, match bind_vars.as_slice() {
+                    // The walk is right, but a pre/post *trace* is what a
+                    // transition needs and a single snapshot is not one.
+                    [_] => Verification::Declined("a transition test needs a pre/post \
+                        trace; the post state is a clone of the pre state".into()),
+                    _ => Verification::Declined(format!("a transition over {} bindings \
+                        has no pre/post pairing to walk (#104)", bind_vars.len())),
+                });
             } else {
                 let rewritten = analyze::rewrite_prime_as_post_state(&constraint.expr);
                 let body = expr_translator::translate_with_ir(&rewritten, ir);
                 writeln!(out, "    expect({body}).toBe(true);").unwrap();
+                manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                    "a transition test needs a pre/post trace; the post state is a \
+                     clone of the pre state".into()));
             }
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
@@ -773,6 +811,8 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             let camel_name = to_camel_case(&fact_name);
             writeln!(out, "  it('{}', () => {{", test_name).unwrap();
             writeln!(out, "    // binary temporal: requires trace-based verification; see check_{op_label}_{camel_name}").unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "binary temporal needs a trace; the test body only names the checker".into()));
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
         } else if matches!(temporal_kind, Some(analyze::TemporalKind::Liveness) | Some(analyze::TemporalKind::PastLiveness)) {
@@ -782,10 +822,19 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
             let camel_name = to_camel_case(&fact_name);
             writeln!(out, "  it('{}', () => {{", test_name).unwrap();
             writeln!(out, "    // {kind_label}: requires trace-based verification; see check_{kind_label}_{camel_name}").unwrap();
+            manifest.record(ElementKind::Fact, &fact_name, Verification::Declined(
+                "liveness needs a trace; the test body only names the checker".into()));
             writeln!(out, "  }});").unwrap();
             writeln!(out).unwrap();
         } else {
-        writeln!(out, "  it('{}', () => {{", test_name).unwrap();
+        let it = if populated(&params) { "it" } else { "it.skip" };
+        manifest.record(ElementKind::Fact, &fact_name, if populated(&params) {
+            Verification::Verified
+        } else {
+            Verification::Declined("a quantifier domain has no fixture, so the \
+                assertion holds whatever the implementation does".into())
+        });
+        writeln!(out, "  {it}('{}', () => {{", test_name).unwrap();
         if let Some((owned_var, owner_var, _owner_type, field_name)) = &ownership {
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
             let owner_param = params.iter().find(|(p, _)| p == owner_var);
@@ -1012,7 +1061,7 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> String {
 
     writeln!(out, "}});").unwrap();
 
-    out
+    (out, manifest)
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
