@@ -1925,6 +1925,10 @@ fn lean_typecheck(ir: &ir::nodes::OxidtrIR) -> (bool, String, String) {
         .filter(|s| files.iter().any(|f| f.path == format!("{s}.lean")))
         .collect();
     for f in &files {
+        // `coverage.txt` sits beside the code and is not Lean; the stem is
+        // rebuilt into `{stem}.lean` below, so anything else would be looked
+        // for under a name that was never written (#97).
+        if !f.path.ends_with(".lean") { continue; }
         let stem = f.path.trim_end_matches(".lean").to_string();
         if !stems.contains(&stem) { stems.push(stem); }
     }
