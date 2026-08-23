@@ -925,14 +925,21 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> (String, Coverage) 
       }
     }
 
-    // Emit fact name anchors so `check` validation can find them
-    writeln!(out, "-- Validated facts:").unwrap();
-    for c in &ir.constraints {
-        if let Some(ref name) = c.name {
+    // Name the facts a theorem was actually proved for, so `check` can tell
+    // this file drifted from the manifest beside it. Naming all of them —
+    // which is what this loop used to do — made the anchor unfalsifiable: a
+    // fact with no theorem at all still got its name printed here (#97).
+    let proved: Vec<&str> = ir.constraints.iter()
+        .filter_map(|c| c.name.as_deref())
+        .filter(|n| manifest.status(ElementKind::Fact, n) == Some(&Verification::Verified))
+        .collect();
+    if !proved.is_empty() {
+        writeln!(out, "-- Validated facts:").unwrap();
+        for name in proved {
             writeln!(out, "-- {name}").unwrap();
         }
+        writeln!(out).unwrap();
     }
-    writeln!(out).unwrap();
 
     // Properties (asserts) as theorems
     for p in &ir.properties {

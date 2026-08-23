@@ -172,6 +172,9 @@ sig IoError         extends CheckError {}
 sig ParseError extends CheckError {}
 sig LoweringError extends CheckError {}
 sig ImplNotFound    extends CheckError {}
+-- The coverage manifest beside the implementation could not be read. An
+-- unreadable manifest is reported, not read as "nothing was declined" (#97).
+sig CoverageUnreadable extends CheckError {}
 
 sig CheckConfig {
   implDir: one SigDecl
@@ -191,6 +194,8 @@ sig MissingValidation      extends DiffItem {}
 sig ExtraValidation        extends DiffItem {}
 sig MissingTemporalTest    extends DiffItem {}
 sig MissingAssert          extends DiffItem {}
+-- The backend recorded that it could not express this element (#97).
+sig DeclinedCoverage       extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem

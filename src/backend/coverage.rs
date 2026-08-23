@@ -150,6 +150,15 @@ impl Coverage {
         })
     }
 
+    /// What this backend did with one element, or `None` if it never said.
+    ///
+    /// Silence is not success: an element the backend never recorded is one it
+    /// never considered, and `check` reports that as a gap rather than reading
+    /// the absence as approval.
+    pub fn status(&self, kind: ElementKind, name: &str) -> Option<&Verification> {
+        self.entries.get(&(kind, name.to_string()))
+    }
+
     /// The elements this backend could not express — the gap, in full.
     pub fn declined(&self) -> impl Iterator<Item = CoverageEntry> + '_ {
         self.entries().filter(|e| matches!(e.status, Verification::Declined(_)))

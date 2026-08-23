@@ -369,7 +369,7 @@ fn check_detects_missing_transition_test() {
     };
     // Source has the fact name but NOT the transition_ prefixed test
     let sources = vec!["fn test_state_update() { /* StateUpdate */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingTemporalTest { fact_name, expected_kind }
         if fact_name == "StateUpdate" && expected_kind == "transition"
@@ -391,7 +391,7 @@ fn check_passes_when_transition_test_present() {
         properties: vec![],
     };
     let sources = vec!["fn transition_state_update() { /* StateUpdate */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should not report missing temporal test: {diffs:?}");
 }
@@ -415,7 +415,7 @@ fn check_detects_missing_invariant_test_for_temporal_without_prime() {
         properties: vec![],
     };
     let sources = vec!["fn test_always_positive() { /* AlwaysPositive */ }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingTemporalTest { fact_name, expected_kind }
         if fact_name == "AlwaysPositive" && expected_kind == "invariant"
@@ -446,7 +446,7 @@ fn check_accepts_space_separated_invariant_test_name() {
     };
     // Source uses space-separated form (as TS/Kotlin backends emit)
     let sources = vec!["it('invariant FlagImpliesPositive', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated invariant test name: {diffs:?}");
 }
@@ -469,7 +469,7 @@ fn check_accepts_space_separated_temporal_binary_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('temporal FlagUntilLarge', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated temporal binary test name: {diffs:?}");
 }
@@ -489,7 +489,7 @@ fn check_accepts_space_separated_liveness_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('liveness WillConverge', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated liveness test name: {diffs:?}");
 }
@@ -510,7 +510,7 @@ fn check_accepts_space_separated_transition_test_name() {
         properties: vec![],
     };
     let sources = vec!["it('transition StateUpdate', () => {".to_string()];
-    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_identity_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d, DiffItem::MissingTemporalTest { .. })),
         "should accept space-separated transition test name: {diffs:?}");
 }
@@ -531,7 +531,7 @@ fn missing_assert_detected() {
         }],
     };
     let sources = vec!["fn some_other_test() {}".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(diffs.iter().any(|d| matches!(d,
         DiffItem::MissingAssert { name } if name == "NoSelfLoop"
     )), "should detect missing assert test: {diffs:?}");
@@ -551,8 +551,138 @@ fn present_assert_not_flagged() {
         }],
     };
     let sources = vec!["fn no_self_loop() { assert!(true); }".to_string()];
-    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources);
+    let diffs = differ::diff_with_validation(&ir, &ExtractedImpl { structs: vec![], fns: vec![] }, &sources, None);
     assert!(!diffs.iter().any(|d| matches!(d,
         DiffItem::MissingAssert { .. }
     )), "should not flag present assert test: {diffs:?}");
+}
+
+// ── the manifest as the answer, not the source text (#97) ───────────────────
+//
+// `check` used to ask "was this fact verified?" by searching the generated
+// source for the fact's name. A fact whose only trace was the comment saying
+// it had been skipped satisfied that search, so the diagnostic announcing the
+// dropped guarantee was itself the evidence the guarantee was kept. These
+// tests pin the replacement: the backend's manifest answers, and the source
+// text is consulted only for implementations that never had a manifest.
+
+/// A model with one fact and one assert, and a directory holding an
+/// implementation of it — plus whatever manifest the caller wants beside it.
+fn impl_with_manifest(manifest: Option<&str>) -> (tempfile::TempDir, String, String) {
+    use std::fs;
+    let dir = tempfile::tempdir().unwrap();
+    let model_path = dir.path().join("model.als");
+    let impl_dir = dir.path().join("gen");
+    fs::create_dir_all(&impl_dir).unwrap();
+
+    fs::write(&model_path, r#"
+sig Node {
+    rank: one Int
+}
+fact NoSelfLoop {
+    all n: Node | n.rank = 0
+}
+"#).unwrap();
+
+    fs::write(impl_dir.join("models.rs"), r#"
+pub struct Node {
+    pub rank: i64,
+}
+"#).unwrap();
+
+    // The mention that used to pass for a proof: the fact's name appears, in a
+    // comment saying nothing was generated for it.
+    fs::write(impl_dir.join("tests.rs"),
+        "// oxidtr: no_self_loop was skipped\n").unwrap();
+
+    if let Some(text) = manifest {
+        fs::write(impl_dir.join("coverage.txt"), text).unwrap();
+    }
+    (dir, model_path.to_string_lossy().into_owned(),
+     impl_dir.to_string_lossy().into_owned())
+}
+
+fn run_check(model: &str, impl_dir: &str) -> Result<check::CheckResult, check::CheckError> {
+    check::run(model, &CheckConfig { impl_dir: impl_dir.to_string() })
+}
+
+#[test]
+fn a_declined_fact_fails_the_check_even_though_its_name_appears() {
+    let (_d, model, impl_dir) = impl_with_manifest(Some(
+        "declined fact NoSelfLoop -- nothing was generated for this shape\n"));
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(result.diffs.iter().any(|d| matches!(d,
+        DiffItem::DeclinedCoverage { name, .. } if name == "NoSelfLoop")),
+        "a declined fact must be reported, got: {:?}", result.diffs);
+}
+
+#[test]
+fn a_verified_fact_passes() {
+    let (_d, model, impl_dir) = impl_with_manifest(Some(
+        "verified fact NoSelfLoop\n"));
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(!result.diffs.iter().any(|d| matches!(d,
+        DiffItem::DeclinedCoverage { .. } | DiffItem::MissingValidation { .. })),
+        "a verified fact must pass: {:?}", result.diffs);
+}
+
+#[test]
+fn a_verified_fact_whose_code_is_gone_is_still_reported() {
+    // The manifest and the source answer different questions. The manifest
+    // records what the backend did, once, at generation time; it cannot know
+    // the tree drifted afterwards. Deleting the tests must still be caught.
+    use std::fs;
+    let (_d, model, impl_dir) = impl_with_manifest(Some(
+        "verified fact NoSelfLoop\n"));
+    fs::remove_file(std::path::Path::new(&impl_dir).join("tests.rs")).unwrap();
+
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(result.diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingValidation { fact_name } if fact_name == "NoSelfLoop")),
+        "a verified fact with no code left must be reported: {:?}", result.diffs);
+}
+
+#[test]
+fn a_by_type_fact_passes() {
+    // `Guarantee::FullyByType` is not a gap: the type system encodes the fact,
+    // which is why the guarantee budget balances across languages (#87).
+    let (_d, model, impl_dir) = impl_with_manifest(Some(
+        "by-type  fact NoSelfLoop\n"));
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(!result.diffs.iter().any(|d| matches!(d,
+        DiffItem::DeclinedCoverage { .. } | DiffItem::MissingValidation { .. })),
+        "a by-type fact must pass: {:?}", result.diffs);
+}
+
+#[test]
+fn a_fact_absent_from_the_manifest_is_missing_not_passing() {
+    // The backend never recorded an outcome for it. That is a gap in the
+    // backend, and silence must not read as success.
+    let (_d, model, impl_dir) = impl_with_manifest(Some(""));
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(result.diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingValidation { fact_name } if fact_name == "NoSelfLoop")),
+        "an unrecorded fact must be reported: {:?}", result.diffs);
+}
+
+#[test]
+fn an_unreadable_manifest_is_an_error_not_an_empty_one() {
+    // Treating a corrupt manifest as "nothing was declined" would restore the
+    // failure this whole mechanism exists to remove.
+    let (_d, model, impl_dir) = impl_with_manifest(Some("this is not a manifest\n"));
+    match run_check(&model, &impl_dir) {
+        Err(check::CheckError::CoverageUnreadable(_)) => {}
+        other => panic!("expected a coverage parse error, got: {other:?}"),
+    }
+}
+
+#[test]
+fn without_a_manifest_the_source_text_is_still_consulted() {
+    // A hand-written implementation has no manifest and never will. For those
+    // the old substring search remains the only available evidence.
+    let (_d, model, impl_dir) = impl_with_manifest(None);
+    let result = run_check(&model, &impl_dir).unwrap();
+    assert!(!result.diffs.iter().any(|d| matches!(d,
+        DiffItem::MissingValidation { .. })),
+        "the fallback must still find the name in the source: {:?}", result.diffs);
 }
