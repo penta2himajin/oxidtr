@@ -686,3 +686,82 @@ fn without_a_manifest_the_source_text_is_still_consulted() {
         DiffItem::MissingValidation { .. })),
         "the fallback must still find the name in the source: {:?}", result.diffs);
 }
+
+// ── the ratchet (#97) ───────────────────────────────────────────────────────
+//
+// Lean declines every fact in models/oxidtr.als, so failing on any decline
+// would fail the build on day one and the check would be turned off. A
+// baseline file names the declines already known, and only new ones fail.
+// It ratchets rather than merely permits: an entry that is no longer declined
+// is reported too, so closing a gap forces the file to shrink.
+//
+// It is a policy over the result rather than part of computing it — what the
+// implementation did and what we are willing to live with are separate
+// questions, and only the first belongs in the diff.
+
+use oxidtr::check::accepted::AcceptedDeclines;
+
+fn diffs_under_baseline(manifest: &str, baseline: &str) -> Vec<DiffItem> {
+    let (_d, model, impl_dir) = impl_with_manifest(Some(manifest));
+    let result = run_check(&model, &impl_dir).unwrap();
+    AcceptedDeclines::parse(baseline).expect("baseline").apply(result.diffs)
+}
+
+const DECLINED: &str = "declined fact NoSelfLoop -- nothing was generated for this shape\n";
+
+#[test]
+fn a_decline_named_in_the_baseline_does_not_fail_the_check() {
+    let diffs = diffs_under_baseline(DECLINED, "fact NoSelfLoop\n");
+    assert!(diffs.is_empty(), "an accepted decline must not fail: {diffs:?}");
+}
+
+#[test]
+fn a_decline_the_baseline_does_not_name_still_fails() {
+    let diffs = diffs_under_baseline(DECLINED, "fact SomethingElse\n");
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::DeclinedCoverage { name, .. } if name == "NoSelfLoop")),
+        "a new decline must fail: {diffs:?}");
+}
+
+#[test]
+fn a_baseline_entry_that_is_no_longer_declined_is_reported() {
+    // Without this the file only ever grows, and a closed gap keeps its
+    // permission slip forever. Reporting it forces the ratchet to tighten.
+    let diffs = diffs_under_baseline("verified fact NoSelfLoop\n", "fact NoSelfLoop\n");
+    assert!(diffs.iter().any(|d| matches!(d,
+        DiffItem::StaleAcceptance { name, .. } if name == "NoSelfLoop")),
+        "a stale acceptance must be reported: {diffs:?}");
+}
+
+#[test]
+fn the_baseline_only_ever_excuses_declines() {
+    // It is a record of what oxidtr cannot express, not a mute button. A
+    // structural diff must survive it however the baseline is written.
+    use std::fs;
+    let (_d, model, impl_dir) = impl_with_manifest(Some("verified fact NoSelfLoop\n"));
+    fs::write(std::path::Path::new(&impl_dir).join("models.rs"), "").unwrap();
+
+    let result = run_check(&model, &impl_dir).unwrap();
+    let diffs = AcceptedDeclines::parse("fact NoSelfLoop\nfact Node\n")
+        .expect("baseline").apply(result.diffs);
+    assert!(diffs.iter().any(|d| matches!(d, DiffItem::MissingStruct { .. })),
+        "a structural diff must survive the baseline: {diffs:?}");
+}
+
+#[test]
+fn a_malformed_baseline_is_an_error() {
+    assert!(AcceptedDeclines::parse("fact\n").is_err(),
+        "a line with no element name must not parse");
+    assert!(AcceptedDeclines::parse("clause Foo\n").is_err(),
+        "a kind that is neither fact nor assert must not parse");
+}
+
+#[test]
+fn an_empty_baseline_changes_nothing() {
+    let (_d, model, impl_dir) = impl_with_manifest(Some(DECLINED));
+    let result = run_check(&model, &impl_dir).unwrap();
+    let before = result.diffs.len();
+    let after = AcceptedDeclines::parse("# nothing yet\n").expect("baseline")
+        .apply(result.diffs).len();
+    assert_eq!(before, after, "an empty baseline must be inert");
+}

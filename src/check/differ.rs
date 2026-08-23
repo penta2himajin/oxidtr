@@ -63,6 +63,13 @@ pub enum DiffItem {
         name:   String,
         reason: String,
     },
+    /// The accepted-declines baseline still excuses this element, but nothing
+    /// declines it any more. Reported so closing a gap forces the file to
+    /// shrink — otherwise a permission outlives the limitation it was for.
+    StaleAcceptance {
+        kind: String,
+        name: String,
+    },
 }
 
 impl std::fmt::Display for DiffItem {
@@ -102,6 +109,9 @@ impl std::fmt::Display for DiffItem {
                 write!(f, "[MISSING_TEMPORAL_TEST] {fact_name}: expected {expected_kind} test in impl"),
             DiffItem::DeclinedCoverage { kind, name, reason } =>
                 write!(f, "[DECLINED] {kind} {name}: not expressible in this target — {reason}"),
+            DiffItem::StaleAcceptance { kind, name } =>
+                write!(f, "[STALE_ACCEPTANCE] {kind} {name}: accepted as declined but no \
+                    longer is — remove it from the baseline"),
             DiffItem::MissingAssert { name } =>
                 write!(f, "[MISSING_ASSERT] {name}: assert in model but no property test in impl"),
         }

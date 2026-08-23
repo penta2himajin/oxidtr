@@ -196,6 +196,8 @@ sig MissingTemporalTest    extends DiffItem {}
 sig MissingAssert          extends DiffItem {}
 -- The backend recorded that it could not express this element (#97).
 sig DeclinedCoverage       extends DiffItem {}
+-- The baseline still excuses an element that is no longer declined (#97).
+sig StaleAcceptance        extends DiffItem {}
 
 sig CheckResult {
   diffs: set DiffItem
@@ -453,6 +455,30 @@ sig CoverageParseError {
   parseErrorLine:    one SigDecl,
   parseErrorText:    one SigDecl,
   parseErrorProblem: one SigDecl
+}
+
+-- The declines already known, which do not fail the build. A ratchet rather
+-- than an amnesty: an accepted element that is no longer declined is reported
+-- as `StaleAcceptance`, so closing a gap shrinks the file (#97).
+sig AcceptedDeclines {
+  acceptedElements: set CoverageEntry
+}
+
+sig AcceptedParseError {
+  acceptedErrorLine:    one SigDecl,
+  acceptedErrorText:    one SigDecl,
+  acceptedErrorProblem: one SigDecl
+}
+
+abstract sig AcceptedLoadError {}
+sig Io    extends AcceptedLoadError {}
+sig Parse extends AcceptedLoadError {}
+
+-- A baseline only ever excuses a decline; nothing else it names has any
+-- effect. This is the property that keeps it from becoming a mute button.
+fact AcceptanceOnlyCoversDeclines {
+  all a: AcceptedDeclines, e: a.acceptedElements |
+    e.entryStatus in Declined
 }
 
 -- Only a declined element carries a reason: the other statuses have nothing

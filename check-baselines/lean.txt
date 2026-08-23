@@ -1,0 +1,40 @@
+# Declines the Lean backend makes on models/oxidtr.als that we are not failing
+# the build over yet. See `src/check/accepted.rs` and #97.
+#
+# This is a ratchet, not an amnesty. A decline not named here fails the check;
+# a name here that is no longer declined is reported as [STALE_ACCEPTANCE], so
+# closing a gap forces this file to shrink. It should only ever get shorter.
+#
+# Every entry traces to one of two open issues. Neither is a limitation of the
+# model — both are the Lean encoding's:
+#
+#   #118  no theorem is emitted for this shape at all
+#   #79   a theorem is emitted, but its goal is left open with `sorry`. An
+#         Alloy fact is an axiom constraining the instance universe, not a
+#         claim about every inhabitant of the Lean type; stated as the latter
+#         it is generally false, so no tactic can close it. The fix is to
+#         encode facts as hypotheses rather than goals.
+#
+# For the four asserts, `sorry` means the ordinary thing: an unproved theorem.
+
+# --- #118: no theorem emitted ------------------------------------------------
+fact     AssertToProperty
+fact     FactToConstraint
+fact     FieldOwnershipBidirectional
+fact     IRFieldOwnership
+fact     PredToOperation
+fact     SigToStructureBijection
+fact     UniqueStructurePerSig
+
+# --- #79: fact stated as a claim about every inhabitant, left open -----------
+fact     NoCyclicIRParent
+fact     NoCyclicParent
+fact     NoSelfAbstract
+fact     NoSelfRefIrIsVar
+fact     NoSelfRefIsVar
+
+# --- asserts left unproved ---------------------------------------------------
+assert   IRParentNoCycle
+assert   NoCyclicInheritance
+assert   StructureCoverage
+assert   UniqueStructureOrigins

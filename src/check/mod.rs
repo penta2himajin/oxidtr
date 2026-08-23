@@ -1,4 +1,5 @@
 // check module — diff Alloy IR vs implementation
+pub mod accepted;
 pub mod differ;
 
 use crate::parser;

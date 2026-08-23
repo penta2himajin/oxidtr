@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use oxidtr::generate::{self, GenerateConfig, WarningLevel};
+use std::path::Path;
 use oxidtr::check::{self, CheckConfig};
 use oxidtr::extract;
 
@@ -44,6 +45,11 @@ enum Commands {
         /// Path to the implementation directory
         #[arg(long)]
         r#impl: String,
+        /// Path to a file naming the declined elements already accepted.
+        /// Only a decline it does not name fails; an entry that is no longer
+        /// declined is reported, so closing a gap shrinks the file.
+        #[arg(long)]
+        accept_declined: Option<String>,
     },
     /// Extract Alloy model draft from existing source code
     Extract {
@@ -204,15 +210,33 @@ fn main() {
             }
         }
 
-        Commands::Check { model, r#impl } => {
+        Commands::Check { model, r#impl, accept_declined } => {
             let config = CheckConfig { impl_dir: r#impl };
+            // What oxidtr cannot express today, and we are not failing the
+            // build over — see `check::accepted` (#97).
+            let accepted = match accept_declined.as_deref() {
+                None => check::accepted::AcceptedDeclines::default(),
+                Some(path) => match check::accepted::AcceptedDeclines::load(Path::new(path)) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!("error: {path}: {e}");
+                        std::process::exit(1);
+                    }
+                },
+            };
             match check::run(&model, &config) {
                 Ok(result) => {
-                    if result.is_ok() {
-                        println!("ok: model and implementation are in sync");
+                    let diffs = accepted.apply(result.diffs);
+                    if diffs.is_empty() {
+                        if accepted.is_empty() {
+                            println!("ok: model and implementation are in sync");
+                        } else {
+                            println!("ok: model and implementation are in sync \
+                                ({} accepted decline(s))", accepted.len());
+                        }
                     } else {
-                        println!("{} diff(s) found:", result.diffs.len());
-                        for d in &result.diffs {
+                        println!("{} diff(s) found:", diffs.len());
+                        for d in &diffs {
                             println!("  {d}");
                         }
                         std::process::exit(1);
