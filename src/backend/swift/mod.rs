@@ -1066,7 +1066,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> (String, Coverage) {
         // Every stored property is a `let`, so the owner is rebuilt through the
         // initialiser rather than mutated.
         let ownership = crate::backend::detect_ownership_pattern(
-            &constraint.expr, ir, expr_translator::to_camel_plural);
+            &constraint.expr, ir, |n| expr_translator::to_camel_plural(n, ir));
         let mut linked: HashSet<String> = HashSet::new();
         if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
             let owned = params.iter().find(|(p, _)| p == owned_var);
@@ -1210,7 +1210,7 @@ fn generate_tests(ir: &OxidtrIR, ctx: &SwiftContext) -> (String, Coverage) {
 
         for (sig_name, patterns) in &anomaly_sigs {
             if !has_fixture.contains(sig_name) { continue; }
-            let snake = to_snake_case(sig_name);
+            let snake = sig_slug(sig_name, ir);
             for pattern in patterns {
                 match pattern {
                     analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
@@ -1767,6 +1767,17 @@ fn escape_swift_keyword(name: &str) -> String {
     } else {
         name.to_string()
     }
+}
+
+/// The snake-case slug naming a test after a sig, made injective across the
+/// model.
+///
+/// `Foo` and `foo` both reached `foo`, so `testAnomaly_foo_tag_unconstrained`
+/// was emitted twice — an invalid redeclaration. The field half of the name
+/// keeps Alloy's casing, so `box_item` and `box_Item` already stay apart; only
+/// the sig half collapses (#112).
+fn sig_slug(sig: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(sig, ir, to_snake_case)
 }
 
 fn to_snake_case(name: &str) -> String {

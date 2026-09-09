@@ -155,6 +155,42 @@ fn kotlin_declares_its_domain_local_once() { assert_domain_local_is_declared_onc
 #[test]
 fn java_declares_its_domain_local_once() { assert_domain_local_is_declared_once("java"); }
 
+/// Every identifier the generated code *declares*, by the keyword that
+/// introduces it. Narrow assertions kept missing collisions in names I had not
+/// thought to look at — a Rust test function, a Swift one — so this asks the
+/// broader question instead: does the output declare anything twice?
+fn declared_identifiers(content: &str, keywords: &[&str]) -> Vec<String> {
+    content.lines().filter_map(|line| {
+        let t = line.trim_start();
+        let kw = keywords.iter().find(|k| t.starts_with(**k))?;
+        let rest = t[kw.len()..].trim_start();
+        let name: String = rest.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        (!name.is_empty()).then_some(format!("{kw}{name}"))
+    }).collect()
+}
+
+fn assert_nothing_is_declared_twice(target: &str, keywords: &[&str]) {
+    for file in generate(target, CASE_PAIR) {
+        if file.path == "coverage.txt" { continue; }
+        let mut seen = std::collections::HashSet::new();
+        let dupes: Vec<_> = declared_identifiers(&file.content, keywords)
+            .into_iter().filter(|d| !seen.insert(d.clone())).collect();
+        assert!(dupes.is_empty(),
+            "{target} declares {dupes:?} more than once in {}:\n{}",
+            file.path, file.content);
+    }
+}
+
+#[test]
+fn swift_declares_its_domain_local_once() { assert_domain_local_is_declared_once("swift"); }
+
+#[test]
+fn swift_declares_nothing_twice() {
+    assert_nothing_is_declared_twice("swift", &["func ", "struct ", "enum ", "case "]);
+}
+
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
 /// A field name is compared against the model by `extract` and `check`, and a
