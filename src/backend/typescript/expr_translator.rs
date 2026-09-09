@@ -128,7 +128,7 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     if !sig_names.contains(name) { return None; }
     if crate::backend::is_native_type_alias(name) { return None; }
     if crate::backend::variant_parent(ir, name).is_some() { return None; }
-    Some(to_camel_plural(name))
+    Some(to_camel_plural(name, ir))
 }
 
 /// `Sig.field`, as the union of `field` over every atom of `Sig`.
@@ -305,7 +305,7 @@ fn collect_params(
             for b in bindings {
                 if let Expr::VarRef(name) = &b.domain {
                     if sig_names.contains(name) {
-                        params.insert((to_camel_plural(name), name.clone()));
+                        params.insert((to_camel_plural(name, ir), name.clone()));
                     }
                 }
                 collect_params(&b.domain, sig_names, ir, params);
@@ -669,7 +669,7 @@ fn build_quantifier_ts_common(
     let mut vars: Vec<(String, String, bool)> = Vec::new();
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
-            if sig_names.contains(name) { to_camel_plural(name) }
+            if sig_names.contains(name) { to_camel_plural(name, ir) }
             else { name.clone() }
         } else {
             translate_inner(&b.domain, false, sig_names, ir, &scope)
@@ -818,7 +818,16 @@ fn capitalize(s: &str) -> String {
     }
 }
 
-fn to_camel_plural(name: &str) -> String {
+/// The local holding a materialised domain, made injective across the model.
+///
+/// Lowercasing the leading character collapses `Foo` and `foo` onto `foos`, and
+/// `const foos` twice in one block is a redeclaration error. The local is
+/// internal to the generated test, so the collision is renamed away (#112).
+pub fn to_camel_plural(name: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(name, ir, camel_plural_base)
+}
+
+fn camel_plural_base(name: &str) -> String {
     // "SigDecl" -> "sigDecls"
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {

@@ -146,6 +146,9 @@ fn rust_declares_its_domain_local_once() { assert_domain_local_is_declared_once(
 #[test]
 fn rust_defines_its_factory_once() { assert_factory_is_defined_once("rust", "default_foo"); }
 
+#[test]
+fn typescript_declares_its_domain_local_once() { assert_domain_local_is_declared_once("ts"); }
+
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
 /// A field name is compared against the model by `extract` and `check`, and a
