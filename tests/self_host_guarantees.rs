@@ -585,3 +585,58 @@ fn to_snake_case(s: &str) -> String {
     }
     out
 }
+
+// ── the ratchet on oxidtr's own model (#97) ─────────────────────────────────
+
+/// Generate `models/oxidtr.als` for one target into a fresh directory.
+fn generate_self_into(target: &str, dir: &std::path::Path) {
+    let cfg = oxidtr::generate::GenerateConfig {
+        target: target.to_string(),
+        output_dir: dir.to_str().unwrap().to_string(),
+        warnings: oxidtr::generate::WarningLevel::Off,
+        features: vec![],
+        schema: None,
+        ts_test_runner: oxidtr::backend::typescript::TsTestRunner::Bun,
+        konpu: false,
+    };
+    oxidtr::generate::run("models/oxidtr.als", &cfg)
+        .unwrap_or_else(|e| panic!("generate {target}: {e}"));
+}
+
+fn declines_of(target: &str) -> Vec<check::differ::DiffItem> {
+    let tmp = tempfile::tempdir().unwrap();
+    generate_self_into(target, tmp.path());
+    let result = check::run("models/oxidtr.als", &check::CheckConfig {
+        impl_dir: tmp.path().to_str().unwrap().to_string(),
+    }).unwrap_or_else(|e| panic!("check {target}: {e}"));
+    result.diffs.into_iter()
+        .filter(|d| matches!(d, check::differ::DiffItem::DeclinedCoverage { .. }))
+        .collect()
+}
+
+#[test]
+fn seven_backends_decline_nothing_in_oxidtrs_own_model() {
+    // The ratchet sits at zero for these, which is the strongest form the
+    // baseline can take: there is no baseline, so any decline fails.
+    for target in ["rust", "ts", "kt", "java", "swift", "go", "cs"] {
+        let declines = declines_of(target);
+        assert!(declines.is_empty(),
+            "{target} declined {} element(s) with no baseline to accept them: {declines:?}",
+            declines.len());
+    }
+}
+
+#[test]
+fn the_lean_baseline_names_exactly_what_lean_declines() {
+    // Pinned here rather than only in CI so the file cannot drift in either
+    // direction between pushes: a new decline fails, and an entry that stopped
+    // being declined comes back as [STALE_ACCEPTANCE].
+    let baseline = std::fs::read_to_string("check-baselines/lean.txt")
+        .expect("read check-baselines/lean.txt");
+    let accepted = oxidtr::check::accepted::AcceptedDeclines::parse(&baseline)
+        .expect("parse check-baselines/lean.txt");
+
+    let left = accepted.apply(declines_of("lean"));
+    assert!(left.is_empty(),
+        "check-baselines/lean.txt no longer matches what Lean declines: {left:?}");
+}

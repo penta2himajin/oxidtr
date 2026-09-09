@@ -36,6 +36,7 @@ mise exec rust -- cargo run -- generate models/oxidtr.als --target go --output g
 mise exec rust -- cargo run -- generate models/oxidtr.als --target cs --output generated-cs
 mise exec rust -- cargo run -- generate models/oxidtr.als --target lean --output generated-lean
 mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated
+mise exec rust -- cargo run -- check --model models/oxidtr.als --impl generated-lean --accept-declined check-baselines/lean.txt
 mise exec rust -- cargo run -- extract generated/
 mise exec rust -- cargo run -- extract src/ --lang rust
 ```
@@ -100,7 +101,7 @@ src/
     lean/           Lean 4 backend + expr_translator (theorems with sorry)
     schema.rs       JSON Schema生成
   generate.rs       generateパイプライン
-  check/            構造的整合性検証 (differ)
+  check/            構造的整合性検証 (differ, accepted — 棄権ラチェット)
   extract/          逆抽出 (rust/ts/kotlin/java/swift/schema extractors, renderer)
 ```
 
@@ -132,6 +133,32 @@ src/
 1. **Red**: 失敗するテストを先に書く
 2. **Green**: テストを通す最小限のコードを実装する
 3. **Refactor**: テストがグリーンの状態でコードを整理する
+
+### カバレッジ台帳と棄権ラチェット (#97)
+
+`check` は「この fact は検証されたか」を生成物の本文から fact 名を検索して
+答えていた。棄権を告げるコメント `// oxidtr: skipped — …` 自身が fact 名を
+含むので、**保証を落としたという診断が保証を守った証拠になっていた**。
+
+現在は各バックエンドが要素ごとの結末を `coverage.txt` (台帳) に記録し、
+`check` はそれを読む。台帳と本文は別の問いに答えるので両方を参照する:
+
+| 台帳の記録 | check の判定 |
+|---|---|
+| `declined` | 失敗 (本文は見ない — 名前はコメントの中にある) |
+| `by-type` | 通過 (型が担保、テスト不要) |
+| `verified` | **本文に残っていれば**通過 (生成後のドリフト検出) |
+| 記録なし | 失敗 (沈黙は成功ではない) |
+
+台帳が壊れていたら `CoverageUnreadable` エラー。「棄権ゼロ」と読んではならない。
+台帳のない手書き実装は従来どおり名前検索にフォールバックする。
+
+棄権が 1 件でもあれば落ちる設計だと Lean が初日から赤くなるので、
+既知の棄権を `check-baselines/<lang>.txt` に列挙して `--accept-declined` で渡す。
+**アムネスティではなくラチェット**: 列挙にない棄権は失敗し、
+棄権でなくなった項目は `[STALE_ACCEPTANCE]` として報告されるので、
+穴が塞がればファイルは縮むしかない。現状 Lean のみ 16 件 (#79 / #118)。
+他 7 言語はベースラインなし = 棄権ゼロで固定。
 
 ### セルフホスト検証
 
@@ -166,7 +193,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `generate_pipeline` | E2Eパイプライン + 警告検出 |
 | `determinism` | 同一モデルの2回生成がバイト一致すること (全8バックエンド) |
 | `type_env` | 共通型付け層 (binder経由のフィールド解決・継承・スコープ) |
-| `check` | 構造的整合性検証 (var field差分検出含む) |
+| `check` | 構造的整合性検証 (var field差分検出、coverage manifest読み込み、棄権ラチェット) |
 | `analyze`, `enrich` | 制約分析・enrichment (temporal constraint分類含む) |
 | `guarantee_differentiation` | 言語間テスト生成差異化 |
 
@@ -175,7 +202,8 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | テストファイル | 対象 |
 |---|---|
 | `self_hosting` | パース・lower・生成・内容検査・extract sig coverage |
-| `self_host_guarantees` | fact→テスト変換・cross-testマーカー・extract/check整合性 |
+| `self_host_guarantees` | fact→テスト変換・cross-testマーカー・extract/check整合性・棄権ラチェット |
+| `coverage` | カバレッジ台帳 (render/parse・ランク・各バックエンドの記録) |
 | `round_trip`, `round_trip_jvm`, `round_trip_swift`, `round_trip_go`, `round_trip_enriched` | ラウンドトリップ検証 |
 | `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
 | `extract_rust`, `extract_ts`, `extract_swift`, `extract_go` | extract抽出 (言語別) |

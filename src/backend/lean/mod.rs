@@ -1,5 +1,6 @@
 pub mod expr_translator;
 
+use crate::backend::coverage::{Coverage, ElementKind, Verification};
 use crate::backend::{GeneratedFile, TargetLang, is_native_type_alias, resolve_type};
 use crate::ir::nodes::*;
 use crate::parser::ast::{CompareOp, Multiplicity, SigMultiplicity};
@@ -19,8 +20,8 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     // `assert`s become theorems in the same file, so a model with properties but
     // no facts still needs it — gating on constraints alone dropped them silently.
+    let (constraints_content, manifest) = generate_constraints(ir, &ctx);
     if !ir.constraints.is_empty() || !ir.properties.is_empty() {
-        let constraints_content = generate_constraints(ir, &ctx);
         if !constraints_content.is_empty() {
             files.push(GeneratedFile {
                 path: "Constraints.lean".to_string(),
@@ -35,6 +36,12 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
             content: generate_operations(ir),
         });
     }
+
+    // What became of each element of the model; see `backend::coverage` (#97).
+    files.push(GeneratedFile {
+        path: "coverage.txt".to_string(),
+        content: manifest.render(),
+    });
 
     files
 }
@@ -673,10 +680,11 @@ fn category_test(ctx: &LeanContext, category: &str) -> String {
     }
 }
 
-fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
+fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> (String, Coverage) {
     let sig_constraints = analyze::analyze(ir);
+    let mut manifest = Coverage::new();
     if sig_constraints.is_empty() && ir.properties.is_empty() {
-        return String::new();
+        return (String::new(), manifest);
     }
 
     let mut out = String::new();
@@ -690,7 +698,10 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
 
     let mut theorem_idx = 0;
 
-    for c in &sig_constraints {
+    for constraint in &ir.constraints {
+      let fact_name = constraint.name.clone();
+      let before = out.len();
+      for c in &analyze::analyze_constraint(constraint, ir) {
         match c {
             analyze::ConstraintInfo::NoSelfRef { sig_name, field_name } => {
                 let fname = lean_field(field_name);
@@ -896,16 +907,39 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
             // Membership, Named — skip
             _ => {}
         }
+      }
+      // Whether the proof closed is the only question worth asking, and the
+      // emitted text is the answer: `sorry` is an open goal, and no text at all
+      // is a shape with no arm in the match above (#118).
+      if let Some(name) = fact_name {
+          let emitted = &out[before..];
+          manifest.record(ElementKind::Fact, &name, if emitted.trim().is_empty() {
+              Verification::Declined("no theorem is emitted for this shape (#118)".into())
+          } else if emitted.contains("sorry") {
+              Verification::Declined("the theorem's goal is left open with `sorry`: an \
+                  Alloy fact is an axiom over instances, not a claim about every \
+                  inhabitant of the Lean type (#79)".into())
+          } else {
+              Verification::Verified
+          });
+      }
     }
 
-    // Emit fact name anchors so `check` validation can find them
-    writeln!(out, "-- Validated facts:").unwrap();
-    for c in &ir.constraints {
-        if let Some(ref name) = c.name {
+    // Name the facts a theorem was actually proved for, so `check` can tell
+    // this file drifted from the manifest beside it. Naming all of them —
+    // which is what this loop used to do — made the anchor unfalsifiable: a
+    // fact with no theorem at all still got its name printed here (#97).
+    let proved: Vec<&str> = ir.constraints.iter()
+        .filter_map(|c| c.name.as_deref())
+        .filter(|n| manifest.status(ElementKind::Fact, n) == Some(&Verification::Verified))
+        .collect();
+    if !proved.is_empty() {
+        writeln!(out, "-- Validated facts:").unwrap();
+        for name in proved {
             writeln!(out, "-- {name}").unwrap();
         }
+        writeln!(out).unwrap();
     }
-    writeln!(out).unwrap();
 
     // Properties (asserts) as theorems
     for p in &ir.properties {
@@ -918,6 +952,8 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
             writeln!(out, "-- oxidtr: {} is a temporal formula, and this encoding has no \
                 trace to state it over", p.name).unwrap();
             writeln!(out).unwrap();
+            manifest.record(ElementKind::Assert, &p.name, Verification::Declined(
+                "a temporal formula has no trace to be stated over in this encoding".into()));
             continue;
         }
         let body_str = expr_translator::translate_with_ir(&p.expr, ir);
@@ -925,9 +961,11 @@ fn generate_constraints(ir: &OxidtrIR, ctx: &LeanContext) -> String {
         writeln!(out, "    {body_str} := by").unwrap();
         writeln!(out, "  sorry").unwrap();
         writeln!(out).unwrap();
+        manifest.record(ElementKind::Assert, &p.name, Verification::Declined(
+            "the theorem's goal is left open with `sorry`".into()));
     }
 
-    out
+    (out, manifest)
 }
 
 // ── Operations.lean ─────────────────────────────────────────────────────────

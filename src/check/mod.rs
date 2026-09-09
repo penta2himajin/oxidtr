@@ -1,9 +1,11 @@
 // check module — diff Alloy IR vs implementation
+pub mod accepted;
 pub mod differ;
 
 use crate::parser;
 use crate::ir;
 use crate::extract;
+use crate::backend::coverage::{Coverage, CoverageParseError};
 use differ::DiffItem;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +43,10 @@ pub enum CheckError {
     ParseError(parser::ParseError),
     LoweringError(ir::LoweringError),
     ImplNotFound(String),
+    /// The coverage manifest beside the implementation could not be read.
+    /// Reported rather than ignored: treating a corrupt manifest as "nothing
+    /// was declined" would restore exactly the blind spot it exists to close.
+    CoverageUnreadable(CoverageParseError),
 }
 
 impl std::fmt::Display for CheckError {
@@ -50,6 +56,7 @@ impl std::fmt::Display for CheckError {
             CheckError::ParseError(e) => write!(f, "parse error: {e}"),
             CheckError::LoweringError(e) => write!(f, "lowering error: {e}"),
             CheckError::ImplNotFound(s) => write!(f, "impl file not found: {s}"),
+            CheckError::CoverageUnreadable(e) => write!(f, "unreadable coverage manifest: {e}"),
         }
     }
 }
@@ -92,39 +99,44 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
 
     let impl_dir = Path::new(&config.impl_dir);
 
+    // What the backend recorded about each element, if it left a record.
+    // A hand-written implementation has none, and never will.
+    let coverage = load_coverage(impl_dir)?;
+    let coverage = coverage.as_ref();
+
     // Auto-detect language by file presence
     let diffs = if impl_dir.join("models.ts").exists() {
         let extracted = extract_mined(impl_dir, "models.ts", "operations.ts", extract::ts_extractor::extract)?;
         let validation_sources = collect_validation_sources_ts(impl_dir)?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("Models.kt").exists() {
         let extracted = extract_mined(impl_dir, "Models.kt", "Operations.kt", extract::kotlin_extractor::extract)?;
         let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.kt")?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("Models.java").exists() {
         let extracted = extract_mined(impl_dir, "Models.java", "Operations.java", extract::java_extractor::extract)?;
         let validation_sources = collect_validation_sources_jvm(impl_dir, "Tests.java")?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("Models.swift").exists() {
         let extracted = extract_mined(impl_dir, "Models.swift", "Operations.swift", extract::swift_extractor::extract)?;
         let validation_sources = collect_validation_sources_swift(impl_dir)?;
-        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_identity_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("models.go").exists() {
         let extracted = extract_mined(impl_dir, "models.go", "operations.go", extract::go_extractor::extract)?;
         let validation_sources = collect_validation_sources_go(impl_dir)?;
-        differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_go_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("Models.cs").exists() {
         let extracted = extract_mined(impl_dir, "Models.cs", "Operations.cs", extract::csharp_extractor::extract)?;
         let validation_sources = collect_validation_sources_cs(impl_dir)?;
-        differ::diff_go_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_go_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("Types.lean").exists() {
         let extracted = extract_mined_lean(impl_dir)?;
         let validation_sources = collect_validation_sources_lean(impl_dir)?;
-        differ::diff_lean_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_lean_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("models.rs").exists() {
         let extracted = extract_mined(impl_dir, "models.rs", "operations.rs", extract::rust_extractor::extract)?;
         let validation_sources = collect_validation_sources_rust(impl_dir)?;
-        differ::diff_with_validation(&ir, &extracted, &validation_sources)
+        differ::diff_with_validation(&ir, &extracted, &validation_sources, coverage)
     } else if impl_dir.join("mod.rs").exists() {
         // Modular Rust layout: mod.rs + module subdirectories
         match extract::run(config.impl_dir.as_str(), Some("rust")) {
@@ -137,7 +149,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
                     extracted.fns.extend(extract_fns_generic(&ops_src));
                 }
                 let validation_sources = collect_validation_sources_rust(impl_dir)?;
-                differ::diff_with_validation(&ir, &extracted, &validation_sources)
+                differ::diff_with_validation(&ir, &extracted, &validation_sources, coverage)
             }
             Err(e) => return Err(CheckError::ImplNotFound(e)),
         }
@@ -148,7 +160,7 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
                 let extracted = mined_to_extracted(&mined);
                 // Collect all source files as validation sources
                 let validation_sources = collect_all_sources(impl_dir)?;
-                differ::diff_identity_with_validation(&ir, &extracted, &validation_sources)
+                differ::diff_identity_with_validation(&ir, &extracted, &validation_sources, coverage)
             }
             Err(_) => {
                 return Err(CheckError::ImplNotFound(
@@ -159,6 +171,16 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
     };
 
     Ok(CheckResult { diffs })
+}
+
+/// The manifest a backend renders beside the code it generated (#97).
+fn load_coverage(impl_dir: &Path) -> Result<Option<Coverage>, CheckError> {
+    let path = impl_dir.join("coverage.txt");
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)?;
+    Coverage::parse(&text).map(Some).map_err(CheckError::CoverageUnreadable)
 }
 
 fn collect_validation_sources_rust(impl_dir: &Path) -> Result<Vec<String>, CheckError> {

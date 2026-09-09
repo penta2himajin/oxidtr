@@ -4,6 +4,7 @@ use crate::ir::nodes::OxidtrIR;
 use crate::parser::ast::Multiplicity;
 use crate::analyze;
 use crate::backend::is_native_type_alias;
+use crate::backend::coverage::{Coverage, ElementKind, Verification};
 use crate::naming::fn_name_for_op;
 use super::{ExtractedImpl, ExtractedStruct};
 
@@ -54,6 +55,21 @@ pub enum DiffItem {
         expected_kind: String, // "transition" or "invariant"
     },
     MissingAssert { name: String },
+    /// The backend recorded that it could not express this element. The
+    /// generated code may still mention the name — in the comment saying so —
+    /// which is exactly why the manifest, not the text, is consulted (#97).
+    DeclinedCoverage {
+        kind:   String, // "fact" or "assert"
+        name:   String,
+        reason: String,
+    },
+    /// The accepted-declines baseline still excuses this element, but nothing
+    /// declines it any more. Reported so closing a gap forces the file to
+    /// shrink — otherwise a permission outlives the limitation it was for.
+    StaleAcceptance {
+        kind: String,
+        name: String,
+    },
 }
 
 impl std::fmt::Display for DiffItem {
@@ -91,6 +107,11 @@ impl std::fmt::Display for DiffItem {
                 write!(f, "[EXTRA_VALIDATION] {name}: validation in impl but no fact in model"),
             DiffItem::MissingTemporalTest { fact_name, expected_kind } =>
                 write!(f, "[MISSING_TEMPORAL_TEST] {fact_name}: expected {expected_kind} test in impl"),
+            DiffItem::DeclinedCoverage { kind, name, reason } =>
+                write!(f, "[DECLINED] {kind} {name}: not expressible in this target — {reason}"),
+            DiffItem::StaleAcceptance { kind, name } =>
+                write!(f, "[STALE_ACCEPTANCE] {kind} {name}: accepted as declined but no \
+                    longer is — remove it from the baseline"),
             DiffItem::MissingAssert { name } =>
                 write!(f, "[MISSING_ASSERT] {name}: assert in model but no property test in impl"),
         }
@@ -109,49 +130,49 @@ pub fn diff_identity(ir: &OxidtrIR, extracted: &ExtractedImpl) -> Vec<DiffItem> 
 }
 
 /// Diff with Rust snake_case normalization, including validation coverage check.
-pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+pub fn diff_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String], coverage: Option<&Coverage>) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, fn_name_for_op);
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
     remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
-    diffs.extend(diff_validations(ir, validation_sources, true));
+    diffs.extend(diff_validations(ir, validation_sources, true, coverage));
     diffs
 }
 
 /// Diff with identity normalization, including validation coverage check.
 /// Treats Seq≈Set as equivalent (TS arrays/Go slices serve both roles).
-pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+pub fn diff_identity_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String], coverage: Option<&Coverage>) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
     remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
-    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs.extend(diff_validations(ir, validation_sources, false, coverage));
     diffs
 }
 
 /// Diff with Go PascalCase normalization (camelCase → PascalCase), including validation coverage.
 /// Treats Seq≈Set as equivalent (Go slices serve both roles).
-pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+pub fn diff_go_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String], coverage: Option<&Coverage>) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, to_pascal_case);
     remove_seq_set_mismatches(&mut diffs);
     remove_spurious_var_mismatches(ir, &mut diffs);
     remove_field_referenced_extras(extracted, &mut diffs);
     remove_folded_variant_fields(ir, &mut diffs);
     resolve_positional_fields(&mut diffs);
-    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs.extend(diff_validations(ir, validation_sources, false, coverage));
     diffs
 }
 
 /// Diff with Lean lowerCamelCase normalization, treating Seq≈Set (both map to List in Lean).
-pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String]) -> Vec<DiffItem> {
+pub fn diff_lean_with_validation(ir: &OxidtrIR, extracted: &ExtractedImpl, validation_sources: &[String], coverage: Option<&Coverage>) -> Vec<DiffItem> {
     let mut diffs = diff_with_fn_normalizer(ir, extracted, |s: &str| s.to_string());
     remove_seq_set_mismatches(&mut diffs);
     remove_folded_variant_fields(ir, &mut diffs);
-    diffs.extend(diff_validations(ir, validation_sources, false));
+    diffs.extend(diff_validations(ir, validation_sources, false, coverage));
     diffs
 }
 
@@ -338,9 +359,70 @@ fn to_pascal_case(s: &str) -> String {
     }
 }
 
-/// Check that each named fact in the model has a corresponding validation
-/// in the implementation sources.
-fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> Vec<DiffItem> {
+/// What the implementation did with one model element.
+enum Accounting {
+    /// An assertion exists for it.
+    Present,
+    /// The type system encodes it — nothing to assert, and not a gap (#87).
+    ByType,
+    /// The backend said it could not express it, and why.
+    Declined(String),
+    /// Nothing accounts for it: no record of an assertion, or a record whose
+    /// code is no longer in the tree.
+    Missing,
+}
+
+/// Decide from the two records available, which answer different questions.
+///
+/// The manifest says what the backend *did* — the question searching its
+/// output cannot answer, because the comment announcing a skip carries the
+/// element's name just as a real assertion does (#97). The source text says
+/// what is *still there* — the question the manifest cannot answer, because it
+/// was written once and the tree can drift from it afterwards.
+///
+/// So a decline is settled by the manifest alone (its name will be in the
+/// output, in the comment saying it was skipped), and a claim to have verified
+/// must still be corroborated by the code being present. Without a manifest —
+/// a hand-written implementation — the name search is all there is, and stands
+/// in for the record that was never kept.
+fn accounted_for(
+    coverage: Option<&Coverage>,
+    kind: ElementKind,
+    name: &str,
+    combined: &str,
+    use_snake_case: bool,
+) -> Accounting {
+    // Rust names its generated items in snake_case; the rest keep the model's
+    // spelling.
+    let search_name = if use_snake_case { to_snake_case(name) } else { name.to_string() };
+    let in_source = combined.contains(&search_name);
+
+    match coverage {
+        None => if in_source { Accounting::Present } else { Accounting::Missing },
+        Some(cov) => match cov.status(kind, name) {
+            Some(Verification::Declined(reason)) => Accounting::Declined(reason.clone()),
+            Some(Verification::ByType)           => Accounting::ByType,
+            // Recorded as verified, but the code it refers to is gone.
+            Some(Verification::Verified) if !in_source => Accounting::Missing,
+            Some(Verification::Verified)         => Accounting::Present,
+            None => Accounting::Missing,
+        },
+    }
+}
+
+/// Check that each named fact and assert in the model was actually accounted
+/// for by the implementation.
+///
+/// With a manifest, the emitter's own record answers: it knows what it did,
+/// where searching its output can only guess. Without one — a hand-written
+/// implementation — the source text is the only evidence there is, and the
+/// name search stands in for the record that was never kept.
+fn diff_validations(
+    ir: &OxidtrIR,
+    sources: &[String],
+    use_snake_case: bool,
+    coverage: Option<&Coverage>,
+) -> Vec<DiffItem> {
     let mut diffs = Vec::new();
     let combined = sources.join("\n");
 
@@ -358,19 +440,23 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
             continue;
         }
 
-        // Look for the fact name in the combined source texts.
-        // For Rust, we look for the snake_case form.
-        // For other languages, we look for the original name.
-        let search_name = if use_snake_case {
-            to_snake_case(&fact_name)
-        } else {
-            fact_name.clone()
-        };
-
-        let found = combined.contains(&search_name);
-        if !found {
-            diffs.push(DiffItem::MissingValidation { fact_name: fact_name.clone() });
-            continue; // no point checking temporal subtype if basic validation is missing
+        match accounted_for(coverage, ElementKind::Fact, &fact_name,
+                            &combined, use_snake_case) {
+            Accounting::Missing => {
+                diffs.push(DiffItem::MissingValidation { fact_name: fact_name.clone() });
+                continue; // no point checking temporal subtype if nothing is there
+            }
+            Accounting::Declined(reason) => {
+                diffs.push(DiffItem::DeclinedCoverage {
+                    kind: "fact".to_string(),
+                    name: fact_name.clone(),
+                    reason,
+                });
+                continue;
+            }
+            // The type system carries it, so there is no test to classify.
+            Accounting::ByType => continue,
+            Accounting::Present => {}
         }
 
         // Temporal constraint classification: verify correct test type exists
@@ -440,13 +526,17 @@ fn diff_validations(ir: &OxidtrIR, sources: &[String], use_snake_case: bool) -> 
 
     // Check that each assert (property) in the model has a test in the implementation.
     for prop in &ir.properties {
-        let search_name = if use_snake_case {
-            to_snake_case(&prop.name)
-        } else {
-            prop.name.clone()
-        };
-        if !combined.contains(&search_name) {
-            diffs.push(DiffItem::MissingAssert { name: prop.name.clone() });
+        match accounted_for(coverage, ElementKind::Assert, &prop.name,
+                            &combined, use_snake_case) {
+            Accounting::Missing =>
+                diffs.push(DiffItem::MissingAssert { name: prop.name.clone() }),
+            Accounting::Declined(reason) =>
+                diffs.push(DiffItem::DeclinedCoverage {
+                    kind: "assert".to_string(),
+                    name: prop.name.clone(),
+                    reason,
+                }),
+            Accounting::ByType | Accounting::Present => {}
         }
     }
 

@@ -213,3 +213,76 @@ fn kotlin_writes_a_manifest_even_with_no_facts() {
     let files = kotlin("sig Lonely {}");
     assert_eq!(manifest_of(&files).entries().count(), 0);
 }
+
+fn typescript(model: &str) -> Vec<oxidtr::backend::GeneratedFile> {
+    let m = oxidtr::parser::parse(model).expect("parse");
+    let ir = oxidtr::ir::lower(&m).expect("lower");
+    oxidtr::backend::typescript::generate(&ir)
+}
+
+#[test]
+fn typescript_records_a_multi_binding_transition_as_declined() {
+    let files = typescript("sig Foo { var tag: one Int }\n\
+                            fact Paired { always all a, b: Foo | a.tag' = b.tag }");
+    let declined: Vec<_> = manifest_of(&files).declined().collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    assert_eq!(declined[0].name, "Paired");
+}
+
+#[test]
+fn typescript_records_an_asserted_fact_as_verified() {
+    let files = typescript("sig P { x: one Int }\nfact CardOne { all p: P | p.x = 0 }");
+    let m = manifest_of(&files);
+    assert_eq!(m.declined().count(), 0, "{}", m.render());
+    assert!(m.entries().any(|e| e.name == "CardOne" && e.status == Verification::Verified));
+}
+
+/// The runner has to say so too, or a vacuous test still reports as a pass.
+#[test]
+fn typescript_declines_a_vacuous_domain_and_skips_it_in_the_runner() {
+    let files = typescript("sig Knot { other: one Knot }\n\
+                            fact Trivial { all k: Knot | k = k }");
+    let declined: Vec<_> = manifest_of(&files).declined().collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+
+    let tests = files.iter().find(|f| f.path == "tests.ts").expect("tests.ts").content.clone();
+    assert!(tests.contains("it.skip('invariant Trivial'"),
+        "a vacuous test must not run:\n{tests}");
+}
+
+/// Every backend writes a manifest, and between them they account for every
+/// named element of the model. A backend that drops one silently — as the Rust
+/// backend did for a variant domain — shows up here as a short list.
+#[test]
+fn every_backend_accounts_for_every_element() {
+    const MODEL: &str = "abstract sig Shape {}\n\
+                         sig Circle extends Shape { r: one Int }\n\
+                         sig P { x: one Int }\n\
+                         fact OverVariant { all c: Circle | c.r = 0 }\n\
+                         fact OverPlain { all p: P | p.x = 0 }\n\
+                         assert Refl { all p: P | p = p }";
+    let m = oxidtr::parser::parse(MODEL).expect("parse");
+    let ir = oxidtr::ir::lower(&m).expect("lower");
+
+    let all: Vec<(&str, Vec<oxidtr::backend::GeneratedFile>)> = vec![
+        ("rust", oxidtr::backend::rust::generate(&ir)),
+        ("typescript", oxidtr::backend::typescript::generate(&ir)),
+        ("kotlin", oxidtr::backend::jvm::kotlin::generate(&ir)),
+        ("java", oxidtr::backend::jvm::java::generate(&ir)),
+        ("swift", oxidtr::backend::swift::generate(&ir)),
+        ("go", oxidtr::backend::go::generate(&ir)),
+        ("csharp", oxidtr::backend::csharp::generate(&ir)),
+        ("lean", oxidtr::backend::lean::generate(&ir)),
+    ];
+
+    for (lang, files) in &all {
+        let m = manifest_of(files);
+        let mut names: Vec<String> = m.entries().map(|e| e.name.clone()).collect();
+        names.sort();
+        assert_eq!(
+            names, vec!["OverPlain", "OverVariant", "Refl"],
+            "{lang}: an element went unrecorded — that is the silent drop this \
+             manifest exists to catch:\n{}", m.render()
+        );
+    }
+}

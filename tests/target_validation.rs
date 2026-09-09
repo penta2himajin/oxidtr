@@ -1049,7 +1049,11 @@ fn assert_swift_typechecks(ir: &ir::nodes::OxidtrIR, label: &str) {
     let mut names = Vec::new();
     for file in &swift::generate(ir) {
         std::fs::write(dir.join(&file.path), &file.content).unwrap();
-        names.push(file.path.clone());
+        // `coverage.txt` sits beside the code, and swiftc is handed an explicit
+        // file list rather than a glob — so hand it only the Swift (#97).
+        if file.path.ends_with(".swift") {
+            names.push(file.path.clone());
+        }
     }
     let out = swiftc_typecheck(dir, &names);
     assert!(
@@ -1252,7 +1256,11 @@ fn swift_adversarial_models_compile() {
         let mut all = String::new();
         for file in &swift::generate(&lowered) {
             std::fs::write(dir.join(&file.path), &file.content).unwrap();
-            names.push(file.path.clone());
+            // swiftc is handed an explicit file list; `coverage.txt` is not
+            // Swift (#97).
+            if file.path.ends_with(".swift") {
+                names.push(file.path.clone());
+            }
             all.push_str(&file.content);
         }
 
@@ -1917,6 +1925,10 @@ fn lean_typecheck(ir: &ir::nodes::OxidtrIR) -> (bool, String, String) {
         .filter(|s| files.iter().any(|f| f.path == format!("{s}.lean")))
         .collect();
     for f in &files {
+        // `coverage.txt` sits beside the code and is not Lean; the stem is
+        // rebuilt into `{stem}.lean` below, so anything else would be looked
+        // for under a name that was never written (#97).
+        if !f.path.ends_with(".lean") { continue; }
         let stem = f.path.trim_end_matches(".lean").to_string();
         if !stems.contains(&stem) { stems.push(stem); }
     }

@@ -60,8 +60,11 @@ jobs:
         run: cargo run -- check --model models/oxidtr.als --impl generated-cs
       - name: Check Go
         run: cargo run -- check --model models/oxidtr.als --impl generated-go
+      # Lean declines sixteen elements it cannot express (#79, #118). They are
+      # named in the baseline; a new one fails, and one that stops being
+      # declined fails too, so the file can only shrink. See check-baselines/.
       - name: Check Lean
-        run: cargo run -- check --model models/oxidtr.als --impl generated-lean
+        run: cargo run -- check --model models/oxidtr.als --impl generated-lean --accept-declined check-baselines/lean.txt
 
       # Extract round-trip (each language → Alloy)
       - name: Extract Rust back to Alloy
