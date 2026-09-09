@@ -149,6 +149,12 @@ fn rust_defines_its_factory_once() { assert_factory_is_defined_once("rust", "def
 #[test]
 fn typescript_declares_its_domain_local_once() { assert_domain_local_is_declared_once("ts"); }
 
+#[test]
+fn kotlin_declares_its_domain_local_once() { assert_domain_local_is_declared_once("kt"); }
+
+#[test]
+fn java_declares_its_domain_local_once() { assert_domain_local_is_declared_once("java"); }
+
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
 /// A field name is compared against the model by `extract` and `check`, and a
