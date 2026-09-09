@@ -296,3 +296,98 @@ pub fn collect_fixture_types(ir: &OxidtrIR) -> HashSet<String> {
         .map(|s| s.name.clone())
         .collect()
 }
+
+/// Make a name transform injective over the whole model.
+///
+/// Every backend builds a domain local or a factory name by transforming a
+/// sig's name — lowercasing a leading character, appending `s`, prefixing
+/// `default`. Alloy is case-sensitive and those transforms are not injective,
+/// so `sig Foo` and `sig foo` both asked for `foos` and for `default_foo`. Six
+/// backends failed to compile; Rust shadowed the local instead, and the
+/// quantifier ranged over `foo` for both binders — `all a: Foo` never touched
+/// `Foo`, and the test passed while proving nothing (#112).
+///
+/// Names are claimed in declaration order, which is stable, and a name already
+/// spoken for takes the lowest free numeric suffix — repeating until the
+/// candidate is free, so a suffix cannot land on a name that is itself taken.
+/// A model whose names do not collide is left exactly as it was.
+///
+/// These names are internal to the generated code: neither `extract` nor
+/// `check` reads a local or a factory, so renaming one costs nothing. A *field*
+/// name is compared against the model by both, and a numeric suffix is not
+/// reversible there — `Item2` is itself a legal Alloy name — which is why
+/// `field_name_collisions` reports those rather than renaming them.
+pub fn disambiguate<F>(name: &str, ir: &OxidtrIR, render: F) -> String
+where
+    F: Fn(&str) -> String,
+{
+    let mut taken: HashSet<String> = HashSet::new();
+    for s in &ir.structures {
+        let base = render(&s.name);
+        let mut candidate = base.clone();
+        let mut n = 1usize;
+        while taken.contains(&candidate) {
+            n += 1;
+            candidate = format!("{base}{n}");
+        }
+        if s.name == name {
+            return candidate;
+        }
+        taken.insert(candidate);
+    }
+    // Not a sig — a binder or a synthetic name, which the model does not own.
+    render(name)
+}
+
+/// Two fields of one sig that a target cannot tell apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FieldCollision {
+    /// The sig declaring both fields.
+    pub sig: String,
+    /// The single name the target would emit for all of them.
+    pub emitted: String,
+    /// The model's own field names, in declaration order.
+    pub sources: Vec<String>,
+}
+
+/// Fields whose emitted names collapse under `target`'s naming convention.
+///
+/// Unlike a local or a factory, a field name round-trips: `extract` reads it
+/// back out of the generated source and `check` compares it against the model.
+/// Disambiguating with a suffix would break both, because the suffixed name is
+/// itself a legal Alloy name and nothing can tell the two apart afterwards. So
+/// the collision is reported and `generate` refuses, naming the model's own
+/// field names so the author can act on them.
+///
+/// This is per target, not global. Go and C# capitalize a field's leading
+/// character and Lean lower-camels it, so each collapses one of the two case
+/// variants onto the other. Rust, TypeScript, Kotlin, Java and Swift emit
+/// Alloy's own casing, and all five target languages are case-sensitive, so
+/// the same model is correct for them and is not rejected.
+pub fn field_name_collisions(ir: &OxidtrIR, target: &str) -> Vec<FieldCollision> {
+    let render: fn(&str) -> String = match target {
+        "go" => go::expr_translator::capitalize,
+        "csharp" | "cs" => csharp::expr_translator::capitalize,
+        "lean" => lean::expr_translator::lean_field,
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for s in &ir.structures {
+        // A Vec rather than a map: the report is part of an error message, so
+        // its order has to come from the model rather than from hashing.
+        let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+        for f in &s.fields {
+            let emitted = render(&f.name);
+            match groups.iter_mut().find(|(e, _)| *e == emitted) {
+                Some((_, names)) => names.push(f.name.clone()),
+                None => groups.push((emitted, vec![f.name.clone()])),
+            }
+        }
+        out.extend(groups.into_iter()
+            .filter(|(_, names)| names.len() > 1)
+            .map(|(emitted, sources)| FieldCollision {
+                sig: s.name.clone(), emitted, sources,
+            }));
+    }
+    out
+}

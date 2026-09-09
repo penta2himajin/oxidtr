@@ -487,6 +487,22 @@ fact ReasonBelongsToDecline {
   all e: CoverageEntry | some e.entryReason implies e.entryStatus = Declined
 }
 
+-- Two fields of one sig that a target's naming convention collapses onto a
+-- single emitted name. Reported rather than renamed: a field name is compared
+-- against the model by both `extract` and `check`, and a numeric suffix is not
+-- reversible because the suffixed name is itself a legal Alloy name (#112).
+sig FieldCollision {
+  collisionSig:     one SigDecl,
+  collisionEmitted: one SigDecl,
+  collisionSources: set SigDecl
+}
+
+-- A collision is two names or more. One name reaching its own spelling is not
+-- a collision, and reporting it would reject every model.
+fact CollisionNeedsTwoSources {
+  all c: FieldCollision | #c.collisionSources > 1
+}
+
 -------------------------------------------------------------------------------
 -- Safety assertions
 -------------------------------------------------------------------------------
