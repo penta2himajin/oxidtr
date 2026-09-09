@@ -19,6 +19,13 @@ pub enum GenerateError {
     IoError(std::io::Error),
     ParseError(parser::ParseError),
     LoweringError(ir::LoweringError),
+    /// The target's naming conventions cannot tell two of the model's
+    /// declarations apart, and the names round-trip so they cannot be
+    /// renamed (#112).
+    NameCollisions {
+        target: String,
+        collisions: Vec<crate::backend::NameCollision>,
+    },
 }
 
 impl std::fmt::Display for GenerateError {
@@ -27,6 +34,16 @@ impl std::fmt::Display for GenerateError {
             GenerateError::IoError(e) => write!(f, "IO error: {e}"),
             GenerateError::ParseError(e) => write!(f, "parse error: {e}"),
             GenerateError::LoweringError(e) => write!(f, "lowering error: {e}"),
+            GenerateError::NameCollisions { target, collisions } => {
+                writeln!(f, "target `{target}` cannot distinguish {} name(s) the model \
+                    declares:", collisions.len())?;
+                for c in collisions {
+                    writeln!(f, "  {c}")?;
+                }
+                write!(f, "These names are compared against the model by `extract` and \
+                    `check`, so oxidtr will not rename one to break the tie. Rename in the \
+                    model, or generate for a target that keeps Alloy's casing.")
+            }
         }
     }
 }
@@ -203,6 +220,17 @@ pub fn run(input_path: &str, config: &GenerateConfig) -> Result<GenerateResult, 
             message: format!("{} warning(s) found with --warnings=error", warnings.len()),
             pos: 0,
         }));
+    }
+
+    // A name the target cannot tell apart from another is refused before any
+    // file is written: the collision is in declarations that round-trip, so
+    // there is no rename available that `extract` and `check` could undo (#112).
+    let collisions = crate::backend::round_trip_collisions(&ir, &config.target);
+    if !collisions.is_empty() {
+        return Err(GenerateError::NameCollisions {
+            target: config.target.clone(),
+            collisions,
+        });
     }
 
     // Generate target code

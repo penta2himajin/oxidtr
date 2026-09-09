@@ -207,18 +207,77 @@ fn csharp_defines_its_factory_once() { assert_factory_is_defined_once("cs", "Def
 
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
+/// `Circle` and `circle` are children of one abstract sig, and Swift folds
+/// them into enum cases while Lean folds them into inductive constructors —
+/// both lower-camelled.
+const VARIANT_PAIR: &str = "\
+abstract sig Shape {}
+sig Circle extends Shape {}
+sig circle extends Shape {}
+";
+
 /// A field name is compared against the model by `extract` and `check`, and a
 /// numeric suffix is not reversible — `Item2` is itself a legal Alloy name. So
 /// a target that cannot tell two fields apart says so instead of guessing.
 #[test]
 fn a_target_that_collapses_two_field_names_refuses_the_model() {
     for target in ["go", "cs", "lean"] {
-        let collisions = backend::field_name_collisions(&lower(FIELD_PAIR), target);
+        let collisions = backend::round_trip_collisions(&lower(FIELD_PAIR), target);
         assert_eq!(collisions.len(), 1, "{target}: {collisions:?}");
+        assert_eq!(collisions[0].kind, backend::CollisionKind::Field);
         assert_eq!(collisions[0].sig, "Box");
         assert_eq!(collisions[0].sources, vec!["item".to_string(), "Item".to_string()],
             "the model's own names, in declaration order, are what the author has to act on");
     }
+}
+
+/// A case name round-trips too: `extract` reads `case circle` back to recover
+/// the variant sig, so it cannot take a suffix either.
+#[test]
+fn a_target_that_collapses_two_variant_names_refuses_the_model() {
+    for target in ["swift", "lean"] {
+        let collisions = backend::round_trip_collisions(&lower(VARIANT_PAIR), target);
+        assert_eq!(collisions.len(), 1, "{target}: {collisions:?}");
+        assert_eq!(collisions[0].kind, backend::CollisionKind::Variant);
+        assert_eq!(collisions[0].sig, "Shape", "the report names the parent");
+        assert_eq!(collisions[0].sources, vec!["Circle".to_string(), "circle".to_string()]);
+    }
+}
+
+/// The six that keep a child's name verbatim have nothing to collapse.
+#[test]
+fn a_target_that_keeps_a_variants_name_accepts_the_model() {
+    for target in ["rust", "ts", "kt", "java", "go", "cs"] {
+        assert!(backend::round_trip_collisions(&lower(VARIANT_PAIR), target).is_empty(),
+            "{target} emits variant names verbatim");
+    }
+}
+
+/// The refusal has to reach the caller, not just the report — and only for the
+/// targets that cannot express the model.
+#[test]
+fn generate_refuses_a_colliding_target_and_serves_the_others() {
+    let dir = std::env::temp_dir().join("oxidtr-112-gate");
+    let model = dir.join("m.als");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(&model, FIELD_PAIR).expect("write");
+
+    for target in ["go", "cs", "lean"] {
+        let cfg = oxidtr::generate::GenerateConfig::new(
+            target, dir.join(format!("out-{target}")).to_str().unwrap());
+        let err = oxidtr::generate::run(model.to_str().unwrap(), &cfg)
+            .err().unwrap_or_else(|| panic!("{target} must refuse this model"));
+        let text = err.to_string();
+        assert!(text.contains("item") && text.contains("Item") && text.contains("Box"),
+            "the error must name the model's own declarations: {text}");
+    }
+    for target in ["rust", "ts", "kt", "java", "swift"] {
+        let cfg = oxidtr::generate::GenerateConfig::new(
+            target, dir.join(format!("out-{target}")).to_str().unwrap());
+        assert!(oxidtr::generate::run(model.to_str().unwrap(), &cfg).is_ok(),
+            "{target} keeps Alloy's field casing and must still generate");
+    }
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 /// The other five keep Alloy's casing, and their target languages are
@@ -227,7 +286,7 @@ fn a_target_that_collapses_two_field_names_refuses_the_model() {
 #[test]
 fn a_target_that_keeps_alloys_casing_accepts_the_model() {
     for target in ["rust", "ts", "kt", "java", "swift"] {
-        assert!(backend::field_name_collisions(&lower(FIELD_PAIR), target).is_empty(),
+        assert!(backend::round_trip_collisions(&lower(FIELD_PAIR), target).is_empty(),
             "{target} keeps Alloy's field casing and has nothing to reject");
     }
 }
@@ -238,7 +297,7 @@ fn no_target_rejects_oxidtrs_own_model() {
     let model = oxidtr::generate::load_model("models/oxidtr.als").expect("load");
     let ir = ir::lower(&model).expect("lower");
     for target in ["rust", "ts", "kt", "java", "swift", "go", "cs", "lean"] {
-        assert!(backend::field_name_collisions(&ir, target).is_empty(),
+        assert!(backend::round_trip_collisions(&ir, target).is_empty(),
             "{target} rejects models/oxidtr.als");
     }
 }

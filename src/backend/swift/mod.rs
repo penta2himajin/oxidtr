@@ -1736,7 +1736,7 @@ pub(crate) fn to_swift_field_name(name: &str) -> String {
     escape_swift_keyword(name)
 }
 
-pub(crate) fn to_swift_case_name(name: &str) -> String {
+pub fn to_swift_case_name(name: &str) -> String {
     // Enum case names in Swift are lowerCamelCase
     let mut chars = name.chars();
     let lowered = match chars.next() {

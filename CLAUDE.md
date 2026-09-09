@@ -160,6 +160,34 @@ src/
 穴が塞がればファイルは縮むしかない。現状 Lean のみ 16 件 (#79 / #118)。
 他 7 言語はベースラインなし = 棄権ゼロで固定。
 
+### 識別子の一意性 (#112)
+
+Alloy は case-sensitive だが、ターゲット言語の命名規約はそうとは限らない。
+先頭文字を上下する変換 (camelCase / PascalCase / 複数形化) は **単射ではない**
+ので、`sig Foo` と `sig foo` が同じ名前に潰れる。
+
+判断基準は **その名前がラウンドトリップするか** の一点:
+
+| 名前 | 読み戻すか | 方針 |
+|---|---|---|
+| ドメインローカル (`foos`)、ファクトリ (`default_foo`)、テスト関数名 | しない | `backend::disambiguate` で採番リネーム |
+| フィールド名、variant/case 名 | **する** (`extract` / `check` が突き合わせる) | `generate` を **失敗**させる |
+
+リネーム側は宣言順 (`ir.structures` の順、安定) で名前を確保し、
+埋まっていれば最小の数字接尾辞を取る。衝突しないモデルの出力は一切変わらない。
+
+拒否側は **ターゲット単位**。フィールドを PascalCase する Go / C#、
+lowerCamel する Lean、case 名を lowerCamel する Swift / Lean だけが潰れる。
+残りは Alloy の casing をそのまま出すので同じモデルを通す
+(`generate --target ts` は成功し `--target cs` は失敗する)。
+接尾辞で逃げないのは、`Item2` 自体が合法な Alloy 名で不可逆だから。
+
+```bash
+$ cargo run -- generate m.als --target cs --output out
+error: target `cs` cannot distinguish 1 name(s) the model declares:
+  field of `Box`: `item` and `Item` both become `Item`
+```
+
 ### セルフホスト検証
 
 oxidtr自身のドメインモデル `models/oxidtr.als` を使った検証:
@@ -194,6 +222,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `determinism` | 同一モデルの2回生成がバイト一致すること (全8バックエンド) |
 | `type_env` | 共通型付け層 (binder経由のフィールド解決・継承・スコープ) |
 | `check` | 構造的整合性検証 (var field差分検出、coverage manifest読み込み、棄権ラチェット) |
+| `name_collision` | 識別子の単射性 (採番リネーム・ラウンドトリップ名の拒否) |
 | `analyze`, `enrich` | 制約分析・enrichment (temporal constraint分類含む) |
 | `guarantee_differentiation` | 言語間テスト生成差異化 |
 
