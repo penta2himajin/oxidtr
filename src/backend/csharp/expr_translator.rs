@@ -469,7 +469,7 @@ fn build_nested_quantifier(
     for b in bindings {
         let d = if let Expr::VarRef(name) = &b.domain {
             if sig_names.contains(name) {
-                to_camel_plural(name)
+                to_camel_plural(name, ir)
             } else if is_native_type_alias(name) {
                 // A quantifier can't enumerate a native domain's true extent
                 // any more than it enumerates a sig's — every other domain
@@ -593,7 +593,7 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     if !sig_names.contains(name) { return None; }
     if crate::backend::is_native_type_alias(name) { return None; }
     if crate::backend::variant_parent(ir, name).is_some() { return None; }
-    Some(to_camel_plural(name))
+    Some(to_camel_plural(name, ir))
 }
 
 /// Whether an expression is a collection rather than a nullable reference.
@@ -713,7 +713,7 @@ fn collect_params(
             for b in bindings {
                 if let Expr::VarRef(name) = &b.domain {
                     if sig_names.contains(name) {
-                        params.insert((to_camel_plural(name), name.clone()));
+                        params.insert((to_camel_plural(name, ir), name.clone()));
                     }
                 }
                 collect_params(&b.domain, sig_names, ir, params);
@@ -768,7 +768,16 @@ fn collect_params(
     }
 }
 
-pub fn to_camel_plural(name: &str) -> String {
+/// The local holding a materialised domain, made injective across the model.
+///
+/// Lowercasing the leading character collapses `Foo` and `foo` onto `foos`, and
+/// `var foos` twice in one block is CS0128. The local is internal to the
+/// generated test, so the collision is renamed away (#112).
+pub fn to_camel_plural(name: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(name, ir, camel_plural_base)
+}
+
+fn camel_plural_base(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
         if i == 0 {

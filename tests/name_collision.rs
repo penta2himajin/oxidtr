@@ -199,6 +199,12 @@ fn go_declares_nothing_twice() {
     assert_nothing_is_declared_twice("go", &["func ", "type "]);
 }
 
+#[test]
+fn csharp_declares_its_domain_local_once() { assert_domain_local_is_declared_once("cs"); }
+
+#[test]
+fn csharp_defines_its_factory_once() { assert_factory_is_defined_once("cs", "DefaultFoo"); }
+
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
 /// A field name is compared against the model by `extract` and `check`, and a

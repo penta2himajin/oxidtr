@@ -84,8 +84,16 @@ impl CsContext {
 /// keyword in `@`. The method half must not — `@` is only valid where the
 /// identifier *is* the keyword — but it was taking the raw name, so `sig lock`
 /// produced `Defaultlock` beside every other sig's `DefaultFoo` (#107).
-fn cs_factory_suffix(name: &str) -> String {
-    expr_translator::capitalize(name)
+/// The suffix naming a sig's `Default*` and `Boundary*` factories, made
+/// injective across the model.
+///
+/// `capitalize` collapses `Foo` and `foo` onto `Foo`, so both sigs asked for
+/// `public static … DefaultFoo()` — two members with one signature, differing
+/// only in return type, which C# does not allow as an overload. A factory name
+/// is internal: neither `extract` nor `check` reads one, so the second sig
+/// takes a numeric suffix rather than the model being rejected (#112).
+fn cs_factory_suffix(name: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(name, ir, expr_translator::capitalize)
 }
 
 // ── Models.cs ────────────────────────────────────────────────────────────────
@@ -486,14 +494,14 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         // cannot see a cycle that closes through a second type (#109).
         if !terminating.contains(&s.name) {
             writeln!(out, "    /// <summary>{} has no finite default: every value of it contains another.</summary>", s.name).unwrap();
-            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), cs_factory_suffix(&s.name)).unwrap();
+            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), cs_factory_suffix(&s.name, ir)).unwrap();
             writeln!(out, "        throw new NotSupportedException(\"oxidtr: {} has no finite default: every value of it contains another\");", s.name).unwrap();
             writeln!(out).unwrap();
             continue;
         }
 
         // Default factory
-        writeln!(out, "    public static {} Default{}()", cs_ident(&s.name), cs_factory_suffix(&s.name)).unwrap();
+        writeln!(out, "    public static {} Default{}()", cs_ident(&s.name), cs_factory_suffix(&s.name, ir)).unwrap();
         writeln!(out, "    {{").unwrap();
         writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
@@ -505,7 +513,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         writeln!(out).unwrap();
 
         // Boundary factory
-        writeln!(out, "    public static {} Boundary{}()", cs_ident(&s.name), cs_factory_suffix(&s.name)).unwrap();
+        writeln!(out, "    public static {} Boundary{}()", cs_ident(&s.name), cs_factory_suffix(&s.name, ir)).unwrap();
         writeln!(out, "    {{").unwrap();
         writeln!(out, "        return new {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "        {{").unwrap();
@@ -534,7 +542,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
             // pick. A variantless C# enum still has an implicit zero value,
             // so `default` is a real answer. See #102 round 3 defect 4.
             _ => {
-                writeln!(out, "    public static {} Default{}() => default;", cs_ident(&s.name), cs_factory_suffix(&s.name)).unwrap();
+                writeln!(out, "    public static {} Default{}() => default;", cs_ident(&s.name), cs_factory_suffix(&s.name, ir)).unwrap();
                 writeln!(out).unwrap();
                 continue;
             }
@@ -549,7 +557,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         // value, so `default` remains a real answer for it.
         if !terminating.contains(&s.name) {
             writeln!(out, "    /// <summary>{} has no finite default: every value of it contains another.</summary>", s.name).unwrap();
-            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), cs_factory_suffix(&s.name)).unwrap();
+            writeln!(out, "    public static {} Default{}() =>", cs_ident(&s.name), cs_factory_suffix(&s.name, ir)).unwrap();
             writeln!(out, "        throw new NotSupportedException(\"oxidtr: {} has no finite default: every value of it contains another\");", s.name).unwrap();
             writeln!(out).unwrap();
             continue;
@@ -576,7 +584,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
                 .collect::<Vec<_>>().join(", ");
             format!("new {} {{ {fields_str} }}", cs_ident(chosen))
         };
-        writeln!(out, "    public static {} Default{}() => {};", cs_ident(&s.name), cs_factory_suffix(&s.name), default_expr).unwrap();
+        writeln!(out, "    public static {} Default{}() => {};", cs_ident(&s.name), cs_factory_suffix(&s.name, ir), default_expr).unwrap();
         writeln!(out).unwrap();
     }
 
@@ -598,7 +606,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
             // positional-constructor shape these types don't have.
             writeln!(out, "    /// <summary>Anomaly fixture: all collections empty</summary>").unwrap();
             writeln!(out, "    public static {} AnomalyEmpty{}() => new {}",
-                cs_ident(sig_name), cs_factory_suffix(sig_name), cs_ident(sig_name)).unwrap();
+                cs_ident(sig_name), cs_factory_suffix(sig_name, ir), cs_ident(sig_name)).unwrap();
             writeln!(out, "    {{").unwrap();
             for f in &s.fields {
                 let upper = capitalize(&f.name);
@@ -606,7 +614,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
                     // Properties are always `List<T>` (see `mult_to_cs_type`), even
                     // for a `set` field — `HashSet<T>` here would be a type mismatch.
                     Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(&f.target)),
-                    _ => cs_default_value(&f.target, &f.mult, &fixture_types, ctx),
+                    _ => cs_default_value(&f.target, &f.mult, &fixture_types, ctx, ir),
                 };
                 writeln!(out, "        {upper} = {val},").unwrap();
             }
@@ -624,7 +632,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
 /// one (abstract sigs, enum variants, other fixture-bearing sigs — none of
 /// which have a usable parameterless `new` since they're either `abstract` or
 /// need their own fields populated), else a bare constructor call.
-fn one_value_for(target: &str, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
+fn one_value_for(target: &str, fixture_types: &HashSet<String>, ctx: &CsContext, ir: &OxidtrIR) -> String {
     if is_native_type_alias(target) {
         return cs_zero_value(&resolve_type(TargetLang::CSharp, target)).to_string();
     }
@@ -632,7 +640,7 @@ fn one_value_for(target: &str, fixture_types: &HashSet<String>, ctx: &CsContext)
         || ctx.struct_map.get(target).map_or(false, |s| s.is_enum)
         || fixture_types.contains(target)
     {
-        format!("Default{}()", cs_factory_suffix(target))
+        format!("Default{}()", cs_factory_suffix(target, ir))
     } else {
         format!("new {}()", cs_type_name(target))
     }
@@ -650,11 +658,11 @@ fn cs_zero_value(cs_ty: &str) -> &'static str {
 
 fn default_value_for(target: &str, mult: &Multiplicity, owner: &str, ir: &OxidtrIR, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
     match mult {
-        Multiplicity::One => one_value_for(target, fixture_types, ctx),
+        Multiplicity::One => one_value_for(target, fixture_types, ctx, ir),
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {
             if backend::is_safe_set_population(owner, target, ir, fixture_types) {
-                format!("new List<{}>() {{ Default{}() }}", cs_type_name(target), cs_factory_suffix(target))
+                format!("new List<{}>() {{ Default{}() }}", cs_type_name(target), cs_factory_suffix(target, ir))
             } else {
                 format!("new List<{}>()", cs_type_name(target))
             }
@@ -679,7 +687,7 @@ fn cs_native_element(target: &str, i: usize) -> Option<String> {
 /// boundary fixture of indistinguishable elements is what every other backend
 /// now avoids, and a later switch to a real set type would regress silently.
 fn cs_distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
-    let fallback = || vec![format!("Default{}()", cs_factory_suffix(target)); count];
+    let fallback = || vec![format!("Default{}()", cs_factory_suffix(target, ir)); count];
     if cs_native_element(target, 0).is_some() {
         return (0..count).filter_map(|i| cs_native_element(target, i)).collect();
     }
@@ -709,7 +717,7 @@ fn boundary_value_for(
     fixture_types: &HashSet<String>, ctx: &CsContext,
 ) -> String {
     match f.mult {
-        Multiplicity::One => one_value_for(&f.target, fixture_types, ctx),
+        Multiplicity::One => one_value_for(&f.target, fixture_types, ctx, ir),
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {
             let elem_ty = cs_type_name(&f.target);
@@ -878,7 +886,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             for (pname, tname) in &params {
                 let tcs = cs_ident(tname);
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname)).unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname, ir)).unwrap();
                 } else {
                     writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
                 }
@@ -1023,7 +1031,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         // the TypeScript backend already does — otherwise seeding the domains
         // turns a vacuous pass into a false failure rather than a real check.
         let ownership = backend::detect_ownership_pattern(
-            &constraint.expr, ir, expr_translator::to_camel_plural);
+            &constraint.expr, ir, |n| expr_translator::to_camel_plural(n, ir));
         let mut linked: HashSet<String> = HashSet::new();
         if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
             let owned = params.iter().find(|(p, _)| p == owned_var);
@@ -1032,8 +1040,8 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                 let prop = expr_translator::cs_property_name(owner_type, field_name);
                 let ocs = cs_ident(otname);
                 let ccs = cs_ident(ctname);
-                writeln!(out, "        var item = Fixtures.Default{}();", cs_factory_suffix(otname)).unwrap();
-                writeln!(out, "        var owner = Fixtures.Default{}();", cs_factory_suffix(ctname)).unwrap();
+                writeln!(out, "        var item = Fixtures.Default{}();", cs_factory_suffix(otname, ir)).unwrap();
+                writeln!(out, "        var owner = Fixtures.Default{}();", cs_factory_suffix(ctname, ir)).unwrap();
                 writeln!(out, "        owner.{prop} = new List<{ocs}>{{ item }};").unwrap();
                 writeln!(out, "        var {opname} = new List<{ocs}>{{ item }};").unwrap();
                 writeln!(out, "        var {cpname} = new List<{ccs}>{{ owner }};").unwrap();
@@ -1046,7 +1054,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             if linked.contains(pname) {
                 // already materialised as the owner/owned pair
             } else if has_fixture.contains(tname) {
-                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname)).unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname, ir)).unwrap();
             } else {
                 writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
             }
@@ -1095,7 +1103,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         for (pname, tname) in &params {
             let tcs = cs_ident(tname);
             if has_fixture.contains(tname) {
-                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname)).unwrap();
+                writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname, ir)).unwrap();
             } else {
                 writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
             }
@@ -1131,7 +1139,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                         writeln!(out, "    [Fact]").unwrap();
                         writeln!(out, "    public void Anomaly_{sig_name}_{upper}_Unconstrained()").unwrap();
                         writeln!(out, "    {{").unwrap();
-                        writeln!(out, "        var instance = Fixtures.Default{}();", cs_factory_suffix(sig_name)).unwrap();
+                        writeln!(out, "        var instance = Fixtures.Default{}();", cs_factory_suffix(sig_name, ir)).unwrap();
                         writeln!(out, "        Assert.NotNull(instance.{upper} as object);").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
@@ -1141,7 +1149,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                         writeln!(out, "    [Fact]").unwrap();
                         writeln!(out, "    public void Anomaly_{sig_name}_{upper}_Empty()").unwrap();
                         writeln!(out, "    {{").unwrap();
-                        writeln!(out, "        var instance = Fixtures.AnomalyEmpty{}();", cs_factory_suffix(sig_name)).unwrap();
+                        writeln!(out, "        var instance = Fixtures.AnomalyEmpty{}();", cs_factory_suffix(sig_name, ir)).unwrap();
                         writeln!(out, "        Assert.NotNull(instance.{upper});").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
@@ -1151,7 +1159,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                         writeln!(out, "    [Fact]").unwrap();
                         writeln!(out, "    public void Anomaly_{sig_name}_{upper}_SelfRef()").unwrap();
                         writeln!(out, "    {{").unwrap();
-                        writeln!(out, "        var instance = Fixtures.Default{}();", cs_factory_suffix(sig_name)).unwrap();
+                        writeln!(out, "        var instance = Fixtures.Default{}();", cs_factory_suffix(sig_name, ir)).unwrap();
                         writeln!(out, "        // Self-referential without guard").unwrap();
                         writeln!(out, "    }}").unwrap();
                         writeln!(out).unwrap();
@@ -1206,7 +1214,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             for (pname, tname) in &all_params {
                 let tcs = cs_ident(tname);
                 if has_fixture.contains(tname) {
-                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname)).unwrap();
+                    writeln!(out, "        var {pname} = new List<{tcs}>{{ Fixtures.Default{}() }};", cs_factory_suffix(tname, ir)).unwrap();
                 } else {
                     writeln!(out, "        var {pname} = new List<{tcs}>();").unwrap();
                 }
@@ -1332,9 +1340,9 @@ fn to_snake_case(s: &str) -> String {
     out
 }
 
-fn cs_default_value(target: &str, mult: &Multiplicity, fixture_types: &HashSet<String>, ctx: &CsContext) -> String {
+fn cs_default_value(target: &str, mult: &Multiplicity, fixture_types: &HashSet<String>, ctx: &CsContext, ir: &OxidtrIR) -> String {
     match mult {
-        Multiplicity::One => one_value_for(target, fixture_types, ctx),
+        Multiplicity::One => one_value_for(target, fixture_types, ctx, ir),
         Multiplicity::Lone => "null".to_string(),
         Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(target)),
     }
