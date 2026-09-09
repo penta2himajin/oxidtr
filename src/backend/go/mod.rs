@@ -1043,7 +1043,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         // the TypeScript backend already does — otherwise seeding the domains
         // turns a vacuous pass into a false failure rather than a real check.
         let ownership = crate::backend::detect_ownership_pattern(
-            &constraint.expr, ir, expr_translator::to_camel_plural);
+            &constraint.expr, ir, |n| expr_translator::to_camel_plural(n, ir));
         let mut linked: HashSet<String> = HashSet::new();
         if let Some((owned_var, owner_var, _, field_name)) = &ownership {
             let owned = params.iter().find(|(p, _)| p == owned_var);

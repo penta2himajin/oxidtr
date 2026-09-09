@@ -191,6 +191,14 @@ fn swift_declares_nothing_twice() {
     assert_nothing_is_declared_twice("swift", &["func ", "struct ", "enum ", "case "]);
 }
 
+#[test]
+fn go_declares_its_domain_local_once() { assert_domain_local_is_declared_once("go"); }
+
+#[test]
+fn go_declares_nothing_twice() {
+    assert_nothing_is_declared_twice("go", &["func ", "type "]);
+}
+
 // ── field names: rejected, not renamed ─────────────────────────────────────
 
 /// A field name is compared against the model by `extract` and `check`, and a
