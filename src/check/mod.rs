@@ -94,6 +94,10 @@ pub fn run(model_path: &str, config: &CheckConfig) -> Result<CheckResult, CheckE
             crate::generate::GenerateError::IoError(io) => CheckError::IoError(io),
             crate::generate::GenerateError::ParseError(pe) => CheckError::ParseError(pe),
             crate::generate::GenerateError::LoweringError(le) => CheckError::LoweringError(le),
+            // `load_model` parses; it never picks a target, so it has no
+            // target's naming conventions to collide under.
+            crate::generate::GenerateError::NameCollisions { .. } => unreachable!(
+                "load_model cannot report a target name collision"),
         })?;
     let ir = ir::lower(&ast)?;
 

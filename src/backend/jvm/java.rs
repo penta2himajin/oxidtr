@@ -943,7 +943,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         // A record is final in every component, so the owner is rebuilt through
         // the canonical constructor rather than mutated.
         let ownership = crate::backend::detect_ownership_pattern(
-            &constraint.expr, ir, expr_translator::to_camel_plural);
+            &constraint.expr, ir, |n| expr_translator::to_camel_plural(n, ir));
         let mut linked: HashSet<String> = HashSet::new();
         if let Some((owned_var, owner_var, owner_type, field_name)) = &ownership {
             let owned = params.iter().find(|(p, _)| p == owned_var);

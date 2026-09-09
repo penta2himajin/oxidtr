@@ -161,7 +161,7 @@ fn whole_sig_extent(expr: &Expr, sig_names: &HashSet<String>, ir: &OxidtrIR) -> 
     if crate::backend::is_native_type_alias(name) { return None; }
     if crate::backend::variant_parent(ir, name).is_some() { return None; }
     if is_nullary_fun(name, ir) { return None; }
-    Some(to_snake_plural(name))
+    Some(to_snake_plural(name, ir))
 }
 
 /// `Sig.field`, as the union of `field` over every atom of `Sig`.
@@ -218,7 +218,7 @@ fn collect_params(
             for b in bindings {
                 if let Expr::VarRef(name) = &b.domain {
                     if sig_names.contains(name) {
-                        params.insert((to_snake_plural(name), name.clone()));
+                        params.insert((to_snake_plural(name, ir), name.clone()));
                     }
                 }
                 collect_params(&b.domain, sig_names, ir, params);
@@ -423,7 +423,10 @@ fn collect_quant_vars(bindings: &[QuantBinding], sig_names: &HashSet<String>) ->
     let mut vars = Vec::new();
     for b in bindings {
         let domain_str = match &b.domain {
-            Expr::VarRef(name) if sig_names.contains(name) => to_snake_plural(name),
+            // The IR-free path: `translate` calls this with an empty `sig_names`,
+            // so this arm never fires in generation and has no model to
+            // disambiguate against. `translate_inner_ir` is the one that emits.
+            Expr::VarRef(name) if sig_names.contains(name) => snake_plural_base(name),
             _ => translate_inner(&b.domain, false, sig_names),
         };
         for v in &b.vars {
@@ -450,7 +453,7 @@ fn collect_quant_vars_ir(
             _ => false,
         };
         let domain_str = match &b.domain {
-            Expr::VarRef(name) if sig_names.contains(name) => to_snake_plural(name),
+            Expr::VarRef(name) if sig_names.contains(name) => to_snake_plural(name, ir),
             Expr::VarRef(name) => name.clone(),
             _ => translate_inner_ir(&b.domain, false, sig_names, ir, &scope),
         };
@@ -614,7 +617,17 @@ fn needs_parens(expr: &Expr) -> bool {
     )
 }
 
-fn to_snake_plural(name: &str) -> String {
+/// The local holding a materialised domain, made injective across the model.
+///
+/// `Foo` and `foo` both rendered `foos`. Rust permits the redeclaration as
+/// shadowing, so the crate compiled and every binder ranged over whichever sig
+/// came second — `all a: Foo` never touched `Foo` and the assertion proved
+/// nothing (#112). The local is internal, so the collision is renamed away.
+pub fn to_snake_plural(name: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(name, ir, snake_plural_base)
+}
+
+fn snake_plural_base(name: &str) -> String {
     let mut out = String::new();
     for (i, c) in name.chars().enumerate() {
         if c.is_uppercase() {

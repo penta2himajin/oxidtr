@@ -296,3 +296,182 @@ pub fn collect_fixture_types(ir: &OxidtrIR) -> HashSet<String> {
         .map(|s| s.name.clone())
         .collect()
 }
+
+/// Make a name transform injective over the whole model.
+///
+/// Every backend builds a domain local or a factory name by transforming a
+/// sig's name — lowercasing a leading character, appending `s`, prefixing
+/// `default`. Alloy is case-sensitive and those transforms are not injective,
+/// so `sig Foo` and `sig foo` both asked for `foos` and for `default_foo`. Six
+/// backends failed to compile; Rust shadowed the local instead, and the
+/// quantifier ranged over `foo` for both binders — `all a: Foo` never touched
+/// `Foo`, and the test passed while proving nothing (#112).
+///
+/// Names are claimed in declaration order, which is stable, and a name already
+/// spoken for takes the lowest free numeric suffix — repeating until the
+/// candidate is free, so a suffix cannot land on a name that is itself taken.
+/// A model whose names do not collide is left exactly as it was.
+///
+/// These names are internal to the generated code: neither `extract` nor
+/// `check` reads a local or a factory, so renaming one costs nothing. A *field*
+/// name is compared against the model by both, and a numeric suffix is not
+/// reversible there — `Item2` is itself a legal Alloy name — which is why
+/// `field_name_collisions` reports those rather than renaming them.
+pub fn disambiguate<F>(name: &str, ir: &OxidtrIR, render: F) -> String
+where
+    F: Fn(&str) -> String,
+{
+    disambiguate_in(name, ir.structures.iter().map(|s| s.name.as_str()), render)
+}
+
+/// `disambiguate` over an explicit scope.
+///
+/// The competing names are not always the model's sigs. A Rust test is named
+/// after a sig *and* a field — `anomaly_unconstrained_box_item` — so `item` and
+/// `Item` collide there even though Rust emits both field names verbatim and
+/// the struct itself is fine. The scope for that name is one sig's field list,
+/// not the model's structures.
+///
+/// `universe` must be in declaration order; that is what makes the allocation
+/// deterministic.
+pub fn disambiguate_in<'a, I, F>(name: &str, universe: I, render: F) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+    F: Fn(&str) -> String,
+{
+    let mut taken: HashSet<String> = HashSet::new();
+    for member in universe {
+        let base = render(member);
+        let mut candidate = base.clone();
+        let mut n = 1usize;
+        while taken.contains(&candidate) {
+            n += 1;
+            candidate = format!("{base}{n}");
+        }
+        if member == name {
+            return candidate;
+        }
+        taken.insert(candidate);
+    }
+    // Not in the scope — a binder or a synthetic name the model does not own.
+    render(name)
+}
+
+/// What kind of declaration two model names collapsed onto.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollisionKind {
+    /// Two fields of one sig.
+    Field,
+    /// Two children of one abstract sig, emitted as cases of one enum.
+    Variant,
+}
+
+impl std::fmt::Display for CollisionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CollisionKind::Field => write!(f, "field"),
+            CollisionKind::Variant => write!(f, "variant"),
+        }
+    }
+}
+
+/// Two declarations a target's naming convention cannot tell apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NameCollision {
+    pub kind: CollisionKind,
+    /// The sig declaring the fields, or the abstract sig owning the variants.
+    pub sig: String,
+    /// The single name the target would emit for all of them.
+    pub emitted: String,
+    /// The model's own names, in declaration order.
+    pub sources: Vec<String>,
+}
+
+impl std::fmt::Display for NameCollision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} of `{}`: {} both become `{}`",
+            self.kind, self.sig,
+            self.sources.iter().map(|s| format!("`{s}`"))
+                .collect::<Vec<_>>().join(" and "),
+            self.emitted)
+    }
+}
+
+/// Declarations whose emitted names collapse under `target`'s conventions.
+///
+/// Unlike a local or a factory, these names round-trip: `extract` reads them
+/// back out of the generated source and `check` compares them against the
+/// model. Disambiguating with a suffix would break both, because the suffixed
+/// name is itself a legal Alloy name and nothing can tell the two apart
+/// afterwards. So the collision is reported and `generate` refuses, naming the
+/// model's own names so the author can act on them.
+///
+/// This is per target, not global:
+///
+/// - **fields** — Go and C# capitalize a field's leading character and Lean
+///   lower-camels it, so each collapses one case variant onto the other. Rust,
+///   TypeScript, Kotlin, Java and Swift emit Alloy's own casing into
+///   case-sensitive languages and have nothing to collapse.
+/// - **variants** — Swift folds an abstract sig's children into `case` names
+///   and Lean into inductive constructors, both lower-camelled. The other six
+///   keep the child's name verbatim.
+///
+/// Rejecting a model everywhere would fail one that most targets handle
+/// correctly, so `generate --target ts` still succeeds where `--target cs`
+/// refuses.
+pub fn round_trip_collisions(ir: &OxidtrIR, target: &str) -> Vec<NameCollision> {
+    let field_render: Option<fn(&str) -> String> = match target {
+        "go" => Some(go::expr_translator::capitalize),
+        "csharp" | "cs" => Some(csharp::expr_translator::capitalize),
+        "lean" => Some(lean::expr_translator::lean_field),
+        _ => None,
+    };
+    let variant_render: Option<fn(&str) -> String> = match target {
+        "swift" => Some(swift::to_swift_case_name),
+        "lean" => Some(lean::expr_translator::lean_field),
+        _ => None,
+    };
+
+    let mut out = Vec::new();
+    if let Some(render) = field_render {
+        for s in &ir.structures {
+            let names: Vec<&str> = s.fields.iter().map(|f| f.name.as_str()).collect();
+            out.extend(collapsed(CollisionKind::Field, &s.name, &names, render));
+        }
+    }
+    if let Some(render) = variant_render {
+        for parent in ir.structures.iter().filter(|s| s.is_enum) {
+            let names: Vec<&str> = ir.structures.iter()
+                .filter(|c| c.parent.as_deref() == Some(parent.name.as_str()))
+                .map(|c| c.name.as_str())
+                .collect();
+            out.extend(collapsed(CollisionKind::Variant, &parent.name, &names, render));
+        }
+    }
+    out
+}
+
+/// Group `names` by what `render` makes of them, keeping only the groups with
+/// more than one member.
+///
+/// A `Vec` rather than a map: the result reaches the author as an error
+/// message, so its order has to come from the model rather than from hashing.
+fn collapsed<F>(kind: CollisionKind, sig: &str, names: &[&str], render: F) -> Vec<NameCollision>
+where
+    F: Fn(&str) -> String,
+{
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for name in names {
+        let emitted = render(name);
+        match groups.iter_mut().find(|(e, _)| *e == emitted) {
+            Some((_, taken)) => taken.push((*name).to_string()),
+            None => groups.push((emitted, vec![(*name).to_string()])),
+        }
+    }
+    groups.into_iter()
+        .filter(|(_, taken)| taken.len() > 1)
+        .map(|(emitted, sources)| NameCollision {
+            kind, sig: sig.to_string(), emitted, sources,
+        })
+        .collect()
+}

@@ -487,6 +487,41 @@ fact ReasonBelongsToDecline {
   all e: CoverageEntry | some e.entryReason implies e.entryStatus = Declined
 }
 
+-- What kind of declaration two model names collapsed onto.
+abstract sig CollisionKind {}
+one sig Field   extends CollisionKind {}
+one sig Variant extends CollisionKind {}
+
+-- Two declarations a target's naming convention collapses onto a single
+-- emitted name. Reported rather than renamed: these names are compared against
+-- the model by both `extract` and `check`, and a numeric suffix is not
+-- reversible because the suffixed name is itself a legal Alloy name (#112).
+sig NameCollision {
+  collisionKind:    one CollisionKind,
+  collisionSig:     one SigDecl,
+  collisionEmitted: one SigDecl,
+  collisionSources: set SigDecl
+}
+
+-- A collision is two names or more. One name reaching its own spelling is not
+-- a collision, and reporting it would reject every model.
+fact CollisionNeedsTwoSources {
+  all c: NameCollision | #c.collisionSources > 1
+}
+
+-- Refusing to generate for a target whose conventions cannot express the
+-- model's names.
+sig NameCollisions extends GenerateError {
+  refusedTarget:     one SigDecl,
+  refusedCollisions: set NameCollision
+}
+
+-- The refusal exists to carry the collisions; one with none would fail a
+-- model that the target can express.
+fact RefusalCarriesCollisions {
+  all g: NameCollisions | some g.refusedCollisions
+}
+
 -------------------------------------------------------------------------------
 -- Safety assertions
 -------------------------------------------------------------------------------

@@ -739,7 +739,7 @@ fn generate_variant_field_validators(out: &mut String, ir: &OxidtrIR) {
             let sig = &s.name;
             let variant = &f.target;
             let field = &f.name;
-            let fn_name = format!("validate_{}_{}", to_snake_case(sig), to_snake_case(field));
+            let fn_name = format!("validate_{}_{}", sig_slug(sig, ir), field_slug(sig, field, ir));
             // `{ .. }` matches a case whether or not it carries fields.
             let access = match f.mult {
                 Multiplicity::One => format!("value.{field}"),
@@ -940,7 +940,7 @@ fn generate_struct(
             writeln!(out, "#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]").unwrap();
         }
         writeln!(out, "pub struct {};", s.name).unwrap();
-        writeln!(out, "pub const {}_INSTANCE: {} = {};", to_snake_case(&s.name).to_uppercase(), s.name, s.name).unwrap();
+        writeln!(out, "pub const {}_INSTANCE: {} = {};", sig_slug(&s.name, ir).to_uppercase(), s.name, s.name).unwrap();
         return;
     }
 
@@ -1454,10 +1454,10 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         };
         for (pname, tname) in &params {
             if primary_sigs.contains(tname) && has_fixture.contains(tname) {
-                let snake = to_snake_case(tname);
+                let snake = sig_slug(tname, ir);
                 writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
             } else if has_fixture.contains(tname) {
-                let snake = to_snake_case(tname);
+                let snake = sig_slug(tname, ir);
                 writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
             } else {
                 writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
@@ -1550,7 +1550,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
                 if has_fixture.contains(tname) {
-                    let snake = to_snake_case(tname);
+                    let snake = sig_slug(tname, ir);
                     writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
                     writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
@@ -1717,11 +1717,11 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         writeln!(out, "fn {test_name}() {{").unwrap();
         if let Some((chain, inner_body)) = multi_var_diversify {
             for (var, sig) in &chain.context_vars {
-                writeln!(out, "    let {var} = default_{}();", to_snake_case(sig)).unwrap();
+                writeln!(out, "    let {var} = default_{}();", sig_slug(sig, ir)).unwrap();
             }
             let mut visiting = HashSet::new();
             let literals = diverse_fixture_literals(ir, &chain.group_sig, &cyclic, &mut visiting);
-            let snake = to_snake_case(&chain.group_sig);
+            let snake = sig_slug(&chain.group_sig, ir);
             // The quantifier chain has already been peeled off, so its binders
             // are no longer in the expression — rebuild the scope from the chain
             // or every field access in the body types as unknown (#128).
@@ -1767,8 +1767,8 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             let owned_param = params.iter().find(|(p, _)| p == owned_var);
             let owner_param = params.iter().find(|(p, _)| p == owner_var);
             if let (Some((opname, otname)), Some((cpname, ctname))) = (owned_param, owner_param) {
-                let owned_snake = to_snake_case(otname);
-                let owner_snake = to_snake_case(ctname);
+                let owned_snake = sig_slug(otname, ir);
+                let owner_snake = sig_slug(ctname, ir);
                 writeln!(out, "    let item = default_{owned_snake}();").unwrap();
                 writeln!(out, "    let mut owner = default_{owner_snake}();").unwrap();
                 writeln!(out, "    owner.{field_name}.insert(item.clone());").unwrap();
@@ -1778,7 +1778,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                 for (pname, tname) in &params {
                     if pname == opname || pname == cpname { continue; }
                     if has_fixture.contains(tname) {
-                        let snake = to_snake_case(tname);
+                        let snake = sig_slug(tname, ir);
                         writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                     } else {
                         writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
@@ -1799,19 +1799,19 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             for (pname, tname) in &params {
                 if primary_sigs.contains(tname) && has_fixture.contains(tname) {
                     if is_existential {
-                        let snake = to_snake_case(tname);
+                        let snake = sig_slug(tname, ir);
                         writeln!(out, "    let {pname} = all_{snake}s();").unwrap();
                     } else {
-                        let snake = to_snake_case(tname);
+                        let snake = sig_slug(tname, ir);
                         writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                     }
                 } else if has_existential_fixture(tname, ir) {
                     // Secondary sig with existential facts: use all_{plural}s()
-                    let snake = to_snake_case(tname);
+                    let snake = sig_slug(tname, ir);
                     writeln!(out, "    let {pname} = all_{snake}s();").unwrap();
                 } else if has_fixture.contains(tname) {
                     // Secondary sig with fixture: use default to avoid empty collection
-                    let snake = to_snake_case(tname);
+                    let snake = sig_slug(tname, ir);
                     writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
                     writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
@@ -1858,7 +1858,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
-                    let snake = to_snake_case(tname);
+                    let snake = sig_slug(tname, ir);
                     let has_b = ir.structures.iter().any(|s| {
                         s.name == *tname && s.fields.iter().any(|f| {
                             matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
@@ -1882,7 +1882,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             writeln!(out, "#[test]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &params {
-                let snake = to_snake_case(tname);
+                let snake = sig_slug(tname, ir);
                 let has_b = ir.structures.iter().any(|s| {
                     s.name == *tname && s.fields.iter().any(|f| {
                         matches!(f.mult, Multiplicity::Set | Multiplicity::Seq)
@@ -1964,12 +1964,12 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                     writeln!(out, "fn {test_name}() {{").unwrap();
                     for p in &op.params {
                         let pname = to_snake_case(&p.name);
-                        let snake = to_snake_case(&p.type_name);
+                        let snake = sig_slug(&p.type_name, ir);
                         writeln!(out, "    let {pname}: {} = default_{snake}();", p.type_name).unwrap();
                     }
                     for (pname, tname) in &fact_params {
                         if has_fixture.contains(tname) {
-                            let snake = to_snake_case(tname);
+                            let snake = sig_slug(tname, ir);
                             writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                         } else {
                             writeln!(out, "    let {pname}: Vec<{tname}> = Vec::new();").unwrap();
@@ -2019,12 +2019,12 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
 
         for (sig_name, patterns) in &anomaly_sigs {
             if !has_fixture.contains(sig_name) { continue; }
-            let snake = to_snake_case(sig_name);
+            let snake = sig_slug(sig_name, ir);
 
             for pattern in patterns {
                 match pattern {
                     analyze::AnomalyPattern::UnconstrainedField { field_name, .. } => {
-                        let field_snake = to_snake_case(field_name);
+                        let field_snake = field_slug(sig_name, field_name, ir);
                         writeln!(out, "/// Anomaly: field `{field_name}` is not constrained by any fact.").unwrap();
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_unconstrained_{snake}_{field_snake}() {{").unwrap();
@@ -2035,7 +2035,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnboundedCollection { field_name, .. } => {
-                        let field_snake = to_snake_case(field_name);
+                        let field_snake = field_slug(sig_name, field_name, ir);
                         writeln!(out, "/// Anomaly: `{field_name}` has no cardinality upper bound.").unwrap();
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_empty_{snake}_{field_snake}() {{").unwrap();
@@ -2045,7 +2045,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
                         writeln!(out).unwrap();
                     }
                     analyze::AnomalyPattern::UnguardedSelfRef { field_name, .. } => {
-                        let field_snake = to_snake_case(field_name);
+                        let field_snake = field_slug(sig_name, field_name, ir);
                         writeln!(out, "/// Anomaly: self-referential field `{field_name}` without NoSelfRef/Acyclic guard.").unwrap();
                         writeln!(out, "#[test]").unwrap();
                         writeln!(out, "fn anomaly_self_ref_{snake}_{field_snake}() {{").unwrap();
@@ -2131,7 +2131,7 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
             writeln!(out, "#[ignore]").unwrap();
             writeln!(out, "fn {test_name}() {{").unwrap();
             for (pname, tname) in &all_params {
-                let snake = to_snake_case(tname);
+                let snake = sig_slug(tname, ir);
                 if has_fixture.contains(tname) {
                     writeln!(out, "    let {pname}: Vec<{tname}> = vec![default_{snake}()];").unwrap();
                 } else {
@@ -2468,7 +2468,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
             if let analyze::ConstraintInfo::Exhaustive { sig_name: s, categories } = c {
                 if s == sig_name {
                     let cats = categories.join(", ");
-                    let fn_name = format!("validate_exhaustive_{}", to_snake_case(sig_name));
+                    let fn_name = format!("validate_exhaustive_{}", sig_slug(sig_name, ir));
                     writeln!(out, "        // Exhaustive: must belong to one of [{cats}]").unwrap();
                     writeln!(out, "        // Call {fn_name}(&value, &[...]) at integration level").unwrap();
                 }
@@ -2550,7 +2550,7 @@ fn generate_newtypes(ir: &OxidtrIR) -> String {
     for c in &all_constraints_final {
         if let analyze::ConstraintInfo::Exhaustive { sig_name, categories } = c {
             if seen_exhaustive.insert(sig_name.clone()) {
-                let fn_name = format!("validate_exhaustive_{}", to_snake_case(sig_name));
+                let fn_name = format!("validate_exhaustive_{}", sig_slug(sig_name, ir));
                 let cats = categories.join(", ");
                 writeln!(out, "/// Validates exhaustive constraint: must belong to one of [{cats}]").unwrap();
                 writeln!(out, "pub fn {fn_name}(item: &{sig_name}, categories: &[&std::collections::BTreeSet<{sig_name}>]) -> Result<(), &'static str> {{").unwrap();
@@ -2916,7 +2916,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             Some(v) if !v.is_empty() => v,
             _ => continue,
         };
-        let enum_snake = to_snake_case(&s.name);
+        let enum_snake = sig_slug(&s.name, ir);
         // Effective fields of a variant = the abstract parent's fields (folded
         // into every variant during lowering) + the variant sig's own fields.
         // This must match generate_enum, or the fixture references a shape the
@@ -2970,7 +2970,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         "BTreeMap::new()".to_string()
                     } else {
                         let is_boxed = f.target == s.name || cyclic.contains(&(variant.clone(), f.name.clone()));
-                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                        default_value_for_field(&f.target, &f.mult, is_boxed, ir)
                     };
                     writeln!(out, "        {}: {},", f.name, val).unwrap();
                 }
@@ -3001,7 +3001,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         let fields: Vec<&IRField> = parent_fields.into_iter().chain(vs.fields.iter()).collect();
         writeln!(out, "/// Factory: `{}` as the `{}` case it was declared as.", parent, variant).unwrap();
         writeln!(out, "#[allow(dead_code)]").unwrap();
-        writeln!(out, "pub fn default_{}() -> {} {{", to_snake_case(&variant), parent).unwrap();
+        writeln!(out, "pub fn default_{}() -> {} {{", sig_slug(&variant, ir), parent).unwrap();
         if fields.is_empty() {
             writeln!(out, "    {parent}::{variant}").unwrap();
         } else {
@@ -3011,7 +3011,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                     "BTreeMap::new()".to_string()
                 } else {
                     let is_boxed = f.target == vs.name || cyclic.contains(&(variant.clone(), f.name.clone()));
-                    default_value_for_field(&f.target, &f.mult, is_boxed)
+                    default_value_for_field(&f.target, &f.mult, is_boxed, ir)
                 };
                 writeln!(out, "        {}: {},", f.name, val).unwrap();
             }
@@ -3034,7 +3034,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         if variant_names.contains(&s.name) || s.is_enum { continue; }
         if is_native_type_alias(&s.name) { continue; }
 
-        let struct_snake = to_snake_case(&s.name);
+        let struct_snake = sig_slug(&s.name, ir);
 
         // Unit struct (no fields): generate a trivial factory.
         if s.fields.is_empty() {
@@ -3098,7 +3098,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                     } else {
                         HashSet::new()
                     };
-                    default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets)
+                    default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets, ir)
                 }
             };
             writeln!(out, "        {}: {},", f.name, val).unwrap();
@@ -3134,11 +3134,11 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         let safe_targets: HashSet<String> = if is_safe_set_population(&s.name, &f.target, ir, &fixture_types) {
                             HashSet::from([f.target.clone()])
                         } else { HashSet::new() };
-                        default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets)
+                        default_value_for_field_inner(&f.target, &f.mult, is_boxed, &safe_targets, ir)
                     }
                 } else {
                     let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                    default_value_for_field(&f.target, &f.mult, is_boxed)
+                    default_value_for_field(&f.target, &f.mult, is_boxed, ir)
                 };
                 writeln!(out, "        {}: {},", f.name, val).unwrap();
             }
@@ -3165,11 +3165,11 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         let val = boundary_value_for_field(ir, &f.target, &f.mult, violation_count);
                         writeln!(out, "        {}: {},", f.name, val).unwrap();
                     } else {
-                        let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+                        let val = default_value_for_field(&f.target, &f.mult, is_boxed, ir);
                         writeln!(out, "        {}: {},", f.name, val).unwrap();
                     }
                 } else {
-                    let val = default_value_for_field(&f.target, &f.mult, is_boxed);
+                    let val = default_value_for_field(&f.target, &f.mult, is_boxed, ir);
                     writeln!(out, "        {}: {},", f.name, val).unwrap();
                 }
             }
@@ -3192,7 +3192,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
             if variant_names.contains(&s.name) || s.is_enum || s.fields.is_empty() { continue; }
             anomaly_sigs_done.insert(sig_name.clone());
 
-            let struct_snake = to_snake_case(sig_name);
+            let struct_snake = sig_slug(sig_name, ir);
             writeln!(out, "/// Anomaly fixture: all set/seq fields empty (edge case for unbounded collections)").unwrap();
             writeln!(out, "#[allow(dead_code)]").unwrap();
             writeln!(out, "pub fn anomaly_empty_{}() -> {} {{", struct_snake, sig_name).unwrap();
@@ -3206,7 +3206,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         Multiplicity::Seq => "Vec::new()".to_string(),
                         _ => {
                             let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                            default_value_for_field(&f.target, &f.mult, is_boxed)
+                            default_value_for_field(&f.target, &f.mult, is_boxed, ir)
                         }
                     }
                 };
@@ -3241,7 +3241,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                 None => continue,
             };
             if s.fields.is_empty() { continue; }
-            let snake_plural = to_snake_case(sig_name);
+            let snake_plural = sig_slug(sig_name, ir);
             writeln!(out, "/// Factory: all instances needed by existential facts for {sig_name}").unwrap();
             writeln!(out, "#[allow(dead_code)]").unwrap();
             writeln!(out, "pub fn all_{snake_plural}s() -> Vec<{sig_name}> {{").unwrap();
@@ -3253,7 +3253,7 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
                         v.clone()
                     } else {
                         let is_boxed = cyclic.contains(&(s.name.clone(), f.name.clone()));
-                        default_value_for_field(&f.target, &f.mult, is_boxed)
+                        default_value_for_field(&f.target, &f.mult, is_boxed, ir)
                     };
                     writeln!(out, "            {}: {},", f.name, val).unwrap();
                 }
@@ -3309,7 +3309,7 @@ fn extract_equality_fields(expr: &Expr, var_name: &str, ir: &OxidtrIR) -> Vec<(S
 /// `set` still collapses, and no fixture can do better without inventing a
 /// field the sig does not have.
 fn distinct_elements(ir: &OxidtrIR, target: &str, count: usize) -> Vec<String> {
-    let default_call = format!("default_{}()", to_snake_case(target));
+    let default_call = format!("default_{}()", sig_slug(target, ir));
     if count == 0 {
         return Vec::new();
     }
@@ -3371,19 +3371,40 @@ fn boundary_value_for_field(ir: &OxidtrIR, target: &str, mult: &Multiplicity, co
                 format!("vec![{}]", items.join(", "))
             }
         }
-        _ => default_value_for_field(target, mult, false),
+        _ => default_value_for_field(target, mult, false, ir),
     }
 }
 
 fn detect_ownership_pattern(expr: &Expr, ir: &OxidtrIR) -> Option<(String, String, String, String)> {
-    super::detect_ownership_pattern(expr, ir, to_snake_plural)
+    super::detect_ownership_pattern(expr, ir, |n| expr_translator::to_snake_plural(n, ir))
 }
 
 
-fn to_snake_plural(name: &str) -> String {
-    let snake = to_snake_case(name);
-    // Simple pluralization: add 's'
-    format!("{snake}s")
+/// The snake-case slug naming any item derived from a sig — its factory, its
+/// anomaly fixture, its validator, the tests over it — made injective across
+/// the model.
+///
+/// `to_snake_case` collapses `Foo` and `foo` onto `foo`, so both sigs asked for
+/// `pub fn default_foo`, for `fn anomaly_unconstrained_foo_tag`, and for every
+/// other item named after them: E0428, several times over. All of these are
+/// internal — neither `extract` nor `check` reads one — so the second sig takes
+/// a numeric suffix rather than the model being rejected (#112).
+fn sig_slug(sig: &str, ir: &OxidtrIR) -> String {
+    crate::backend::disambiguate(sig, ir, to_snake_case)
+}
+
+/// The slug for one of `sig`'s fields, made injective within that sig.
+///
+/// Rust emits field names verbatim, so `item` and `Item` stay distinct in the
+/// struct — but a test named after both sig and field snake-cases them, and
+/// `anomaly_unconstrained_box_item` was emitted twice (#112). The competing
+/// names here are the sig's own fields, not the model's sigs.
+fn field_slug(sig: &str, field: &str, ir: &OxidtrIR) -> String {
+    match ir.structures.iter().find(|s| s.name == sig) {
+        Some(s) => crate::backend::disambiguate_in(
+            field, s.fields.iter().map(|f| f.name.as_str()), to_snake_case),
+        None => to_snake_case(field),
+    }
 }
 
 /// Check if populating a set/seq field of `owner` with `default_target()`
@@ -3415,13 +3436,13 @@ fn is_safe_set_population(
     true
 }
 
-fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool) -> String {
-    default_value_for_field_inner(target, mult, is_boxed, &HashSet::new())
+fn default_value_for_field(target: &str, mult: &Multiplicity, is_boxed: bool, ir: &OxidtrIR) -> String {
+    default_value_for_field_inner(target, mult, is_boxed, &HashSet::new(), ir)
 }
 
 fn default_value_for_field_inner(
     target: &str, mult: &Multiplicity, is_boxed: bool,
-    has_fixture: &HashSet<String>,
+    has_fixture: &HashSet<String>, ir: &OxidtrIR,
 ) -> String {
     // Native type aliases get language-native default values
     if let Some(native_default) = rust_native_default(target) {
@@ -3442,23 +3463,23 @@ fn default_value_for_field_inner(
         Multiplicity::Lone => "None".to_string(),
         Multiplicity::Set => {
             if has_fixture.contains(target) {
-                format!("BTreeSet::from([default_{}()])", to_snake_case(target))
+                format!("BTreeSet::from([default_{}()])", sig_slug(target, ir))
             } else {
                 "BTreeSet::new()".to_string()
             }
         }
         Multiplicity::Seq => {
             if has_fixture.contains(target) {
-                format!("vec![default_{}()]", to_snake_case(target))
+                format!("vec![default_{}()]", sig_slug(target, ir))
             } else {
                 "Vec::new()".to_string()
             }
         }
         Multiplicity::One => {
             if is_boxed {
-                format!("Box::new(default_{}())", to_snake_case(target))
+                format!("Box::new(default_{}())", sig_slug(target, ir))
             } else {
-                format!("default_{}()", to_snake_case(target))
+                format!("default_{}()", sig_slug(target, ir))
             }
         }
     }
@@ -3488,7 +3509,7 @@ fn native_scalar_literal(target: &str, n: i64) -> String {
 /// Render `n` elements of a set/seq field's target type — the same default
 /// element repeated, since this varies cardinality (how many), not element
 /// identity (which ones). `n <= 0` renders an empty collection.
-fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
+fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64, ir: &OxidtrIR) -> String {
     if n <= 0 {
         return match mult {
             Multiplicity::Set => "BTreeSet::new()".to_string(),
@@ -3497,7 +3518,7 @@ fn cardinality_literal(mult: &Multiplicity, target: &str, n: i64) -> String {
     }
     let elem = rust_native_default(target)
         .map(|d| d.to_string())
-        .unwrap_or_else(|| format!("default_{}()", to_snake_case(target)));
+        .unwrap_or_else(|| format!("default_{}()", sig_slug(target, ir)));
     let elems = vec![elem; n as usize].join(", ");
     match mult {
         Multiplicity::Set => format!("BTreeSet::from([{elems}])"),
@@ -3659,8 +3680,8 @@ fn field_diversity_values(
                 return None;
             }
             Some((
-                cardinality_literal(&f.mult, &f.target, candidates[0]),
-                cardinality_literal(&f.mult, &f.target, candidates[1]),
+                cardinality_literal(&f.mult, &f.target, candidates[0], ir),
+                cardinality_literal(&f.mult, &f.target, candidates[1], ir),
             ))
         }
         Multiplicity::One | Multiplicity::Lone if !is_native_type_alias(&f.target) => {
@@ -3704,7 +3725,7 @@ fn diverse_fixture_literals(
     cyclic: &HashSet<(String, String)>,
     visiting: &mut HashSet<String>,
 ) -> Vec<String> {
-    let default_call = format!("default_{}()", to_snake_case(sig_name));
+    let default_call = format!("default_{}()", sig_slug(sig_name, ir));
     if visiting.contains(sig_name) || is_native_type_alias(sig_name) {
         return vec![default_call];
     }
