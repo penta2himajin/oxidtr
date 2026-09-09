@@ -6,7 +6,7 @@
 //! either fails to compile or, in Rust's case, silently ranges a quantifier
 //! over the wrong domain.
 
-use oxidtr::backend;
+use oxidtr::backend::{self, GeneratedFile};
 use oxidtr::ir::{self, nodes::OxidtrIR};
 
 /// `Foo` and `foo` differ only by case, so every leading-lowercase transform
@@ -26,6 +26,43 @@ sig Box { item: one Item, Item: one Item }
 
 fn lower(model: &str) -> OxidtrIR {
     ir::lower(&oxidtr::parser::parse(model).expect("parse")).expect("lower")
+}
+
+fn generate(target: &str, model: &str) -> Vec<GeneratedFile> {
+    let ir = lower(model);
+    match target {
+        "rust" => backend::rust::generate(&ir),
+        "ts" => backend::typescript::generate(&ir),
+        "kt" => backend::jvm::kotlin::generate(&ir),
+        "java" => backend::jvm::java::generate(&ir),
+        "swift" => backend::swift::generate(&ir),
+        "go" => backend::go::generate(&ir),
+        "cs" => backend::csharp::generate(&ir),
+        "lean" => backend::lean::generate(&ir),
+        other => panic!("unknown target {other}"),
+    }
+}
+
+/// Occurrences of `name` as a whole identifier — `foos` must not count `foos2`,
+/// which is the very rename under test.
+fn whole_word_count(content: &str, name: &str) -> usize {
+    let boundary = |c: Option<char>| !c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+    content.match_indices(name)
+        .filter(|(i, _)| {
+            boundary(content[..*i].chars().next_back())
+                && boundary(content[i + name.len()..].chars().next())
+        })
+        .count()
+}
+
+/// Every declaration of `name` in one scope, whatever the language spells it.
+fn declarations_of(content: &str, name: &str) -> usize {
+    content.lines()
+        .filter(|l| ["let ", "const ", "val ", "var ", "List<Foo> ", "List<foo> "]
+            .iter().any(|kw| l.contains(&format!("{kw}{name}")))
+            || l.contains(&format!("{name} :=")))
+        .filter(|l| whole_word_count(l, name) > 0)
+        .count()
 }
 
 // ── the allocator ──────────────────────────────────────────────────────────
@@ -74,6 +111,40 @@ fn allocation_is_deterministic() {
         assert_eq!(backend::disambiguate("foo", &ir, low), "foo2");
     }
 }
+
+// ── domain locals ─────────────────────────────────────────────────────
+
+/// Six backends failed to compile on this; Rust shadowed the local instead, so
+/// both binders ranged over `foo` and `all a: Foo` never touched `Foo`.
+fn assert_domain_local_is_declared_once(target: &str) {
+    let files = generate(target, CASE_PAIR);
+    let tests = files.iter()
+        .find(|f| f.path.to_lowercase().contains("test"))
+        .unwrap_or_else(|| panic!("{target}: no test file"));
+    assert_eq!(declarations_of(&tests.content, "foos"), 1,
+        "{target} declares `foos` more than once:\n{}", tests.content);
+}
+
+// ── factory names ───────────────────────────────────────────────────
+
+/// Rust emitted `pub fn default_foo` twice (E0428) and C# two members with one
+/// signature. Factory names are internal — neither `extract` nor `check` reads
+/// one — so they are separated rather than rejected.
+fn assert_factory_is_defined_once(target: &str, needle: &str) {
+    let files = generate(target, CASE_PAIR);
+    let fixtures = files.iter()
+        .find(|f| f.path.to_lowercase().contains("fixture"))
+        .unwrap_or_else(|| panic!("{target}: no fixture file"));
+    let defs = whole_word_count(&fixtures.content, needle);
+    assert_eq!(defs, 1, "{target} defines `{needle}` {defs} times:\n{}",
+        fixtures.content);
+}
+
+#[test]
+fn rust_declares_its_domain_local_once() { assert_domain_local_is_declared_once("rust"); }
+
+#[test]
+fn rust_defines_its_factory_once() { assert_factory_is_defined_once("rust", "default_foo"); }
 
 // ── field names: rejected, not renamed ─────────────────────────────────────
 

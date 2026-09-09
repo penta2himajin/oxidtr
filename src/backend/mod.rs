@@ -321,21 +321,39 @@ pub fn disambiguate<F>(name: &str, ir: &OxidtrIR, render: F) -> String
 where
     F: Fn(&str) -> String,
 {
+    disambiguate_in(name, ir.structures.iter().map(|s| s.name.as_str()), render)
+}
+
+/// `disambiguate` over an explicit scope.
+///
+/// The competing names are not always the model's sigs. A Rust test is named
+/// after a sig *and* a field — `anomaly_unconstrained_box_item` — so `item` and
+/// `Item` collide there even though Rust emits both field names verbatim and
+/// the struct itself is fine. The scope for that name is one sig's field list,
+/// not the model's structures.
+///
+/// `universe` must be in declaration order; that is what makes the allocation
+/// deterministic.
+pub fn disambiguate_in<'a, I, F>(name: &str, universe: I, render: F) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+    F: Fn(&str) -> String,
+{
     let mut taken: HashSet<String> = HashSet::new();
-    for s in &ir.structures {
-        let base = render(&s.name);
+    for member in universe {
+        let base = render(member);
         let mut candidate = base.clone();
         let mut n = 1usize;
         while taken.contains(&candidate) {
             n += 1;
             candidate = format!("{base}{n}");
         }
-        if s.name == name {
+        if member == name {
             return candidate;
         }
         taken.insert(candidate);
     }
-    // Not a sig — a binder or a synthetic name, which the model does not own.
+    // Not in the scope — a binder or a synthetic name the model does not own.
     render(name)
 }
 
