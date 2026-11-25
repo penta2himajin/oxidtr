@@ -41,7 +41,7 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
 
     files.push(GeneratedFile {
         path: "models.rs".to_string(),
-        content: super::with_sig_multiplicity_markers(generate_models_with_config(ir, config), ir, "//"),
+        content: super::with_model_markers(generate_models_with_config(ir, config), ir, "//"),
     });
 
     // Check if TC functions are needed by any expression (constraints, properties, or fun/pred bodies)
@@ -194,7 +194,7 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
                 members, ir, &self_ref_fields, use_serde, &disj_fields,
                 module_name, &type_to_module, &all_type_names,
             );
-            let markers = super::sig_multiplicity_markers(
+            let markers = super::model_markers(
                 ir, &|s| members.iter().any(|m| m.name == s.name), "//",
             );
             let content = super::append_markers(content, &markers);
@@ -223,7 +223,7 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
     if !ungrouped.is_empty() {
         let mut sub_ir = ir.clone();
         sub_ir.structures = ungrouped.iter().map(|s| (*s).clone()).collect();
-        let markers = super::sig_multiplicity_markers(
+        let markers = super::model_markers(
             ir, &|s| ungrouped.iter().any(|u| u.name == s.name), "//",
         );
         files.push(GeneratedFile {
@@ -1358,9 +1358,10 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
         writeln!(out, "use super::operations::*;").unwrap();
     }
     // Pairwise-diversified fixture literals (see diverse_fixture_literals) can
-    // render `BTreeSet::from([..])`/`BTreeSet::new()` for set-mult fields.
+    // render `BTreeSet::from([..])`/`BTreeSet::new()` for set-mult fields, and
+    // `BTreeMap::new()` for map fields (#153).
     writeln!(out, "#[allow(unused_imports)]").unwrap();
-    writeln!(out, "use std::collections::BTreeSet;").unwrap();
+    writeln!(out, "use std::collections::{{BTreeMap, BTreeSet}};").unwrap();
     writeln!(out).unwrap();
 
     // Property tests from asserts — translated expressions
@@ -2877,9 +2878,13 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
     let needs_btreeset = ir.structures.iter().any(|s| {
         s.fields.iter().any(|f| f.mult == Multiplicity::Set)
     });
-    if needs_btreeset {
+    // A map field's factory is `BTreeMap::new()` whatever its multiplicity (#153).
+    let needs_btreemap = ir.structures.iter().any(|s| {
+        s.fields.iter().any(|f| f.value_type.is_some())
+    });
+    if needs_btreeset || needs_btreemap {
         writeln!(out, "#[allow(unused_imports)]").unwrap();
-        writeln!(out, "use std::collections::BTreeSet;").unwrap();
+        writeln!(out, "use std::collections::{{BTreeMap, BTreeSet}};").unwrap();
     }
     writeln!(out).unwrap();
 

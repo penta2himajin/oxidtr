@@ -6,7 +6,8 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
-    infer_sig_multiplicity(&mut model, &[source]);
+    split_map_targets(&mut model);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Lean);
     model
 }
@@ -135,7 +136,7 @@ fn parse_lean_field(line: &str) -> Option<MinedField> {
     if name.is_empty() || name.starts_with('|') || name.starts_with("--") { return None; }
     let type_str = parts[1].trim();
     let (mult, target) = lean_type_to_mult(type_str);
-    Some(MinedField {
+    Some(MinedField { value_type: None,
         name,
         is_var: false,
         mult,
@@ -161,6 +162,10 @@ fn lean_type_to_mult(lean_type: &str) -> (MinedMultiplicity, String) {
         } else {
             inner
         };
+        // List (K × V) → a map field `set K -> V`
+        if let Some((k, v)) = inner.split_once('×') {
+            return (MinedMultiplicity::Set, format!("{} -> {}", k.trim(), v.trim()));
+        }
         return (MinedMultiplicity::Set, inner.to_string());
     }
 
@@ -240,7 +245,7 @@ fn parse_named_constructor_params(s: &str) -> Vec<MinedField> {
             let type_str = inner[colon + 1..].trim();
             if !name.is_empty() && name.chars().next().map_or(false, |c| c.is_alphanumeric()) {
                 let (mult, target) = lean_type_to_mult(type_str);
-                fields.push(MinedField {
+                fields.push(MinedField { value_type: None,
                     name,
                     is_var: false,
                     mult,

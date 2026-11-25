@@ -5,8 +5,9 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    split_map_targets(&mut model);
     unescape_keyword_fields(&mut model, crate::backend::is_rust_keyword);
-    infer_sig_multiplicity(&mut model, &[source]);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Rust);
     model
 }
@@ -132,7 +133,7 @@ fn extract_raw(source: &str) -> MinedModel {
                                                             let type_str = part[colon + 1..].trim();
                                                             if !type_str.is_empty() {
                                                                 let (mult, target) = rust_type_to_mult(type_str);
-                                                                vfields.push(MinedField { name: fname.to_string(), is_var: false, mult, target, raw_union_type: None });
+                                                                vfields.push(MinedField { value_type: None, name: fname.to_string(), is_var: false, mult, target, raw_union_type: None });
                                                             }
                                                         }
                                                     }
@@ -153,7 +154,7 @@ fn extract_raw(source: &str) -> MinedModel {
                                                             let type_str = vclean[colon + 1..].trim();
                                                             if !type_str.is_empty() {
                                                                 let (mult, target) = rust_type_to_mult(type_str);
-                                                                vfields.push(MinedField { name: fname.to_string(), is_var: false, mult, target, raw_union_type: None });
+                                                                vfields.push(MinedField { value_type: None, name: fname.to_string(), is_var: false, mult, target, raw_union_type: None });
                                                             }
                                                         }
                                                     }
@@ -176,7 +177,7 @@ fn extract_raw(source: &str) -> MinedModel {
                                                     let p = p.trim();
                                                     if p.is_empty() { return None; }
                                                     let (mult, target) = rust_type_to_mult(p);
-                                                    Some(MinedField { name: format!("field{fi}"), is_var: false, mult, target, raw_union_type: None })
+                                                    Some(MinedField { value_type: None, name: format!("field{fi}"), is_var: false, mult, target, raw_union_type: None })
                                                 })
                                                 .collect();
                                             variants.push((vname, vfields));
@@ -270,20 +271,16 @@ fn parse_rust_field(line: &str) -> Option<MinedField> {
     let type_str = rest[colon + 1..].trim().trim_end_matches(',').trim();
     if type_str.is_empty() { return None; }
     let (mult, target) = rust_type_to_mult(type_str);
-    Some(MinedField { name, is_var: false, mult, target, raw_union_type: None })
+    Some(MinedField { value_type: None, name, is_var: false, mult, target, raw_union_type: None })
 }
 
 fn rust_type_to_mult(rust_type: &str) -> (MinedMultiplicity, String) {
     let t = rust_type.trim();
-    // BTreeMap<K, V> or HashMap<K, V> → treat as Set of K (with V info lost for now)
-    if let Some(inner) = strip_wrapper(t, "BTreeMap<", ">") {
-        // Extract key type (first element before comma)
-        let key = inner.split(',').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
-    }
-    if let Some(inner) = strip_wrapper(t, "HashMap<", ">") {
-        let key = inner.split(',').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
+    // BTreeMap<K, V> or HashMap<K, V> → a map field `set K -> V`
+    for prefix in ["BTreeMap<", "HashMap<"] {
+        if let Some(target) = strip_wrapper(t, prefix, ">").and_then(map_target) {
+            return (MinedMultiplicity::Set, target);
+        }
     }
     if let Some(inner) = strip_wrapper(t, "Vec<", ">") {
         return (MinedMultiplicity::Seq, inner.to_string());

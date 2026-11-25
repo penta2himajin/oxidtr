@@ -14,7 +14,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.swift".to_string(),
-        content: super::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
+        content: super::with_model_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);
@@ -1515,6 +1515,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &SwiftContext) -> String {
             for (i, f) in s.fields.iter().enumerate() {
                 let comma = if i < s.fields.len() - 1 { "," } else { "" };
                 let val = match &f.mult {
+                    // A map field is a dictionary whatever its multiplicity (#153).
+                    _ if f.value_type.is_some() => "[:]".to_string(),
                     Multiplicity::Set => "Set()".to_string(),
                     Multiplicity::Seq => "[]".to_string(),
                     _ => swift_default_value(&f.target, &f.mult),

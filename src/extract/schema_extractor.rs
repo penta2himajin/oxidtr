@@ -410,7 +410,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
     // Case 1: "oneOf": [...{"$ref":...} or {"type":"<prim>"}, {"type":"null"}] -> Lone
     if body.contains("\"oneOf\"") && body.contains("\"null\"") {
         if let Some(target) = extract_target_from(body) {
-            return Some(MinedField {
+            return Some(MinedField { value_type: None,
                 name: name.to_string(),
                 is_var: false,
                 mult: MinedMultiplicity::Lone,
@@ -430,7 +430,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
                 } else {
                     MinedMultiplicity::Seq
                 };
-                return Some(MinedField {
+                return Some(MinedField { value_type: None,
                     name: name.to_string(),
                     is_var: false,
                     mult,
@@ -443,7 +443,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
 
     // Case 3: "$ref": "#/definitions/X" -> One
     if let Some(target) = extract_ref_from(body) {
-        return Some(MinedField {
+        return Some(MinedField { value_type: None,
             name: name.to_string(),
             is_var: false,
             mult: MinedMultiplicity::One,
@@ -454,7 +454,7 @@ fn classify_field(name: &str, body: &str) -> Option<MinedField> {
 
     // Case 4: inline primitive "type": "string"/"integer"/"number"/"boolean" -> One
     if let Some(target) = extract_primitive_type(body) {
-        return Some(MinedField {
+        return Some(MinedField { value_type: None,
             name: name.to_string(),
             is_var: false,
             mult: MinedMultiplicity::One,

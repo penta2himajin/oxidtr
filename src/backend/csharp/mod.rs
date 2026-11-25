@@ -14,7 +14,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.cs".to_string(),
-        content: super::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
+        content: super::with_model_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     if !ir.operations.is_empty() {
@@ -219,7 +219,7 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
     writeln!(out, "{{").unwrap();
     for f in &s.fields {
         write_field_annotations(out, f);
-        let type_str = mult_to_cs_type(&f.target, &f.mult);
+        let type_str = cs_field_type(f);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
     }
 
@@ -358,7 +358,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
         writeln!(out, "{{").unwrap();
         for f in parent_fields {
             write_field_annotations(out, f);
-            let type_str = mult_to_cs_type(&f.target, &f.mult);
+            let type_str = cs_field_type(f);
             writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
         }
         writeln!(out, "}}").unwrap();
@@ -371,7 +371,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
                 writeln!(out, "{{").unwrap();
                 for f in &child_fields {
                     write_field_annotations(out, f);
-                    let type_str = mult_to_cs_type(&f.target, &f.mult);
+                    let type_str = cs_field_type(f);
                     writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
                 }
                 writeln!(out, "}}").unwrap();
@@ -482,7 +482,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         let init_fields: Vec<(&IRField, String)> = inherited_and_own_fields(ir, s)
             .into_iter()
             .map(|(owner, f)| {
-                let val = default_value_for(&f.target, &f.mult, &owner, ir, &fixture_types, ctx);
+                let val = cs_empty_map(f).unwrap_or_else(|| default_value_for(&f.target, &f.mult, &owner, ir, &fixture_types, ctx));
                 (f, val)
             })
             .collect();
@@ -577,7 +577,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
                 .map(|st| st.fields.clone()).unwrap_or_default();
             let fields_str = own_fields.iter().chain(s.fields.iter())
                 .map(|f| format!("{} = {}", capitalize(&f.name),
-                    default_value_for(&f.target, &f.mult, chosen, ir, &fixture_types, ctx)))
+                    cs_empty_map(f).unwrap_or_else(|| default_value_for(&f.target, &f.mult, chosen, ir, &fixture_types, ctx))))
                 .collect::<Vec<_>>().join(", ");
             format!("new {} {{ {fields_str} }}", cs_ident(chosen))
         };
@@ -608,6 +608,7 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
             for f in &s.fields {
                 let upper = capitalize(&f.name);
                 let val = match &f.mult {
+                    _ if f.value_type.is_some() => cs_empty_map(f).unwrap(),
                     // Properties are always `List<T>` (see `mult_to_cs_type`), even
                     // for a `set` field — `HashSet<T>` here would be a type mismatch.
                     Multiplicity::Set | Multiplicity::Seq => format!("new List<{}>()", cs_type_name(&f.target)),
@@ -713,6 +714,9 @@ fn boundary_value_for(
     ir: &OxidtrIR, sig_name: &str, f: &IRField,
     fixture_types: &HashSet<String>, ctx: &CsContext,
 ) -> String {
+    if let Some(map) = cs_empty_map(f) {
+        return map;
+    }
     match f.mult {
         Multiplicity::One => one_value_for(&f.target, fixture_types, ctx, ir),
         Multiplicity::Lone => "null".to_string(),
@@ -1232,6 +1236,20 @@ fn generate_tests(ir: &OxidtrIR) -> (String, Coverage) {
 /// Build a field/param/return type string, resolving Alloy native aliases
 /// (Int/Str/Bool/Float) to their C# primitives and escaping any remaining
 /// identifier that collides with a C# reserved word.
+/// The property type of a field. A map field `K -> V` is a `Dictionary`
+/// whatever its multiplicity; it used to lose `V` and become `K` (#153).
+fn cs_field_type(f: &IRField) -> String {
+    match &f.value_type {
+        Some(vt) => format!("Dictionary<{}, {}>", cs_type_name(&f.target), cs_type_name(vt)),
+        None => mult_to_cs_type(&f.target, &f.mult),
+    }
+}
+
+/// The empty value of a map field, or `None` if `f` is not one.
+fn cs_empty_map(f: &IRField) -> Option<String> {
+    f.value_type.as_ref().map(|_| format!("new {}()", cs_field_type(f)))
+}
+
 fn mult_to_cs_type(target: &str, mult: &Multiplicity) -> String {
     let ty = cs_type_name(target);
     match mult {

@@ -136,9 +136,11 @@ pub fn render_files(model: &MinedModel) -> Vec<RenderedFile> {
                 }
             }
             for f in &sig.fields {
-                if let Some(target_mod) = sig_owner.get(&f.target) {
-                    if target_mod != m {
-                        deps.insert(target_mod.clone());
+                for ty in std::iter::once(&f.target).chain(f.value_type.as_ref()) {
+                    if let Some(target_mod) = sig_owner.get(ty) {
+                        if target_mod != m {
+                            deps.insert(target_mod.clone());
+                        }
                     }
                 }
             }
@@ -235,6 +237,8 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
         if let Some(raw) = &f.raw_union_type {
             let first_type = raw.split(" | ").next().unwrap_or(&f.target).trim();
             writeln!(out, "  {var_prefix}{}: {mult} {}{comma} -- union: {raw}", f.name, first_type).unwrap();
+        } else if let Some(value) = &f.value_type {
+            writeln!(out, "  {var_prefix}{}: {mult} {} -> {value}{comma}", f.name, f.target).unwrap();
         } else {
             writeln!(out, "  {var_prefix}{}: {mult} {}{comma}", f.name, f.target).unwrap();
         }

@@ -6,7 +6,8 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
-    infer_sig_multiplicity(&mut model, &[source]);
+    split_map_targets(&mut model);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::CSharp);
     model
 }
@@ -198,7 +199,7 @@ fn parse_cs_property(line: &str) -> Option<MinedField> {
     let (mult, target) = cs_type_to_mult(type_str);
     let field_name = to_camel_case(&prop_name);
 
-    Some(MinedField { name: field_name, is_var: false, mult, target, raw_union_type: None })
+    Some(MinedField { value_type: None, name: field_name, is_var: false, mult, target, raw_union_type: None })
 }
 
 fn split_type_and_name(s: &str) -> Option<(&str, String)> {
@@ -237,9 +238,11 @@ fn cs_type_to_mult(cs_type: &str) -> (MinedMultiplicity, String) {
         }
     }
 
-    // Dictionary<K,V> → map (treat as set for now)
-    if t.starts_with("Dictionary<") || t.starts_with("IDictionary<") {
-        return (MinedMultiplicity::Set, t.to_string());
+    // Dictionary<K, V> → a map field `set K -> V`
+    for prefix in ["Dictionary<", "IDictionary<"] {
+        if let Some(target) = t.strip_prefix(prefix).and_then(|r| r.strip_suffix('>')).and_then(map_target) {
+            return (MinedMultiplicity::Set, target);
+        }
     }
 
     (MinedMultiplicity::One, t.to_string())

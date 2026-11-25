@@ -263,14 +263,19 @@ pub fn natural_sig_multiplicity(ir: &OxidtrIR, s: &StructureNode) -> SigMultipli
     SigMultiplicity::One
 }
 
-/// Marker lines stating the multiplicity of every sig in `ir` (filtered by
-/// `include`) whose multiplicity differs from `natural_sig_multiplicity`.
+/// Marker lines stating what the target's types cannot, for every sig in
+/// `ir` that `include` accepts:
 ///
-/// No target's type system says how many atoms a sig has, so without these
-/// `extract` reads `one sig Config` and `lone sig Cache` back as plain sigs.
-/// Each line names its sig, so `extract` applies it wherever in the output
-/// it stands. `comment` is the target's line-comment token.
-pub fn sig_multiplicity_markers(
+/// - the multiplicity of a sig whose multiplicity differs from
+///   `natural_sig_multiplicity` (`oxidtr: lone sig Cache`) — no target's type
+///   system says how many atoms a sig has (#156);
+/// - the multiplicity of a map field other than `set`
+///   (`oxidtr: field Holder.table: one Str -> Int`) — every target writes
+///   `one K -> V` and `set K -> V` as the same map type (#153).
+///
+/// Each line names what it is about, so `extract` applies it wherever in the
+/// output it stands. `comment` is the target's line-comment token.
+pub fn model_markers(
     ir: &OxidtrIR,
     include: &dyn Fn(&StructureNode) -> bool,
     comment: &str,
@@ -288,12 +293,27 @@ pub fn sig_multiplicity_markers(
         };
         out.push_str(&format!("{comment} oxidtr: {decl} {} — {meaning}\n", s.name));
     }
+    for s in ir.structures.iter().filter(|s| include(s)) {
+        for f in &s.fields {
+            let Some(value) = &f.value_type else { continue };
+            let mult = match f.mult {
+                Multiplicity::Set => continue,
+                Multiplicity::One => "one",
+                Multiplicity::Lone => "lone",
+                Multiplicity::Seq => "seq",
+            };
+            out.push_str(&format!(
+                "{comment} oxidtr: field {}.{}: {mult} {} -> {value} — a map type cannot state this multiplicity\n",
+                s.name, f.name, f.target,
+            ));
+        }
+    }
     out
 }
 
 /// `content` with the multiplicity markers for `ir` appended, if any.
-pub fn with_sig_multiplicity_markers(content: String, ir: &OxidtrIR, comment: &str) -> String {
-    append_markers(content, &sig_multiplicity_markers(ir, &|_| true, comment))
+pub fn with_model_markers(content: String, ir: &OxidtrIR, comment: &str) -> String {
+    append_markers(content, &model_markers(ir, &|_| true, comment))
 }
 
 /// `content` followed by `markers`, separated by a blank line.
