@@ -16,7 +16,7 @@ type User struct {
     assert_eq!(sig.name, "User");
     assert_eq!(sig.fields.len(), 2);
     assert_eq!(sig.fields[0].name, "name");
-    assert_eq!(sig.fields[0].target, "string");
+    assert_eq!(sig.fields[0].target, "Str"); // `string` reads back as the Alloy name (#155)
     assert_eq!(sig.fields[0].mult, MinedMultiplicity::One);
 }
 

@@ -511,6 +511,57 @@ pub fn is_language_primitive(name: &str) -> bool {
     )
 }
 
+/// The Alloy name (`Str` / `Int` / `Float` / `Bool`) of a language primitive,
+/// or `None` if `native` is not one.
+///
+/// The generator's own table (`backend::native_type_for`) is consulted first,
+/// so whatever a backend emits reads back as the alias it came from. The
+/// synonyms after it are the other widths a hand-written program uses for
+/// the same Alloy type (`i32`, `Integer`, `uint32`, ...).
+///
+/// TypeScript's `number` stands for both `Int` and `Float`; it reads back as
+/// `Int`, the alias the backend table lists first.
+pub fn alloy_primitive(lang: crate::backend::TargetLang, native: &str) -> Option<&'static str> {
+    use crate::backend::TargetLang as L;
+    if let Some(alias) = crate::backend::reverse_native_type(lang, native) {
+        return Some(alias);
+    }
+    let alias = match (lang, native) {
+        (L::Rust, "i8" | "i16" | "i32" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "isize") => "Int",
+        (L::Rust, "f32") => "Float",
+        (L::Rust, "str") => "Str",
+        (L::TypeScript, "bigint") => "Int",
+        (L::Kotlin, "Int" | "Short" | "Byte" | "UInt" | "ULong" | "UShort" | "UByte") => "Int",
+        (L::Kotlin, "Float") => "Float",
+        (L::Java, "int" | "Integer" | "Long" | "short" | "Short" | "byte" | "Byte") => "Int",
+        (L::Java, "Double" | "float" | "Float") => "Float",
+        (L::Java, "Boolean") => "Bool",
+        (L::Swift, "Int8" | "Int16" | "Int32" | "Int64" | "UInt" | "UInt8" | "UInt16" | "UInt32" | "UInt64") => "Int",
+        (L::Swift, "Float") => "Float",
+        (L::Go, "int" | "int8" | "int16" | "int32" | "uint" | "uint8" | "uint16" | "uint32" | "uint64" | "byte") => "Int",
+        (L::Go, "float32") => "Float",
+        (L::CSharp, "int" | "short" | "byte" | "sbyte" | "uint" | "ulong" | "ushort" | "Int32" | "Int64") => "Int",
+        (L::CSharp, "float" | "decimal" | "Double" | "Single") => "Float",
+        (L::CSharp, "String") => "Str",
+        (L::CSharp, "Boolean") => "Bool",
+        (L::Lean, "Nat") => "Int",
+        _ => return None,
+    };
+    Some(alias)
+}
+
+/// Rewrite every field type that is a language primitive to its Alloy name,
+/// so the mined model names the same types the original model did.
+pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::TargetLang) {
+    for sig in &mut model.sigs {
+        for field in &mut sig.fields {
+            if let Some(alias) = alloy_primitive(lang, &field.target) {
+                field.target = alias.to_string();
+            }
+        }
+    }
+}
+
 /// Returns true if the name looks like a generic type parameter.
 /// Matches single uppercase letters (T, S, K, V, ...) and all-uppercase 2-char names (IO, ID, ...).
 /// Mixed-case 2-char names (Go, Of, Io) are treated as user-defined types.
@@ -577,6 +628,7 @@ pub fn resolve_external_types(model: &mut MinedModel) {
             if !defined.contains(&field.target)
                 && is_valid_sig_name(&field.target)
                 && !is_language_primitive(&field.target)
+                && !crate::backend::is_native_type_alias(&field.target)
                 && !is_type_parameter(&field.target)
             {
                 referenced.insert(field.target.clone());
