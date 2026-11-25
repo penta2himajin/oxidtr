@@ -137,8 +137,10 @@ fn is_discriminant_field(f: &MinedField) -> bool {
     if f.name == "kind" { return true; }
     // `type` fields are discriminants when the target looks like a literal tag
     // (starts with lowercase — e.g. 'heading', 'paragraph')
+    // — but not a primitive type: `type: string` is a field like any other.
     if f.name == "type" {
-        return f.target.chars().next().map_or(false, |c| c.is_ascii_lowercase());
+        return f.target.chars().next().map_or(false, |c| c.is_ascii_lowercase())
+            && !is_language_primitive(&f.target);
     }
     false
 }

@@ -5,6 +5,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    unescape_keyword_fields(&mut model, crate::backend::is_rust_keyword);
     infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Rust);
     model

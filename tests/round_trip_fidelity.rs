@@ -215,3 +215,43 @@ fn rendered_alloy_keeps_sig_multiplicity() {
         }
     }
 }
+
+// ── #152: fields named after keywords ────────────────────────────────────────
+
+/// Keywords of at least one target, plus `long_`, a legal Alloy name that
+/// looks like an escaped `long` and must stay distinct from it.
+const KEYWORDS: &str = "\
+sig Kw {
+  use: one Int, where: one Int, long: one Int, long_: one Int, class: one Int,
+  type: one Int, match: one Int, fn: one Int, val: one Int, when: one Int,
+  default: one Int, self: one Int, short: one Int, object: one Int, mod: one Int
+}
+";
+
+#[test]
+fn keyword_field_names_round_trip() {
+    let names = ["use", "where", "long", "long_", "class", "type", "match", "fn", "val",
+                 "when", "default", "self", "short", "object", "mod"];
+    for target in TARGETS {
+        let m = round_trip(KEYWORDS, target);
+        let got: Vec<&str> = sig(&m, target, "Kw").fields.iter().map(|f| f.name.as_str()).collect();
+        for name in names {
+            assert!(got.contains(&name), "[{target}] field `{name}` not recovered; got {got:?}");
+        }
+        assert_eq!(got.len(), names.len(), "[{target}] fields: {got:?}");
+        let diffs = check_diffs(KEYWORDS, target);
+        assert!(diffs.is_empty(), "[{target}] check reported:\n{}", diffs.join("\n"));
+    }
+}
+
+#[test]
+fn keyword_escape_is_injective_and_reversible() {
+    use oxidtr::backend::{escape_keyword, unescape_keyword, is_java_keyword};
+    for name in ["long", "long_", "long__", "length", "x_", "_"] {
+        let escaped = escape_keyword(name, is_java_keyword);
+        assert_eq!(unescape_keyword(&escaped, is_java_keyword), name, "round trip of `{name}`");
+    }
+    assert_eq!(escape_keyword("long", is_java_keyword), "long_");
+    assert_eq!(escape_keyword("long_", is_java_keyword), "long__");
+    assert_eq!(escape_keyword("length", is_java_keyword), "length");
+}

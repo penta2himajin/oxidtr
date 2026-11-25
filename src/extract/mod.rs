@@ -564,6 +564,15 @@ pub fn alloy_primitive(lang: crate::backend::TargetLang, native: &str) -> Option
     Some(alias)
 }
 
+/// Undo `backend::escape_keyword` on every field name.
+pub fn unescape_keyword_fields(model: &mut MinedModel, is_keyword: fn(&str) -> bool) {
+    for sig in &mut model.sigs {
+        for field in &mut sig.fields {
+            field.name = crate::backend::unescape_keyword(&field.name, is_keyword);
+        }
+    }
+}
+
 /// Rewrite every field type that is a language primitive to its Alloy name,
 /// so the mined model names the same types the original model did.
 pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::TargetLang) {
