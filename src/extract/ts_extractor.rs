@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::TypeScript);
     model
 }
@@ -41,7 +42,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 .into_iter()
                 .filter(|f| !is_discriminant_field(f))
                 .collect();
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: real_fields,
                 is_abstract: false,
@@ -54,7 +55,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // export type Foo = A & B & C → sig with intersection_of
         if let Some((name, components)) = parse_type_intersection(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: vec![],
                 is_abstract: false,
@@ -75,7 +76,7 @@ fn extract_raw(source: &str) -> MinedModel {
             let is_string_literal = variants.iter().all(|v| v.starts_with('"') || v.starts_with('\''));
             if is_string_literal {
                 // String literal union → abstract sig + one sig per literal
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,
@@ -86,7 +87,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 });
                 for v in &variants {
                     let vname = v.trim_matches('"').trim_matches('\'').to_string();
-                    sigs.push(MinedSig {
+                    sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                         name: vname,
                         fields: vec![],
                         is_abstract: false,
@@ -98,7 +99,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 }
             } else {
                 // Discriminated union → mark parent as abstract, set parent on existing sigs
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,

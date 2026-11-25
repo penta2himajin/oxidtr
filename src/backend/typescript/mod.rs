@@ -36,7 +36,7 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &TsBackendConfig) -> Vec<Gene
 
     files.push(GeneratedFile {
         path: "models.ts".to_string(),
-        content: generate_models(ir),
+        content: super::with_sig_multiplicity_markers(generate_models(ir), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);

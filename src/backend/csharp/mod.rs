@@ -14,7 +14,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.cs".to_string(),
-        content: generate_models(ir, &ctx),
+        content: super::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     if !ir.operations.is_empty() {
@@ -218,9 +218,7 @@ fn generate_class(out: &mut String, s: &StructureNode, ir: &OxidtrIR, _ctx: &CsC
     writeln!(out, "public class {}", cs_ident(&s.name)).unwrap();
     writeln!(out, "{{").unwrap();
     for f in &s.fields {
-        if f.mult == Multiplicity::Seq {
-            writeln!(out, "    // @alloy: seq").unwrap();
-        }
+        write_field_annotations(out, f);
         let type_str = mult_to_cs_type(&f.target, &f.mult);
         writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
     }
@@ -359,6 +357,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
         writeln!(out, "public abstract class {}", cs_ident(&s.name)).unwrap();
         writeln!(out, "{{").unwrap();
         for f in parent_fields {
+            write_field_annotations(out, f);
             let type_str = mult_to_cs_type(&f.target, &f.mult);
             writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
         }
@@ -371,9 +370,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &CsContext) {
                 writeln!(out, "public class {} : {}", cs_ident(v), cs_ident(&s.name)).unwrap();
                 writeln!(out, "{{").unwrap();
                 for f in &child_fields {
-                    if f.mult == Multiplicity::Seq {
-                        writeln!(out, "    // @alloy: seq").unwrap();
-                    }
+                    write_field_annotations(out, f);
                     let type_str = mult_to_cs_type(&f.target, &f.mult);
                     writeln!(out, "    public {} {} {{ get; set; }}", type_str, expr_translator::cs_property_name(&s.name, &f.name)).unwrap();
                 }
@@ -1537,4 +1534,16 @@ fn inherited_and_own_fields<'a>(ir: &'a OxidtrIR, s: &'a StructureNode) -> Vec<(
     }
     out.extend(s.fields.iter().map(|f| (s.name.clone(), f)));
     out
+}
+
+/// The comments `extract` reads to recover what a property's C# type cannot
+/// say: that it is `var` (every property has a setter) or a `seq` (a `List`
+/// is also how a `set` is written).
+fn write_field_annotations(out: &mut String, f: &IRField) {
+    if f.is_var {
+        writeln!(out, "    // @alloy: var").unwrap();
+    }
+    if f.mult == Multiplicity::Seq {
+        writeln!(out, "    // @alloy: seq").unwrap();
+    }
 }

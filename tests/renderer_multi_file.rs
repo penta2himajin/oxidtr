@@ -2,7 +2,7 @@ use oxidtr::extract::renderer::{render_files, RenderedFile};
 use oxidtr::extract::{MinedModel, MinedSig, MinedField, MinedMultiplicity};
 
 fn sig_with_module(name: &str, module: Option<&str>, parent: Option<&str>, fields: Vec<MinedField>) -> MinedSig {
-    MinedSig {
+    MinedSig { multiplicity: oxidtr::parser::ast::SigMultiplicity::Default,
         name: name.to_string(),
         fields,
         is_abstract: false,

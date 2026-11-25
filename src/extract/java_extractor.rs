@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Java);
     model
 }
@@ -36,7 +37,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // public record Foo(Type field, ...) {} → sig
         if let Some((name, fields)) = parse_record(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract: false,
@@ -56,7 +57,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // public sealed interface Foo permits A, B {} → abstract sig
         if let Some(name) = parse_sealed_interface(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: vec![],
                 is_abstract: true,
@@ -70,7 +71,21 @@ fn extract_raw(source: &str) -> MinedModel {
         // public enum Foo { A, B } → abstract sig + children
         if let Some(name) = parse_enum(trimmed) {
             let variants = collect_enum_entries(&mut lines);
-            sigs.push(MinedSig {
+            // `enum Foo { INSTANCE }` is how the generator writes a fieldless
+            // `one sig Foo`: a single value, not an abstract sig with a case.
+            if variants.len() == 1 && variants[0] == "INSTANCE" {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
+                    name,
+                    fields: vec![],
+                    is_abstract: false,
+                    is_var: sig_is_var,
+                    parent: None,
+                    source_location: format!("line {}", line_num + 1),
+                    intersection_of: vec![], module: None,
+                });
+                continue;
+            }
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
@@ -80,7 +95,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 intersection_of: vec![], module: None,
             });
             for v in variants {
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: v,
                     fields: vec![],
                     is_abstract: false,
@@ -93,19 +108,21 @@ fn extract_raw(source: &str) -> MinedModel {
         }
 
         // public [abstract] class Foo [extends Bar] { → sig (with optional parent)
-        // Skip class parsing if records are present (generated Java 16+ code uses records;
-        // classes in that context are infrastructure helpers, not domain types).
-        if !has_records {
-            if let Some((name, is_abstract, parent)) = parse_class_decl(trimmed) {
-                let fields = if trimmed.contains('{') && trimmed.contains('}') {
-                    // Single-line class: `public abstract class Block extends Node {}`
-                    vec![]
-                } else if trimmed.contains('{') {
-                    collect_class_fields(&mut lines)
-                } else {
-                    vec![]
-                };
-                sigs.push(MinedSig {
+        // Where records are present (generated Java 16+ code), a class is a
+        // sig only if it has instance fields: the generator writes a sig with
+        // `var` fields as a class, and its helpers (`Fixtures`, `Helpers`)
+        // as classes of static methods.
+        if let Some((name, is_abstract, parent)) = parse_class_decl(trimmed) {
+            let fields = if trimmed.contains('{') && trimmed.contains('}') {
+                // Single-line class: `public abstract class Block extends Node {}`
+                vec![]
+            } else if trimmed.contains('{') {
+                collect_class_fields(&mut lines)
+            } else {
+                vec![]
+            };
+            if !has_records || !fields.is_empty() {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name,
                     fields,
                     is_abstract,
@@ -278,19 +295,38 @@ fn collect_class_fields(
     fields
 }
 
-/// Parse a private field: `private Type name;`
+/// Parse an instance field declaration: `[modifiers] Type name;`.
+///
+/// Accepts the generator's form (`/* @NotNull */ final long fixed;`,
+/// `/* MUTABLE: ... */ long counter;`) and the hand-written `private Type
+/// name;`. Static members, methods and initialised constants are not fields.
 fn parse_class_field(line: &str) -> Option<MinedField> {
-    let trimmed = line.trim().trim_end_matches(';').trim();
-    // Must start with "private" (Java convention for fields)
-    let rest = trimmed.strip_prefix("private ")?;
-    // Split into type and name
-    let parts: Vec<&str> = rest.split_whitespace().collect();
-    if parts.len() < 2 { return None; }
-    let name = parts.last()?.to_string();
-    if name.is_empty() || !name.chars().next()?.is_ascii_lowercase() { return None; }
-    let type_str = parts[..parts.len() - 1].join(" ");
-    let (mult, target) = java_type_to_mult(&type_str);
-    Some(MinedField { name, is_var: false, mult, target, raw_union_type: None })
+    let trimmed = line.trim();
+    if !trimmed.ends_with(';') || trimmed.contains('(') || trimmed.contains('=') {
+        return None;
+    }
+    let is_var = trimmed.contains("MUTABLE:");
+    let without_markers = trimmed.replace("/* @NotNull */", "");
+    let without_markers = match (without_markers.find("/* MUTABLE"), without_markers.find("*/")) {
+        (Some(a), Some(_)) => {
+            let end = without_markers[a..].find("*/").map(|e| a + e + 2).unwrap();
+            format!("{}{}", &without_markers[..a], &without_markers[end..])
+        }
+        _ => without_markers,
+    };
+    let mut rest = without_markers.trim().trim_end_matches(';').trim();
+    loop {
+        let before = rest;
+        for modifier in ["private ", "public ", "protected ", "final ", "transient ", "volatile "] {
+            rest = rest.strip_prefix(modifier).unwrap_or(rest).trim_start();
+        }
+        if rest.starts_with("static ") { return None; }
+        if rest == before { break; }
+    }
+    let mut field = parse_java_param(rest)?;
+    if field.name.is_empty() || !field.name.chars().next()?.is_ascii_lowercase() { return None; }
+    field.is_var = field.is_var || is_var;
+    Some(field)
 }
 
 fn parse_java_param(param: &str) -> Option<MinedField> {

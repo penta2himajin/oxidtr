@@ -88,7 +88,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
     if has_json_key(body, "enum") {
         // Simple enum: "enum": ["A", "B", ...]
         let variants = extract_enum_values(body);
-        sigs.push(MinedSig {
+        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name: name.to_string(),
             fields: vec![],
             is_abstract: true,
@@ -98,7 +98,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
             intersection_of: vec![], module: None,
         });
         for v in variants {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: v,
                 fields: vec![],
                 is_abstract: false,
@@ -110,7 +110,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
         }
     } else if body.contains("\"oneOf\"") && body.contains("\"discriminator\"") {
         // Discriminated union with kind
-        sigs.push(MinedSig {
+        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name: name.to_string(),
             fields: vec![],
             is_abstract: true,
@@ -124,7 +124,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
     } else if body.contains("\"type\": \"object\"") {
         // Regular struct with properties
         let fields = extract_object_properties(body);
-        sigs.push(MinedSig {
+        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name: name.to_string(),
             fields,
             is_abstract: false,
@@ -135,7 +135,7 @@ fn parse_definition(name: &str, body: &str) -> Vec<MinedSig> {
         });
     } else if body.contains("\"type\": \"string\"") {
         // Bare abstract sig (enum with no known variants)
-        sigs.push(MinedSig {
+        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name: name.to_string(),
             fields: vec![],
             is_abstract: true,
@@ -248,7 +248,7 @@ fn extract_discriminated_variants(parent_name: &str, body: &str, loc: &str) -> V
             }
         }
 
-        sigs.push(MinedSig {
+        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name: variant_name,
             fields,
             is_abstract: false,

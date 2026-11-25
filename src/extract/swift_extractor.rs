@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Swift);
     model
 }
@@ -31,7 +32,7 @@ fn extract_raw(source: &str) -> MinedModel {
         // struct Foo: ... { → sig
         if let Some(name) = parse_struct(trimmed) {
             let fields = collect_struct_fields(&mut lines);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract: false,
@@ -45,7 +46,7 @@ fn extract_raw(source: &str) -> MinedModel {
         // enum Foo: ... { → abstract sig
         if let Some(name) = parse_enum(trimmed) {
             let (variants, variant_sigs) = collect_enum_cases(&name, &mut lines);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
@@ -220,7 +221,7 @@ fn collect_enum_cases(
             };
 
             variant_names.push(pascal_name.clone());
-            variant_sigs.push(MinedSig {
+            variant_sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: pascal_name,
                 fields,
                 is_abstract: false,

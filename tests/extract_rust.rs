@@ -358,7 +358,7 @@ fn resolve_external_types_filters_type_parameters() {
     // fields with target "T" or "S" should not become placeholder sigs
     let mut model = oxidtr::extract::MinedModel {
         sigs: vec![
-            oxidtr::extract::MinedSig {
+            oxidtr::extract::MinedSig { multiplicity: oxidtr::parser::ast::SigMultiplicity::Default,
                 name: "Container".to_string(),
                 is_var: false,
                 fields: vec![

@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Kotlin);
     model
 }
@@ -37,7 +38,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 collect_until_close_paren(trimmed, &mut lines)
             };
             let fields = extract_constructor_params(&full_text);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract: false,
@@ -54,7 +55,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // object Foo → singleton sig (one sig)
         if let Some(name) = parse_object_decl(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: vec![],
                 is_abstract: false,
@@ -67,7 +68,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // data object Foo : Parent() → child sig (unit)
         if let Some((name, parent)) = parse_data_object(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: vec![],
                 is_abstract: false,
@@ -80,7 +81,7 @@ fn extract_raw(source: &str) -> MinedModel {
 
         // sealed class Foo → abstract sig
         if let Some(name) = parse_sealed_class(trimmed) {
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields: vec![],
                 is_abstract: true,
@@ -94,7 +95,7 @@ fn extract_raw(source: &str) -> MinedModel {
         // enum class Foo { A, B } → abstract sig + children
         if let Some(name) = parse_enum_class(trimmed) {
             let variants = collect_enum_entries(&mut lines);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
@@ -104,7 +105,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 intersection_of: vec![], module: None,
             });
             for v in variants {
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: v,
                     fields: vec![],
                     is_abstract: false,

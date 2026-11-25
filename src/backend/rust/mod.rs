@@ -39,7 +39,7 @@ pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<Ge
 
     files.push(GeneratedFile {
         path: "models.rs".to_string(),
-        content: generate_models_with_config(ir, config),
+        content: super::with_sig_multiplicity_markers(generate_models_with_config(ir, config), ir, "//"),
     });
 
     // Check if TC functions are needed by any expression (constraints, properties, or fun/pred bodies)
@@ -192,6 +192,10 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
                 members, ir, &self_ref_fields, use_serde, &disj_fields,
                 module_name, &type_to_module, &all_type_names,
             );
+            let markers = super::sig_multiplicity_markers(
+                ir, &|s| members.iter().any(|m| m.name == s.name), "//",
+            );
+            let content = super::append_markers(content, &markers);
 
             files.push(GeneratedFile { path: file_path, content });
             mod_rs_items.push(file_name);
@@ -217,9 +221,12 @@ fn generate_modular(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedF
     if !ungrouped.is_empty() {
         let mut sub_ir = ir.clone();
         sub_ir.structures = ungrouped.iter().map(|s| (*s).clone()).collect();
+        let markers = super::sig_multiplicity_markers(
+            ir, &|s| ungrouped.iter().any(|u| u.name == s.name), "//",
+        );
         files.push(GeneratedFile {
             path: "models.rs".to_string(),
-            content: generate_models_with_config(&sub_ir, config),
+            content: super::append_markers(generate_models_with_config(&sub_ir, config), &markers),
         });
     }
 

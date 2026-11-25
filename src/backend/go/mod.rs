@@ -14,7 +14,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "models.go".to_string(),
-        content: generate_models(ir, &ctx),
+        content: super::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);
@@ -246,7 +246,11 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
                 }
             }
 
-            // Go fields are mutable by default; no annotation needed for var fields
+            // Go fields are mutable by default, so nothing in the type says
+            // which ones are `var`; the annotation is what `extract` reads.
+            if f.is_var {
+                writeln!(out, "\t// @alloy: var").unwrap();
+            }
             if f.mult == Multiplicity::Seq {
                 writeln!(out, "\t// @alloy: seq").unwrap();
             }

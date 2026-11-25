@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Go);
     model
 }
@@ -61,7 +62,7 @@ fn extract_raw(source: &str) -> MinedModel {
         let trimmed = line.trim();
 
         // Detect @alloy: var sig annotation for the next declaration
-        if trimmed.contains("@alloy: var sig") {
+        if trimmed.contains("@alloy: var sig") || trimmed.contains("Alloy var sig:") {
             prev_line_has_var_sig = true;
             continue;
         }
@@ -76,7 +77,7 @@ fn extract_raw(source: &str) -> MinedModel {
             } else {
                 collect_go_struct_fields(&mut lines)
             };
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract: false,
@@ -91,7 +92,7 @@ fn extract_raw(source: &str) -> MinedModel {
         if let Some(name) = parse_go_interface(trimmed) {
             if is_inline_empty_interface(trimmed) {
                 // Empty interface on same line: `type Foo interface{}`
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name,
                     fields: vec![],
                     is_abstract: true,
@@ -103,7 +104,7 @@ fn extract_raw(source: &str) -> MinedModel {
             } else {
                 // Multi-line interface: consume body, check for marker method
                 let _marker_method = collect_go_interface_marker(&mut lines);
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name,
                     fields: vec![],
                     is_abstract: true,
@@ -118,7 +119,7 @@ fn extract_raw(source: &str) -> MinedModel {
         // type Foo int (enum type)
         if let Some(name) = parse_go_type_alias(trimmed) {
             if let Some(variants) = iota_types.get(&name) {
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: name.clone(),
                     fields: vec![],
                     is_abstract: true,
@@ -128,7 +129,7 @@ fn extract_raw(source: &str) -> MinedModel {
                     intersection_of: vec![], module: None,
                 });
                 for v in variants {
-                    sigs.push(MinedSig {
+                    sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                         name: v.clone(),
                         fields: vec![],
                         is_abstract: false,

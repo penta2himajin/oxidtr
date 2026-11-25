@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::CSharp);
     model
 }
@@ -20,7 +21,7 @@ fn extract_raw(source: &str) -> MinedModel {
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
-        if trimmed.contains("@alloy: var sig") {
+        if trimmed.contains("@alloy: var sig") || trimmed.contains("Alloy var sig:") {
             prev_line_has_var_sig = true;
             continue;
         }
@@ -31,7 +32,7 @@ fn extract_raw(source: &str) -> MinedModel {
         // public enum Foo { ... }
         if let Some(name) = parse_cs_enum(trimmed) {
             let variants = collect_cs_enum_variants(&mut lines);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
@@ -41,7 +42,7 @@ fn extract_raw(source: &str) -> MinedModel {
                 intersection_of: vec![], module: None,
             });
             for v in variants {
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: v,
                     fields: vec![],
                     is_abstract: false,
@@ -64,7 +65,7 @@ fn extract_raw(source: &str) -> MinedModel {
             } else {
                 collect_cs_class_fields(&mut lines)
             };
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract,
