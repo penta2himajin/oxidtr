@@ -4,6 +4,12 @@
 use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
+    let mut model = extract_raw(source);
+    normalize_primitive_types(&mut model, crate::backend::TargetLang::Rust);
+    model
+}
+
+fn extract_raw(source: &str) -> MinedModel {
     let mut sigs = Vec::new();
     let mut fact_candidates = Vec::new();
 

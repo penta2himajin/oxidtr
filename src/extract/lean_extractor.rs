@@ -5,6 +5,12 @@
 use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
+    let mut model = extract_raw(source);
+    normalize_primitive_types(&mut model, crate::backend::TargetLang::Lean);
+    model
+}
+
+fn extract_raw(source: &str) -> MinedModel {
     // Reserved tokens are emitted wrapped in guillemets (`«end»`, `«in»`), so
     // unwrap those before any identifier is read. Only *keyword* wrappers are
     // unwrapped, which matters because this also runs over hand-written Lean,

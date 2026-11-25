@@ -156,7 +156,9 @@ jobs:
           grep -q 'disabled_test_' generated-swift/Tests.swift || echo "No cross-tests in Swift (OK)"
 
   target-validation:
-    runs-on: ubuntu-latest
+    # `swift-actions/setup-swift@v2` refuses Ubuntu 26.04, which `ubuntu-latest`
+    # now resolves to, and the job then stops before any target is checked.
+    runs-on: ubuntu-24.04
     needs: test
     steps:
       - uses: actions/checkout@v4
