@@ -29,14 +29,6 @@ fn extract_raw(source: &str) -> MinedModel {
 
             // At top level (depth 0), check for struct/enum
             if depth == 0 {
-                // `pub struct ValidatedBag(pub Bag);` is the wrapper the
-                // generator puts in newtypes.rs around a validated `Bag`, not
-                // a sig of its own (#158).
-                if is_validated_newtype(trimmed) {
-                    prev_line_has_var_sig = false;
-                    i += 1;
-                    continue;
-                }
                 if let Some(name) = parse_type_decl(trimmed, "pub struct ") {
                     let sig_is_var = prev_line_has_var_sig;
                     prev_line_has_var_sig = false;
@@ -263,13 +255,6 @@ fn extract_raw(source: &str) -> MinedModel {
     MinedModel { sigs, fact_candidates }
 }
 
-
-/// `pub struct Validated<X>(pub <X>);`
-fn is_validated_newtype(line: &str) -> bool {
-    let Some(name) = parse_type_decl(line, "pub struct ") else { return false };
-    let Some(inner) = name.strip_prefix("Validated") else { return false };
-    !inner.is_empty() && line.ends_with(&format!("(pub {inner});"))
-}
 
 fn parse_type_decl(line: &str, prefix: &str) -> Option<String> {
     let rest = line.strip_prefix(prefix)?;

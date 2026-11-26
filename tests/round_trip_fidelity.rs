@@ -393,6 +393,10 @@ fn seq_and_set_stay_distinct() {
 
 /// The classes a backend writes beside the model — fixtures, helpers,
 /// operations, tests — are not sigs.
+///
+/// Rust's `ValidatedBag(pub Bag)` newtype is not one of them: the self-hosted
+/// model declares those wrappers as sigs (`models/oxidtr/validated.als`), and
+/// CI checks that extracting `src/` with the generated code finds them.
 #[test]
 fn helper_classes_are_not_sigs() {
     let src = format!("{SEQUENCES}pred addItem[b: one Bag, i: one Item] {{ i in b.unordered }}\n");
@@ -401,7 +405,9 @@ fn helper_classes_are_not_sigs() {
     for target in TARGETS {
         let m = round_trip(&src, target);
         let extra: Vec<&str> = m.sigs.iter().map(|s| s.name.as_str())
-            .filter(|n| !declared.iter().any(|d| d == n)).collect();
+            .filter(|n| !declared.iter().any(|d| d == n))
+            .filter(|n| !(target == "rust" && n.strip_prefix("Validated").is_some_and(|d| declared.iter().any(|x| x == d))))
+            .collect();
         assert!(extra.is_empty(), "[{target}] sigs the model does not declare: {extra:?}");
     }
 }
