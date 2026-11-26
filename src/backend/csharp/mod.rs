@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let flattened = backend::flatten_concrete_inheritance(ir);
+    let ir = &flattened;
     let _cases = backend::UnitVariantScope::new(ir);
     let ctx = CsContext::from_ir(ir);
     let mut files = Vec::new();

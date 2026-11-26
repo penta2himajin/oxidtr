@@ -157,6 +157,11 @@ fn rust_self_hosted_split_crate_compiles() {
 fn rust_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "d.id == d.id"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. Rust already typed both as the parent and checked the case; pinned so the other targets' fix keeps company (#154).
         ("fields_declared_with_a_case",
@@ -441,6 +446,11 @@ fn ts_self_hosted_tests_pass() {
 fn ts_adversarial_models_typecheck() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "d.id === d.id"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. `Red` is a string literal, not a type; `Circle` is an interface whose factory the fixtures had to define (#154).
         ("fields_declared_with_a_case",
@@ -652,6 +662,10 @@ one sig Teal extends Hue {}
 abstract sig Figure { tag2: one Int }
 sig Disc extends Figure { r: one Int }
 sig Plate { disc: one Disc, hue: one Crimson }
+
+sig Account { owner: one Int }
+sig Savings extends Account { rate: one Int }
+fact SavingsOwners { all s: Savings | s.owner = s.owner }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -676,6 +690,8 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     // data needs that case's factory (#154).
     ("field_declared_with_a_constant_case", "Hue.Crimson"),
     ("field_declared_with_a_data_case", "defaultDisc()"),
+    // A field inherited from a concrete parent, read through the child (#157).
+    ("field_inherited_from_a_concrete_parent", "s.owner"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -935,6 +951,11 @@ fn go_self_hosted_compiles_and_tests_pass() {
 fn go_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "d.Id == d.Id"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. `Red` is an iota constant, not a type (#154).
         ("fields_declared_with_a_case",
@@ -1144,6 +1165,11 @@ fn swift_self_hosted_compiles() {
 #[ignore]
 fn swift_adversarial_models_compile() {
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "d.id == d.id"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. (#154)
         ("fields_declared_with_a_case",
@@ -1439,6 +1465,11 @@ fn cs_self_hosted_compiles() {
 fn cs_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "d.Id == d.Id"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. `Red` is an enum member, not a type, and has no factory of its own (#154).
         ("fields_declared_with_a_case",
@@ -2074,6 +2105,11 @@ fn lean_self_hosted_compiles() {
 fn lean_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A field inherited from a concrete parent, read through the child.
+        // The child used to be emitted without the parent's fields (#157).
+        ("field_inherited_from_a_concrete_parent",
+         "sig Base { id: one Int }\nsig Derived extends Base { extra: lone Str }\nfact DerivedIds { all d: Derived | d.id = d.id }",
+         "structure Derived where\n  id : Int"),
         // Fields declared with a case of an enum: one that carries data and
         // one that is a constant. (#154)
         ("fields_declared_with_a_case",

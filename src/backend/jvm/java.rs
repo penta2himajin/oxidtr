@@ -75,7 +75,7 @@ impl JvmLang for JavaLang {
 }
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
-    let escaped = crate::backend::escape_keyword_idents(ir, crate::backend::is_java_keyword);
+    let escaped = crate::backend::escape_keyword_idents(&crate::backend::flatten_concrete_inheritance(ir), crate::backend::is_java_keyword);
     let ir = &escaped;
     let _cases = crate::backend::UnitVariantScope::new(ir);
     let ctx = JvmContext::from_ir(ir);
