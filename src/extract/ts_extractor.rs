@@ -6,7 +6,8 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
-    infer_sig_multiplicity(&mut model, &[source]);
+    split_map_targets(&mut model);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::TypeScript);
     model
 }
@@ -409,7 +410,7 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
     let is_single_quoted = type_str.starts_with('\'') && type_str.ends_with('\'') && !type_str.contains(" | ");
     if is_double_quoted || is_single_quoted {
         let quote_char = if is_double_quoted { '"' } else { '\'' };
-        return Some(MinedField {
+        return Some(MinedField { value_type: None,
             name,
             is_var: !has_readonly,
             mult: MinedMultiplicity::One,
@@ -426,16 +427,15 @@ fn parse_ts_field(line: &str) -> Option<MinedField> {
 
     let raw_union = detect_union_type(type_str);
     let (mult, target) = ts_type_to_mult(type_str, optional);
-    Some(MinedField { name, is_var: !has_readonly, mult, target, raw_union_type: raw_union })
+    Some(MinedField { value_type: None, name, is_var: !has_readonly, mult, target, raw_union_type: raw_union })
 }
 
 fn ts_type_to_mult(ts_type: &str, optional: bool) -> (MinedMultiplicity, String) {
     let t = ts_type.trim();
 
-    // Map<K, V> → set of K (V info lost)
-    if let Some(inner) = strip_wrapper_ts(t, "Map<", ">") {
-        let key = inner.split(',').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
+    // Map<K, V> → a map field `set K -> V`
+    if let Some(target) = strip_wrapper_ts(t, "Map<", ">").and_then(map_target) {
+        return (MinedMultiplicity::Set, target);
     }
     // Set<T> → set
     if let Some(inner) = strip_wrapper_ts(t, "Set<", ">") {

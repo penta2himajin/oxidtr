@@ -6,7 +6,8 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
-    infer_sig_multiplicity(&mut model, &[source]);
+    split_map_targets(&mut model);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Go);
     model
 }
@@ -296,7 +297,7 @@ fn parse_go_field(line: &str) -> Option<MinedField> {
     let (mult, target) = go_type_to_mult(type_str);
     // Convert Go field name (PascalCase) to camelCase for Alloy
     let field_name = to_camel_case(name);
-    Some(MinedField { name: field_name, is_var: false, mult, target, raw_union_type: None })
+    Some(MinedField { value_type: None, name: field_name, is_var: false, mult, target, raw_union_type: None })
 }
 
 fn go_type_to_mult(go_type: &str) -> (MinedMultiplicity, String) {
@@ -314,11 +315,15 @@ fn go_type_to_mult(go_type: &str) -> (MinedMultiplicity, String) {
         return (MinedMultiplicity::Set, inner.to_string());
     }
 
-    // map[K]V → set (key as target)
+    // map[K]V → a map field `set K -> V`
     if t.starts_with("map[") {
         let bracket_end = t.find(']').unwrap_or(t.len());
         let key = &t[4..bracket_end];
-        return (MinedMultiplicity::Set, key.to_string());
+        let value = t.get(bracket_end + 1..).unwrap_or("").trim();
+        if value.is_empty() {
+            return (MinedMultiplicity::Set, key.to_string());
+        }
+        return (MinedMultiplicity::Set, format!("{key} -> {value}"));
     }
 
     (MinedMultiplicity::One, t.to_string())

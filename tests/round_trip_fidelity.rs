@@ -255,3 +255,55 @@ fn keyword_escape_is_injective_and_reversible() {
     assert_eq!(escape_keyword("long_", is_java_keyword), "long__");
     assert_eq!(escape_keyword("length", is_java_keyword), "length");
 }
+
+// ── #153: map fields ─────────────────────────────────────────────────────────
+
+/// Map fields of every multiplicity, keyed by a primitive and by a struct sig
+/// (which Go must key by pointer), with a sig and a primitive as the value.
+const MAPS: &str = "\
+abstract sig Color {}
+one sig Red extends Color {}
+one sig Green extends Color {}
+sig Holder {
+  table:  one Str -> Int,
+  lookup: set Holder -> Color,
+  byName: lone Str -> Holder,
+  name:   one Str
+}
+fact LookupStable { all h: Holder | h.lookup = h.lookup }
+";
+
+#[test]
+fn map_fields_keep_their_value_type_and_multiplicity() {
+    use oxidtr::extract::MinedMultiplicity::*;
+    for target in TARGETS {
+        let m = round_trip(MAPS, target);
+        for (name, mult, key, value) in [
+            ("table", One, "Str", "Int"),
+            ("lookup", Set, "Holder", "Color"),
+            ("byName", Lone, "Str", "Holder"),
+        ] {
+            let f = field(&m, target, "Holder", name);
+            assert_eq!((&f.mult, f.target.as_str(), f.value_type.as_deref()), (&mult, key, Some(value)),
+                "[{target}] Holder.{name}");
+        }
+        assert_eq!(field(&m, target, "Holder", "name").value_type, None, "[{target}] Holder.name");
+        let diffs: Vec<String> = check_diffs(MAPS, target).into_iter()
+            .filter(|d| !d.starts_with("[DECLINED]")).collect();
+        assert!(diffs.is_empty(), "[{target}] check reported:\n{}", diffs.join("\n"));
+    }
+}
+
+/// The mined model renders a map field as Alloy that parses back to the same
+/// field — Kotlin and Lean used to write `Map<String` and `String × Int`.
+#[test]
+fn rendered_map_fields_parse_back() {
+    for target in TARGETS {
+        let als = extract::renderer::render(&round_trip(MAPS, target));
+        let model = parser::parse(&als).unwrap_or_else(|e| panic!("[{target}] {e:?}:\n{als}"));
+        let ir = ir::lower(&model).unwrap();
+        let holder = ir.structures.iter().find(|s| s.name == "Holder").unwrap();
+        let table = holder.fields.iter().find(|f| f.name == "table").unwrap();
+        assert_eq!(table.value_type.as_deref(), Some("Int"), "[{target}]:\n{als}");
+    }
+}

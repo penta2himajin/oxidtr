@@ -15,7 +15,7 @@ fn sig_with_module(name: &str, module: Option<&str>, parent: Option<&str>, field
 }
 
 fn field(name: &str, target: &str) -> MinedField {
-    MinedField {
+    MinedField { value_type: None,
         name: name.to_string(),
         is_var: false,
         mult: MinedMultiplicity::One,

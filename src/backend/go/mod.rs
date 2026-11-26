@@ -14,7 +14,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "models.go".to_string(),
-        content: super::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
+        content: super::with_model_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);
@@ -230,7 +230,7 @@ fn generate_struct(out: &mut String, s: &StructureNode, ir: &OxidtrIR, ctx: &GoC
             let resolved_target = resolve_type(TargetLang::Go, &f.target);
             let type_str = if let Some(vt) = &f.value_type {
                 let resolved_vt = resolve_type(TargetLang::Go, vt);
-                format!("map[{}]{}", resolved_target, resolved_vt)
+                format!("map[{}]{}", go_map_key(ctx, &resolved_target), resolved_vt)
             } else {
                 mult_to_go_type(&resolved_target, &f.mult, ctx.cyclic_fields.contains(&(s.name.clone(), f.name.clone())))
             };
@@ -435,7 +435,7 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
                         // (#105).
                         let resolved = resolve_type(TargetLang::Go, &f.target);
                         let type_str = if let Some(vt) = &f.value_type {
-                            format!("map[{}]{}", resolved, resolve_type(TargetLang::Go, vt))
+                            format!("map[{}]{}", go_map_key(ctx, &resolved), resolve_type(TargetLang::Go, vt))
                         } else {
                             mult_to_go_type(&resolved, &f.mult, false)
                         };
@@ -1534,7 +1534,22 @@ fn go_return_type(type_name: &str, mult: &Multiplicity) -> String {
 
 /// A self-referential `one` field is boxed to *T and cannot be built eagerly —
 /// constructing it would recurse forever — so the fixture leaves it nil.
+/// The key type of a map field. Go requires map keys to be comparable, and a
+/// struct holding a slice or map is not, so a key that is a struct sig is
+/// held by pointer — which keys the map by atom identity, as an Alloy
+/// relation is (#153). Native types, int enums and interfaces stay as they are.
+fn go_map_key(ctx: &GoContext, key: &str) -> String {
+    match ctx.struct_map.get(key) {
+        Some(s) if !s.is_enum => format!("*{key}"),
+        _ => key.to_string(),
+    }
+}
+
 fn go_field_default(sig: &str, f: &IRField, ctx: &GoContext) -> String {
+    // A nil map reads as empty; the key or value's own default is not a map (#153).
+    if f.value_type.is_some() {
+        return "nil".to_string();
+    }
     if f.mult == Multiplicity::One
         && ctx.cyclic_fields.contains(&(sig.to_string(), f.name.clone())) {
         return "nil".to_string();

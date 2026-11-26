@@ -6,8 +6,9 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    split_map_targets(&mut model);
     unescape_keyword_fields(&mut model, crate::backend::is_kotlin_keyword);
-    infer_sig_multiplicity(&mut model, &[source]);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Kotlin);
     model
 }
@@ -247,10 +248,16 @@ fn split_top_level_commas(s: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut depth = 0;
+    let mut prev = ' ';
     for ch in s.chars() {
+        // `<`/`>` nest type arguments (`Map<String, Long>`); the `>` of an
+        // arrow (`(A) -> B`) does not close one.
+        let arrow = ch == '>' && prev == '-';
+        prev = ch;
         match ch {
-            '(' => { depth += 1; current.push(ch); }
+            '(' | '<' => { depth += 1; current.push(ch); }
             ')' => { depth -= 1; current.push(ch); }
+            '>' if !arrow => { depth -= 1; current.push(ch); }
             ',' if depth == 0 => {
                 parts.push(current.clone());
                 current.clear();
@@ -278,7 +285,7 @@ fn parse_kt_param(param: &str) -> Option<MinedField> {
     if name.is_empty() { return None; }
     let type_str = rest[colon + 1..].trim();
     let (mult, target) = kt_type_to_mult(type_str);
-    Some(MinedField { name, is_var, mult, target, raw_union_type: None })
+    Some(MinedField { value_type: None, name, is_var, mult, target, raw_union_type: None })
 }
 
 fn strip_annotations(s: &str) -> String {
@@ -337,14 +344,11 @@ fn kt_type_to_mult(kt_type: &str) -> (MinedMultiplicity, String) {
     if let Some(inner) = t.strip_suffix('?') {
         return (MinedMultiplicity::Lone, inner.to_string());
     }
-    // Map<K, V> → set of K (V info lost)
-    if let Some(inner) = strip_wrapper(t, "Map<", ">") {
-        let key = inner.split(',').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
-    }
-    if let Some(inner) = strip_wrapper(t, "MutableMap<", ">") {
-        let key = inner.split(',').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
+    // Map<K, V> → a map field `set K -> V`
+    for prefix in ["Map<", "MutableMap<"] {
+        if let Some(target) = strip_wrapper(t, prefix, ">").and_then(map_target) {
+            return (MinedMultiplicity::Set, target);
+        }
     }
     // Set<T> → set
     if let Some(inner) = strip_wrapper(t, "Set<", ">") {

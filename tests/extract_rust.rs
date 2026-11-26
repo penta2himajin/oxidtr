@@ -362,14 +362,14 @@ fn resolve_external_types_filters_type_parameters() {
                 name: "Container".to_string(),
                 is_var: false,
                 fields: vec![
-                    oxidtr::extract::MinedField {
+                    oxidtr::extract::MinedField { value_type: None,
                         name: "value".to_string(),
                         is_var: false,
                         target: "T".to_string(),
                         mult: MinedMultiplicity::One,
                         raw_union_type: None,
                     },
-                    oxidtr::extract::MinedField {
+                    oxidtr::extract::MinedField { value_type: None,
                         name: "handler".to_string(),
                         is_var: false,
                         target: "Handler".to_string(),

@@ -82,7 +82,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.java".to_string(),
-        content: crate::backend::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
+        content: crate::backend::with_model_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);
@@ -308,7 +308,8 @@ fn generate_record(out: &mut String, s: &StructureNode, ir: &OxidtrIR, disj_fiel
                 let resolved_target = resolve_type(TargetLang::Java, &f.target);
                 let java_type = if let Some(vt) = &f.value_type {
                     let resolved_vt = resolve_type(TargetLang::Java, vt);
-                    format!("Map<{}, {}>", resolved_target, resolved_vt)
+                    // Type arguments are references: `Map<String, long>` does not parse (#153).
+                    format!("Map<{}, {}>", java_boxed(&resolved_target), java_boxed(&resolved_vt))
                 } else if let Some(_raw) = &f.raw_union_type {
                     // Union types → Object
                     match f.mult {
@@ -484,7 +485,7 @@ fn generate_sealed_interface(out: &mut String, s: &StructureNode, ctx: &JvmConte
                             let resolved = resolve_type(TargetLang::Java, &f.target);
                             let t = if let Some(vt) = &f.value_type {
                                 let rv = resolve_type(TargetLang::Java, vt);
-                                format!("Map<{}, {}>", resolved, rv)
+                                format!("Map<{}, {}>", java_boxed(&resolved), java_boxed(&rv))
                             } else if let Some(_raw) = &f.raw_union_type {
                                 "Object".to_string()
                             } else {
@@ -1284,6 +1285,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
     let mut out = String::new();
 
     writeln!(out, "import java.util.List;").unwrap();
+    // A map field's factory is `Map.of()` (#153).
+    if ir.structures.iter().any(|s| s.fields.iter().any(|f| f.value_type.is_some())) {
+        writeln!(out, "import java.util.Map;").unwrap();
+    }
     writeln!(out, "import java.util.Set;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "class Fixtures {{").unwrap();
@@ -1456,6 +1461,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             for (i, f) in s.fields.iter().enumerate() {
                 let comma = if i < s.fields.len() - 1 { "," } else { "" };
                 let val = match &f.mult {
+                    // A map field is a map whatever its multiplicity (#153).
+                    _ if f.value_type.is_some() => "Map.of()".to_string(),
                     Multiplicity::Set => "Set.of()".to_string(),
                     Multiplicity::Seq => "List.of()".to_string(),
                     _ => java_default_value(&f.target, &f.mult),

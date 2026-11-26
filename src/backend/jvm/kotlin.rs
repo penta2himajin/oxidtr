@@ -68,7 +68,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.kt".to_string(),
-        content: crate::backend::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
+        content: crate::backend::with_model_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);
@@ -1379,6 +1379,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             for (i, f) in s.fields.iter().enumerate() {
                 let comma = if i < s.fields.len() - 1 { "," } else { "" };
                 let val = match &f.mult {
+                    // A map field is a map whatever its multiplicity (#153).
+                    _ if f.value_type.is_some() => "emptyMap()".to_string(),
                     Multiplicity::Set => "emptySet()".to_string(),
                     Multiplicity::Seq => "emptyList()".to_string(),
                     _ => kt_default_value(&f.target, &f.mult),

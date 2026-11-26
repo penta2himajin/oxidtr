@@ -157,6 +157,10 @@ fn rust_self_hosted_split_crate_compiles() {
 fn rust_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. The fixtures build it with `BTreeMap::new()`, which needs its own import (#153).
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "pub table: BTreeMap<String, i64>"),
         // Fields named after keywords of some target. Rust has no field named `use`: the name gets a trailing underscore, and `extract` removes it (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
@@ -432,6 +436,10 @@ fn ts_self_hosted_tests_pass() {
 fn ts_adversarial_models_typecheck() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. (#153)
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "readonly table: Map<string, number>"),
         // Fields named after keywords of some target. TS property names may be keywords, so nothing is escaped (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
@@ -624,6 +632,9 @@ check NoChief for 3
 
 sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }
 fact KwFact { all k: Kw | k.class = k.long }
+
+sig Holder { table: one Str -> Int, lookup: set Holder -> Kw, name: one Str }
+fact LookupStable { all h: Holder | h.lookup = h.lookup }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -641,6 +652,8 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     // `class` is a keyword of both languages: the field gets a trailing
     // underscore, and `extract` removes it (#152).
     ("keyword_field_names", "class_"),
+    // Type arguments are references: `Map<String, long>` did not parse (#153).
+    ("map_fields", "Map<String, Long>"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -900,6 +913,10 @@ fn go_self_hosted_compiles_and_tests_pass() {
 fn go_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. `Holder` holds maps, so it is not comparable: the key is a pointer (#153).
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "Lookup map[*Holder]Color"),
         // Fields named after keywords of some target. Go capitalises fields, which no lowercase keyword survives (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
@@ -1100,6 +1117,10 @@ fn swift_self_hosted_compiles() {
 #[ignore]
 fn swift_adversarial_models_compile() {
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. Every fixture gives a map an empty dictionary (#153).
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "table: [:]"),
         // Fields named after keywords of some target. Swift escapes a reserved word with backticks (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
@@ -1386,6 +1407,10 @@ fn cs_self_hosted_compiles() {
 fn cs_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. It used to lose its value type and become `string` (#153).
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "public Dictionary<string, long> Table { get; set; }"),
         // Fields named after keywords of some target. C# capitalises properties, which no lowercase keyword survives (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
@@ -2012,6 +2037,10 @@ fn lean_self_hosted_compiles() {
 fn lean_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Map fields keyed by a primitive and by a struct sig. (#153)
+        ("map_fields",
+         "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
+         "table : List (String × Int)"),
         // Fields named after keywords of some target. Lean escapes a keyword with guillemets (#152).
         ("keyword_field_names",
          "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",

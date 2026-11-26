@@ -139,7 +139,7 @@ fn mine_directory_multi_lang(dir: &Path) -> Result<MergeResult, String> {
     // Merge all language models
     let (mut merged, conflicts) = merge_models(per_lang);
     let sources: Vec<&str> = all_sources.iter().map(String::as_str).collect();
-    infer_sig_multiplicity(&mut merged, &sources);
+    apply_model_markers(&mut merged, &sources);
 
     Ok(MergeResult { model: merged, conflicts, sources_used })
 }
@@ -364,7 +364,7 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
 
     // A file sees only its own sigs and markers; decide again over all of them.
     let sources: Vec<&str> = sources.iter().map(String::as_str).collect();
-    infer_sig_multiplicity(&mut merged, &sources);
+    apply_model_markers(&mut merged, &sources);
 
     Ok(merged)
 }
@@ -455,6 +455,8 @@ pub struct MinedField {
     pub is_var: bool, // Alloy 6: mutable field
     pub mult: MinedMultiplicity,
     pub target: String,
+    /// `Some(V)` for a map field `K -> V`; `target` then holds `K`.
+    pub value_type: Option<String>,
     /// Raw union type string preserved from source (e.g. "number | string").
     pub raw_union_type: Option<String>,
 }
@@ -564,6 +566,55 @@ pub fn alloy_primitive(lang: crate::backend::TargetLang, native: &str) -> Option
     Some(alias)
 }
 
+/// Split the arguments of a generic type at its top-level commas:
+/// `String, Map<K, V>` → [`String`, `Map<K, V>`].
+pub fn split_type_args(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0i32;
+    for ch in s.chars() {
+        match ch {
+            '<' | '(' | '[' => depth += 1,
+            '>' | ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+                continue;
+            }
+            _ => {}
+        }
+        current.push(ch);
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+/// The target an extractor gives a map field whose key and value are the two
+/// type arguments in `args`: `K -> V`, which `split_map_targets` turns into
+/// `target` and `value_type`. `None` if `args` are not two types.
+pub fn map_target(args: &str) -> Option<String> {
+    match split_type_args(args).as_slice() {
+        [k, v] => Some(format!("{k} -> {v}")),
+        _ => None,
+    }
+}
+
+/// Move the value type of every `K -> V` target into `value_type`.
+/// A pointer key (`*Holder`, Go's map key for a struct) names its sig.
+pub fn split_map_targets(model: &mut MinedModel) {
+    for sig in &mut model.sigs {
+        for field in &mut sig.fields {
+            if let Some((k, v)) = field.target.split_once(" -> ") {
+                let key = k.trim().trim_start_matches('*').to_string();
+                field.value_type = Some(v.trim().to_string());
+                field.target = key;
+            }
+        }
+    }
+}
+
 /// Undo `backend::escape_keyword` on every field name.
 pub fn unescape_keyword_fields(model: &mut MinedModel, is_keyword: fn(&str) -> bool) {
     for sig in &mut model.sigs {
@@ -581,6 +632,9 @@ pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::T
             if let Some(alias) = alloy_primitive(lang, &field.target) {
                 field.target = alias.to_string();
             }
+            if let Some(alias) = field.value_type.as_deref().and_then(|v| alloy_primitive(lang, v)) {
+                field.value_type = Some(alias.to_string());
+            }
         }
     }
 }
@@ -592,7 +646,7 @@ pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::T
 /// `backend::natural_sig_multiplicity` — and an `oxidtr: lone sig Cache`
 /// marker anywhere in `sources` overrides it. Markers name their sig, so
 /// this runs once over every file of a directory after its sigs are merged.
-pub fn infer_sig_multiplicity(model: &mut MinedModel, sources: &[&str]) {
+pub fn apply_model_markers(model: &mut MinedModel, sources: &[&str]) {
     use crate::parser::ast::SigMultiplicity;
     let natural: Vec<SigMultiplicity> = model.sigs.iter().map(|s| {
         let find = |name: &str| model.sigs.iter().find(|x| x.name == name);
@@ -617,21 +671,55 @@ pub fn infer_sig_multiplicity(model: &mut MinedModel, sources: &[&str]) {
         s.multiplicity = mult;
     }
     for source in sources {
-        for (name, mult) in sig_multiplicity_markers(source) {
-            if let Some(s) = model.sigs.iter_mut().find(|s| s.name == name) {
-                s.multiplicity = mult;
+        for marker in model_markers(source) {
+            match marker {
+                Marker::Sig { name, mult } => {
+                    if let Some(s) = model.sigs.iter_mut().find(|s| s.name == name) {
+                        s.multiplicity = mult;
+                    }
+                }
+                Marker::MapField { sig, field, mult } => {
+                    // The field is declared on `sig`, but a target that copies a
+                    // parent's fields into each case shows it on the children.
+                    for s in model.sigs.iter_mut()
+                        .filter(|s| s.name == sig || s.parent.as_deref() == Some(sig.as_str()))
+                    {
+                        for f in s.fields.iter_mut().filter(|f| f.name == field && f.value_type.is_some()) {
+                            f.mult = mult.clone();
+                        }
+                    }
+                }
             }
         }
     }
 }
 
-/// The `oxidtr: <mult> sig <Name>` markers in `source`.
-fn sig_multiplicity_markers(source: &str) -> Vec<(String, crate::parser::ast::SigMultiplicity)> {
+/// A fact about the model that a generated `oxidtr:` comment states.
+enum Marker {
+    Sig { name: String, mult: crate::parser::ast::SigMultiplicity },
+    MapField { sig: String, field: String, mult: MinedMultiplicity },
+}
+
+/// The markers in `source`: `oxidtr: <mult> sig <Name>` and
+/// `oxidtr: field <Sig>.<field>: <mult> <K> -> <V>`.
+fn model_markers(source: &str) -> Vec<Marker> {
     use crate::parser::ast::SigMultiplicity;
     let mut out = Vec::new();
     for line in source.lines() {
         let Some(at) = line.find("oxidtr: ") else { continue };
         let words: Vec<&str> = line[at + "oxidtr: ".len()..].split_whitespace().collect();
+        if let ["field", path, mult, ..] = words.as_slice() {
+            let Some((sig, field)) = path.trim_end_matches(':').split_once('.') else { continue };
+            let mult = match *mult {
+                "one" => MinedMultiplicity::One,
+                "lone" => MinedMultiplicity::Lone,
+                "set" => MinedMultiplicity::Set,
+                "seq" => MinedMultiplicity::Seq,
+                _ => continue,
+            };
+            out.push(Marker::MapField { sig: sig.to_string(), field: field.to_string(), mult });
+            continue;
+        }
         let (mult, rest) = match words.as_slice() {
             ["one", "sig", rest @ ..] => (SigMultiplicity::One, rest),
             ["lone", "sig", rest @ ..] => (SigMultiplicity::Lone, rest),
@@ -640,7 +728,7 @@ fn sig_multiplicity_markers(source: &str) -> Vec<(String, crate::parser::ast::Si
             _ => continue,
         };
         if let Some(name) = rest.first().filter(|n| is_valid_sig_name(n)) {
-            out.push((name.to_string(), mult));
+            out.push(Marker::Sig { name: name.to_string(), mult });
         }
     }
     out
@@ -709,13 +797,15 @@ pub fn resolve_external_types(model: &mut MinedModel) {
     let mut referenced: std::collections::HashSet<String> = std::collections::HashSet::new();
     for sig in &model.sigs {
         for field in &sig.fields {
-            if !defined.contains(&field.target)
-                && is_valid_sig_name(&field.target)
-                && !is_language_primitive(&field.target)
-                && !crate::backend::is_native_type_alias(&field.target)
-                && !is_type_parameter(&field.target)
-            {
-                referenced.insert(field.target.clone());
+            for ty in std::iter::once(&field.target).chain(field.value_type.as_ref()) {
+                if !defined.contains(ty)
+                    && is_valid_sig_name(ty)
+                    && !is_language_primitive(ty)
+                    && !crate::backend::is_native_type_alias(ty)
+                    && !is_type_parameter(ty)
+                {
+                    referenced.insert(ty.clone());
+                }
             }
         }
     }

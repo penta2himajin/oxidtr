@@ -6,7 +6,8 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
-    infer_sig_multiplicity(&mut model, &[source]);
+    split_map_targets(&mut model);
+    apply_model_markers(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Swift);
     model
 }
@@ -149,7 +150,7 @@ fn parse_swift_property(line: &str) -> Option<MinedField> {
     };
 
     let (mult, target) = swift_type_to_mult(type_str);
-    Some(MinedField { name, is_var, mult, target, raw_union_type: None })
+    Some(MinedField { value_type: None, name, is_var, mult, target, raw_union_type: None })
 }
 
 fn swift_type_to_mult(swift_type: &str) -> (MinedMultiplicity, String) {
@@ -165,11 +166,12 @@ fn swift_type_to_mult(swift_type: &str) -> (MinedMultiplicity, String) {
         return (MinedMultiplicity::Set, inner.to_string());
     }
 
-    // [K: V] → set (dictionary → map, key as target)
+    // [K: V] → a map field `set K -> V`
     if t.starts_with('[') && t.ends_with(']') && t.contains(':') {
         let inner = &t[1..t.len()-1];
-        let key = inner.split(':').next().unwrap_or(inner).trim();
-        return (MinedMultiplicity::Set, key.to_string());
+        if let Some((k, v)) = inner.split_once(':') {
+            return (MinedMultiplicity::Set, format!("{} -> {}", k.trim(), v.trim()));
+        }
     }
 
     // [T] → seq
@@ -253,7 +255,7 @@ fn extract_case_params(line: &str) -> Vec<MinedField> {
             if name.is_empty() { return None; }
             let type_str = p[colon + 1..].trim();
             let (mult, target) = swift_type_to_mult(type_str);
-            Some(MinedField { name, is_var: false, mult, target, raw_union_type: None })
+            Some(MinedField { value_type: None, name, is_var: false, mult, target, raw_union_type: None })
         })
         .collect()
 }
