@@ -29,6 +29,8 @@ pub struct RustBackendConfig {
 }
 
 pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedFile> {
+    let escaped = super::escape_keyword_idents(ir, super::is_rust_keyword);
+    let ir = &escaped;
     // If any structure has a module, use module-based layout
     let has_modules = ir.structures.iter().any(|s| s.module.is_some());
     if has_modules {

@@ -157,6 +157,10 @@ fn rust_self_hosted_split_crate_compiles() {
 fn rust_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. Rust has no field named `use`: the name gets a trailing underscore, and `extract` removes it (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "k.use_ == k.where_"),
         ("shared_field_name_differing_multiplicity",
          "sig Page {}\nsig Node { next: lone Page }\nsig Cursor { next: set Page }\n\
           fact BothHold { all n: Node | all c: Cursor | all p: Page | p in n.next and p in c.next }",
@@ -428,6 +432,10 @@ fn ts_self_hosted_tests_pass() {
 fn ts_adversarial_models_typecheck() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. TS property names may be keywords, so nothing is escaped (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "k.use === k.where"),
         ("whole_sig_cardinality",
          "one sig P { x: one Int }\nfact CardOne { all p: P | p.x = #P }",
          "p.x === ps.length"),
@@ -613,6 +621,9 @@ assert NoMorning { no Schedule.morning }
 check NoMorning for 3
 assert NoChief { no Schedule.chief }
 check NoChief for 3
+
+sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }
+fact KwFact { all k: Kw | k.class = k.long }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -627,6 +638,9 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     // `Schedule.morning` is the union of `morning` over every `Schedule` atom,
     // not member access on a type (#142).
     ("relational_image_flat_maps_the_extent", "schedules"),
+    // `class` is a keyword of both languages: the field gets a trailing
+    // underscore, and `extract` removes it (#152).
+    ("keyword_field_names", "class_"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -886,6 +900,10 @@ fn go_self_hosted_compiles_and_tests_pass() {
 fn go_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. Go capitalises fields, which no lowercase keyword survives (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "k.Use == k.Where"),
         ("same_named_fields",
          "sig Item {}\nsig Other {}\nsig A { items: set Item }\nsig B { items: set Other }\n\
           assert R { all a: A | all i: a.items | i = i }",
@@ -1082,6 +1100,10 @@ fn swift_self_hosted_compiles() {
 #[ignore]
 fn swift_adversarial_models_compile() {
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. Swift escapes a reserved word with backticks (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "k.`where`"),
         ("self_recursive_lone",
          "sig Node { parent: lone Node }",
          "final class Node: Equatable, Hashable {"),
@@ -1364,6 +1386,10 @@ fn cs_self_hosted_compiles() {
 fn cs_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. C# capitalises properties, which no lowercase keyword survives (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "public long Where { get; set; }"),
         // An abstract sig lowers to `abstract class`, so fixtures may not say
         // `new Shape()` — they need a factory returning a concrete child.
         ("abstract_sig_with_concrete_children",
@@ -1986,6 +2012,10 @@ fn lean_self_hosted_compiles() {
 fn lean_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields named after keywords of some target. Lean escapes a keyword with guillemets (#152).
+        ("keyword_field_names",
+         "sig Kw { use: one Int, where: one Int, long: one Int, class: one Int, type: one Int, match: one Int }\nfact KwFact { all k: Kw | k.use = k.where }",
+         "«where» : Int"),
         // Lean has no forward declaration: a sig used before it is declared gets
         // auto-bound as an implicit universe variable, which poisons every
         // `deriving` line after it. `B` must be emitted first. The pin spans

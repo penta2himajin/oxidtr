@@ -101,6 +101,140 @@ pub fn resolve_type(lang: TargetLang, name: &str) -> String {
         .unwrap_or_else(|| name.to_string())
 }
 
+// ── Keyword identifiers ─────────────────────────────────────────────────────
+//
+// A field may be named after a keyword of the target (`use`, `where`, `long`).
+// Rust, Kotlin and Java derive further identifiers from field names
+// (`validate_kw_use`, test names, factory parameters), so neither `r#use` nor
+// a backtick survives everywhere a name travels. Instead a keyword gets a
+// trailing underscore. A name that already looks like an escaped keyword
+// (`long_`) gets one more, so the mapping is injective and `extract` undoes it
+// by removing exactly one (#152).
+
+/// Rust strict and reserved keywords (2024 edition).
+pub fn is_rust_keyword(name: &str) -> bool {
+    matches!(name,
+        "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else"
+        | "enum" | "extern" | "false" | "fn" | "for" | "gen" | "if" | "impl" | "in" | "let"
+        | "loop" | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self"
+        | "Self" | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe"
+        | "use" | "where" | "while" | "abstract" | "become" | "box" | "do" | "final"
+        | "macro" | "override" | "priv" | "typeof" | "unsized" | "virtual" | "yield" | "try")
+}
+
+/// Kotlin hard keywords — the ones that cannot name a property.
+pub fn is_kotlin_keyword(name: &str) -> bool {
+    matches!(name,
+        "as" | "break" | "class" | "continue" | "do" | "else" | "false" | "for" | "fun" | "if"
+        | "in" | "interface" | "is" | "null" | "object" | "package" | "return" | "super"
+        | "this" | "throw" | "true" | "try" | "typealias" | "typeof" | "val" | "var"
+        | "when" | "while")
+}
+
+/// Java reserved keywords and literals.
+pub fn is_java_keyword(name: &str) -> bool {
+    matches!(name,
+        "abstract" | "assert" | "boolean" | "break" | "byte" | "case" | "catch" | "char"
+        | "class" | "const" | "continue" | "default" | "do" | "double" | "else" | "enum"
+        | "extends" | "final" | "finally" | "float" | "for" | "goto" | "if" | "implements"
+        | "import" | "instanceof" | "int" | "interface" | "long" | "native" | "new"
+        | "package" | "private" | "protected" | "public" | "return" | "short" | "static"
+        | "strictfp" | "super" | "switch" | "synchronized" | "this" | "throw" | "throws"
+        | "transient" | "try" | "void" | "volatile" | "while" | "true" | "false" | "null"
+        | "_")
+}
+
+/// `name` with a trailing underscore if it is, or looks like an escaped form
+/// of, a keyword.
+pub fn escape_keyword(name: &str, is_keyword: fn(&str) -> bool) -> String {
+    let base = name.trim_end_matches('_');
+    if !base.is_empty() && is_keyword(base) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    }
+}
+
+/// The inverse of `escape_keyword`.
+pub fn unescape_keyword(name: &str, is_keyword: fn(&str) -> bool) -> String {
+    let base = name.trim_end_matches('_');
+    if name.ends_with('_') && !base.is_empty() && is_keyword(base) {
+        name[..name.len() - 1].to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// `ir` with every field, variable and parameter named after a keyword
+/// escaped, in declarations and in every expression that refers to them.
+/// Sig names are left alone: they are capitalised, and a `VarRef` that names
+/// a sig must keep matching the type. So is Alloy's `this`, the receiver of a
+/// derived field, which each backend translates itself.
+pub fn escape_keyword_idents(ir: &OxidtrIR, is_keyword: fn(&str) -> bool) -> OxidtrIR {
+    let sigs: HashSet<&str> = ir.structures.iter().map(|s| s.name.as_str()).collect();
+    let esc = |n: &str| {
+        if n == "this" || sigs.contains(n) { n.to_string() } else { escape_keyword(n, is_keyword) }
+    };
+    let mut out = ir.clone();
+    for s in &mut out.structures {
+        for f in &mut s.fields {
+            f.name = esc(&f.name);
+        }
+    }
+    for c in &mut out.constraints {
+        rename_in_expr(&mut c.expr, &esc);
+    }
+    for p in &mut out.properties {
+        rename_in_expr(&mut p.expr, &esc);
+    }
+    for op in &mut out.operations {
+        for p in &mut op.params {
+            p.name = esc(&p.name);
+        }
+        for e in &mut op.body {
+            rename_in_expr(e, &esc);
+        }
+    }
+    out
+}
+
+fn rename_in_expr(e: &mut Expr, f: &dyn Fn(&str) -> String) {
+    match e {
+        Expr::IntLiteral(_) => {}
+        Expr::VarRef(name) => *name = f(name),
+        Expr::FieldAccess { base, field } => {
+            rename_in_expr(base, f);
+            *field = f(field);
+        }
+        Expr::Cardinality(x) | Expr::TransitiveClosure(x) | Expr::ReflexiveClosure(x)
+        | Expr::Not(x) | Expr::Prime(x) => rename_in_expr(x, f),
+        Expr::MultFormula { expr, .. } | Expr::TemporalUnary { expr, .. } => rename_in_expr(expr, f),
+        Expr::Comparison { left, right, .. } | Expr::BinaryLogic { left, right, .. }
+        | Expr::SetOp { left, right, .. } | Expr::Product { left, right }
+        | Expr::TemporalBinary { left, right, .. } => {
+            rename_in_expr(left, f);
+            rename_in_expr(right, f);
+        }
+        Expr::Quantifier { bindings, body, .. } => {
+            for b in bindings {
+                for v in &mut b.vars {
+                    *v = f(v);
+                }
+                rename_in_expr(&mut b.domain, f);
+            }
+            rename_in_expr(body, f);
+        }
+        Expr::FunApp { receiver, args, .. } => {
+            if let Some(r) = receiver {
+                rename_in_expr(r, f);
+            }
+            for a in args {
+                rename_in_expr(a, f);
+            }
+        }
+    }
+}
+
 /// The multiplicity a reader of the generated code assumes for `s` when
 /// nothing says otherwise.
 ///
