@@ -320,6 +320,15 @@ fn extract_lean_defs(src: &str) -> Vec<ExtractedFn> {
         if name.is_empty() { return None; }
         // Skip receiver-based defs (derived fields): "def Sig.method"
         if name.contains('.') { return None; }
+        // Skip the witness the backend writes for a `one sig`:
+        // `def configInstance : Config := ...` is a value, not an operation.
+        let declared_type = rest[name.len()..].trim_start().strip_prefix(':')
+            .map(|t| t.trim_start().split(|c: char| c.is_whitespace()).next().unwrap_or(""));
+        if let Some(ty) = declared_type {
+            if name == format!("{}Instance", crate::backend::lean::expr_translator::to_lower_camel(ty)) {
+                return None;
+            }
+        }
         Some(ExtractedFn { name })
     }).collect()
 }

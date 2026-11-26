@@ -210,6 +210,12 @@ fn render_sig(out: &mut String, sig: &MinedSig) {
     if sig.is_var {
         write!(out, "var ").unwrap();
     }
+    match sig.multiplicity {
+        crate::parser::ast::SigMultiplicity::One => write!(out, "one ").unwrap(),
+        crate::parser::ast::SigMultiplicity::Lone => write!(out, "lone ").unwrap(),
+        crate::parser::ast::SigMultiplicity::Some => write!(out, "some ").unwrap(),
+        crate::parser::ast::SigMultiplicity::Default => {}
+    }
     write!(out, "sig {}", sig.name).unwrap();
     if let Some(parent) = &sig.parent {
         write!(out, " extends {parent}").unwrap();

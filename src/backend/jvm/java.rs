@@ -80,7 +80,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Models.java".to_string(),
-        content: generate_models(ir, &ctx),
+        content: crate::backend::with_sig_multiplicity_markers(generate_models(ir, &ctx), ir, "//"),
     });
 
     let has_tc = ir_uses_tc(ir);

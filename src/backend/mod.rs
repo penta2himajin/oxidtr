@@ -9,7 +9,7 @@ pub mod lean;
 pub mod schema;
 pub mod coverage;
 
-use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity};
+use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity, SigMultiplicity};
 use crate::ir::nodes::{OxidtrIR, StructureNode};
 use std::collections::{HashMap, HashSet};
 
@@ -99,6 +99,80 @@ pub fn resolve_type(lang: TargetLang, name: &str) -> String {
     native_type_for(lang, name)
         .map(|s| s.to_string())
         .unwrap_or_else(|| name.to_string())
+}
+
+/// The multiplicity a reader of the generated code assumes for `s` when
+/// nothing says otherwise.
+///
+/// A case of an enum that carries no data — neither its own fields nor any
+/// inherited from an ancestor — generates a unique value (`Color::Red`,
+/// `case red`, an iota constant), which means `one`. Every other sig
+/// generates a type with many possible values, which means a plain `sig`.
+/// `extract` applies the same rule, so the two agree without a marker.
+pub fn natural_sig_multiplicity(ir: &OxidtrIR, s: &StructureNode) -> SigMultiplicity {
+    let find = |name: &str| ir.structures.iter().find(|x| x.name == name);
+    let Some(parent) = s.parent.as_deref().and_then(find) else {
+        return SigMultiplicity::Default;
+    };
+    if !parent.is_enum || !s.fields.is_empty() {
+        return SigMultiplicity::Default;
+    }
+    let mut ancestor = Some(parent);
+    let mut seen = 0;
+    while let Some(a) = ancestor {
+        if !a.fields.is_empty() || seen > ir.structures.len() {
+            return SigMultiplicity::Default;
+        }
+        seen += 1;
+        ancestor = a.parent.as_deref().and_then(find);
+    }
+    SigMultiplicity::One
+}
+
+/// Marker lines stating the multiplicity of every sig in `ir` (filtered by
+/// `include`) whose multiplicity differs from `natural_sig_multiplicity`.
+///
+/// No target's type system says how many atoms a sig has, so without these
+/// `extract` reads `one sig Config` and `lone sig Cache` back as plain sigs.
+/// Each line names its sig, so `extract` applies it wherever in the output
+/// it stands. `comment` is the target's line-comment token.
+pub fn sig_multiplicity_markers(
+    ir: &OxidtrIR,
+    include: &dyn Fn(&StructureNode) -> bool,
+    comment: &str,
+) -> String {
+    let mut out = String::new();
+    for s in ir.structures.iter().filter(|s| include(s)) {
+        if s.sig_multiplicity == natural_sig_multiplicity(ir, s) {
+            continue;
+        }
+        let (decl, meaning) = match s.sig_multiplicity {
+            SigMultiplicity::One => ("one sig", "exactly one atom"),
+            SigMultiplicity::Lone => ("lone sig", "at most one atom"),
+            SigMultiplicity::Some => ("some sig", "at least one atom"),
+            SigMultiplicity::Default => ("sig", "any number of atoms, although the case carries no data"),
+        };
+        out.push_str(&format!("{comment} oxidtr: {decl} {} — {meaning}\n", s.name));
+    }
+    out
+}
+
+/// `content` with the multiplicity markers for `ir` appended, if any.
+pub fn with_sig_multiplicity_markers(content: String, ir: &OxidtrIR, comment: &str) -> String {
+    append_markers(content, &sig_multiplicity_markers(ir, &|_| true, comment))
+}
+
+/// `content` followed by `markers`, separated by a blank line.
+pub fn append_markers(mut content: String, markers: &str) -> String {
+    if markers.is_empty() {
+        return content;
+    }
+    if !content.ends_with('\n') {
+        content.push('\n');
+    }
+    content.push('\n');
+    content.push_str(markers);
+    content
 }
 
 /// Reverse-map a language primitive back to the Alloy alias name.

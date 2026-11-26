@@ -120,6 +120,7 @@ fn mine_directory_multi_lang(dir: &Path) -> Result<MergeResult, String> {
 
     let mut per_lang: Vec<(String, MinedModel)> = Vec::new();
     let mut sources_used = Vec::new();
+    let mut all_sources: Vec<String> = Vec::new();
 
     for (lang, files) in &lang_files {
         let mut lang_model = MinedModel { sigs: Vec::new(), fact_candidates: Vec::new() };
@@ -129,13 +130,16 @@ fn mine_directory_multi_lang(dir: &Path) -> Result<MergeResult, String> {
             let mined = extract_with_lang(&content, lang)?;
             lang_model.sigs.extend(mined.sigs);
             lang_model.fact_candidates.extend(mined.fact_candidates);
+            all_sources.push(content);
         }
         sources_used.push(format!("{lang} ({} files)", files.len()));
         per_lang.push((lang.clone(), lang_model));
     }
 
     // Merge all language models
-    let (merged, conflicts) = merge_models(per_lang);
+    let (mut merged, conflicts) = merge_models(per_lang);
+    let sources: Vec<&str> = all_sources.iter().map(String::as_str).collect();
+    infer_sig_multiplicity(&mut merged, &sources);
 
     Ok(MergeResult { model: merged, conflicts, sources_used })
 }
@@ -291,6 +295,8 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
         "java" => collect_files(dir, "java"),
         "swift" => collect_files(dir, "swift"),
         "go" => collect_files(dir, "go"),
+        "csharp" | "cs" => collect_files(dir, "cs"),
+        "lean" => collect_files(dir, "lean"),
         "schema" | "json" => {
             let schema_path = dir.join("schemas.json");
             if schema_path.exists() { vec![schema_path] } else { collect_files(dir, "json") }
@@ -304,10 +310,12 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
 
     // Mine each file and merge results
     let mut merged = MinedModel { sigs: Vec::new(), fact_candidates: Vec::new() };
+    let mut sources: Vec<String> = Vec::new();
     for file in &files_to_mine {
         let content = std::fs::read_to_string(file)
             .map_err(|e| format!("cannot read {}: {e}", file.display()))?;
         let mined = extract_with_lang(&content, lang)?;
+        sources.push(content);
 
         // Infer module name from subdirectory relative to the base dir.
         // e.g. dir/ast/sig_decl.rs → module "ast"
@@ -353,6 +361,10 @@ fn mine_directory(dir: &Path, lang: &str) -> Result<MinedModel, String> {
     // Dedup fact candidates
     merged.fact_candidates.sort_by(|a, b| a.alloy_text.cmp(&b.alloy_text));
     merged.fact_candidates.dedup_by(|a, b| a.alloy_text == b.alloy_text);
+
+    // A file sees only its own sigs and markers; decide again over all of them.
+    let sources: Vec<&str> = sources.iter().map(String::as_str).collect();
+    infer_sig_multiplicity(&mut merged, &sources);
 
     Ok(merged)
 }
@@ -453,6 +465,8 @@ pub struct MinedSig {
     pub fields: Vec<MinedField>,
     pub is_abstract: bool,
     pub is_var: bool, // Alloy 6: mutable sig (var sig)
+    /// `one` / `lone` / `some`, or `Default` for a plain `sig`.
+    pub multiplicity: crate::parser::ast::SigMultiplicity,
     pub parent: Option<String>,
     pub source_location: String,
     /// Components for intersection type aliases (e.g. ["A", "B", "C"] for `type T = A & B & C`).
@@ -562,6 +576,67 @@ pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::T
     }
 }
 
+/// Set every sig's multiplicity from the generated code it came from.
+///
+/// A sig starts at the multiplicity the code implies — `one` for a case of an
+/// abstract sig that carries no data, plain otherwise, the same rule as
+/// `backend::natural_sig_multiplicity` — and an `oxidtr: lone sig Cache`
+/// marker anywhere in `sources` overrides it. Markers name their sig, so
+/// this runs once over every file of a directory after its sigs are merged.
+pub fn infer_sig_multiplicity(model: &mut MinedModel, sources: &[&str]) {
+    use crate::parser::ast::SigMultiplicity;
+    let natural: Vec<SigMultiplicity> = model.sigs.iter().map(|s| {
+        let find = |name: &str| model.sigs.iter().find(|x| x.name == name);
+        let Some(parent) = s.parent.as_deref().and_then(find) else {
+            return SigMultiplicity::Default;
+        };
+        if !parent.is_abstract || !s.fields.is_empty() {
+            return SigMultiplicity::Default;
+        }
+        let mut ancestor = Some(parent);
+        let mut seen = 0;
+        while let Some(a) = ancestor {
+            if !a.fields.is_empty() || seen > model.sigs.len() {
+                return SigMultiplicity::Default;
+            }
+            seen += 1;
+            ancestor = a.parent.as_deref().and_then(find);
+        }
+        SigMultiplicity::One
+    }).collect();
+    for (s, mult) in model.sigs.iter_mut().zip(natural) {
+        s.multiplicity = mult;
+    }
+    for source in sources {
+        for (name, mult) in sig_multiplicity_markers(source) {
+            if let Some(s) = model.sigs.iter_mut().find(|s| s.name == name) {
+                s.multiplicity = mult;
+            }
+        }
+    }
+}
+
+/// The `oxidtr: <mult> sig <Name>` markers in `source`.
+fn sig_multiplicity_markers(source: &str) -> Vec<(String, crate::parser::ast::SigMultiplicity)> {
+    use crate::parser::ast::SigMultiplicity;
+    let mut out = Vec::new();
+    for line in source.lines() {
+        let Some(at) = line.find("oxidtr: ") else { continue };
+        let words: Vec<&str> = line[at + "oxidtr: ".len()..].split_whitespace().collect();
+        let (mult, rest) = match words.as_slice() {
+            ["one", "sig", rest @ ..] => (SigMultiplicity::One, rest),
+            ["lone", "sig", rest @ ..] => (SigMultiplicity::Lone, rest),
+            ["some", "sig", rest @ ..] => (SigMultiplicity::Some, rest),
+            ["sig", rest @ ..] => (SigMultiplicity::Default, rest),
+            _ => continue,
+        };
+        if let Some(name) = rest.first().filter(|n| is_valid_sig_name(n)) {
+            out.push((name.to_string(), mult));
+        }
+    }
+    out
+}
+
 /// Returns true if the name looks like a generic type parameter.
 /// Matches single uppercase letters (T, S, K, V, ...) and all-uppercase 2-char names (IO, ID, ...).
 /// Mixed-case 2-char names (Go, Of, Io) are treated as user-defined types.
@@ -637,7 +712,7 @@ pub fn resolve_external_types(model: &mut MinedModel) {
     }
 
     for name in referenced {
-        model.sigs.push(MinedSig {
+        model.sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
             name,
             fields: vec![],
             is_abstract: false,

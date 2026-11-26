@@ -6,6 +6,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Lean);
     model
 }
@@ -22,20 +23,27 @@ fn extract_raw(source: &str) -> MinedModel {
     let mut fact_candidates = Vec::new();
     let mut lines = source.lines().enumerate().peekable();
 
+    // `-- Alloy var sig: ...` precedes the declaration it marks; other
+    // comments (the generator's notes on deriving) may stand in between.
+    let mut pending_var_sig = false;
+
     while let Some((line_num, line)) = lines.next() {
         let trimmed = line.trim();
 
-        // Skip comments
-        if trimmed.starts_with("--") { continue; }
+        if trimmed.starts_with("--") {
+            if trimmed.contains("Alloy var sig:") { pending_var_sig = true; }
+            continue;
+        }
+        let sig_is_var = std::mem::take(&mut pending_var_sig);
 
         // structure Foo where
         if let Some(name) = parse_lean_structure(trimmed) {
             let fields = collect_lean_structure_fields(&mut lines);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
                 is_abstract: false,
-                is_var: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![], module: None,
@@ -46,17 +54,17 @@ fn extract_raw(source: &str) -> MinedModel {
         // inductive Foo where
         if let Some(name) = parse_lean_inductive(trimmed) {
             let variants = collect_lean_inductive_variants(&mut lines, &name);
-            sigs.push(MinedSig {
+            sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name: name.clone(),
                 fields: vec![],
                 is_abstract: true,
-                is_var: false,
+                is_var: sig_is_var,
                 parent: None,
                 source_location: format!("line {}", line_num + 1),
                 intersection_of: vec![], module: None,
             });
             for v in variants {
-                sigs.push(MinedSig {
+                sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name: v.sig_name,
                     fields: v.fields,
                     is_abstract: false,
@@ -92,6 +100,7 @@ fn collect_lean_structure_fields(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
 ) -> Vec<MinedField> {
     let mut fields = Vec::new();
+    let mut pending_var = false;
 
     while let Some(&(_, next_line)) = lines.peek() {
         let trimmed = next_line.trim();
@@ -101,11 +110,16 @@ fn collect_lean_structure_fields(
         }
         lines.next();
 
-        // Skip "mk ::" and comments
-        if trimmed.starts_with("mk") || trimmed.starts_with("--") { continue; }
+        if trimmed.starts_with("--") {
+            if trimmed.contains("Alloy var field") { pending_var = true; }
+            continue;
+        }
+        // Skip "mk ::"
+        if trimmed.starts_with("mk") { continue; }
 
         // Parse "fieldName : Type"
-        if let Some(field) = parse_lean_field(trimmed) {
+        if let Some(mut field) = parse_lean_field(trimmed) {
+            field.is_var = std::mem::take(&mut pending_var);
             fields.push(field);
         }
     }

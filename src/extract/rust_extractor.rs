@@ -5,6 +5,7 @@ use super::*;
 
 pub fn extract(source: &str) -> MinedModel {
     let mut model = extract_raw(source);
+    infer_sig_multiplicity(&mut model, &[source]);
     normalize_primitive_types(&mut model, crate::backend::TargetLang::Rust);
     model
 }
@@ -33,7 +34,7 @@ fn extract_raw(source: &str) -> MinedModel {
                         || !trimmed.contains('{')
                         || (trimmed.contains('{') && trimmed.contains('}'));
                     if is_unit {
-                        sigs.push(MinedSig {
+                        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                             name,
                             fields: vec![],
                             is_abstract: false,
@@ -65,15 +66,17 @@ fn extract_raw(source: &str) -> MinedModel {
                                     }
                                     fields.push(field);
                                     prev_line_has_var = false;
-                                } else if inner_trimmed.contains("@alloy: var") {
+                                } else if inner_trimmed.contains("@alloy: var")
+                                    || inner_trimmed.starts_with("/// MUTABLE:")
+                                {
                                     prev_line_has_var = true;
-                                } else {
+                                } else if !(inner_trimmed.starts_with("#[") || inner_trimmed.starts_with("///")) {
                                     prev_line_has_var = false;
                                 }
                             }
                             i += 1;
                         }
-                        sigs.push(MinedSig {
+                        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                             name,
                             fields,
                             is_abstract: false,
@@ -187,7 +190,7 @@ fn extract_raw(source: &str) -> MinedModel {
                         if block_depth == 0 { i += 1; break; }
                         i += 1;
                     }
-                    sigs.push(MinedSig {
+                    sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                         name: name.clone(),
                         fields: vec![],
                         is_abstract: true,
@@ -197,7 +200,7 @@ fn extract_raw(source: &str) -> MinedModel {
                         intersection_of: vec![], module: None,
                     });
                     for (vname, vfields) in variants {
-                        sigs.push(MinedSig {
+                        sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                             name: vname,
                             fields: vfields,
                             is_abstract: false,
@@ -210,10 +213,12 @@ fn extract_raw(source: &str) -> MinedModel {
                     continue;
                 }
 
-                // Detect @alloy: var sig annotation for the next declaration
-                if trimmed.contains("@alloy: var sig") {
+                // Detect the var-sig marker for the next declaration. The
+                // generator writes `/// MUTABLE SIG: ...` and then the
+                // `#[derive]` line, so attributes and doc lines keep the flag.
+                if trimmed.contains("@alloy: var sig") || trimmed.contains("MUTABLE SIG:") {
                     prev_line_has_var_sig = true;
-                } else {
+                } else if !(trimmed.starts_with("#[") || trimmed.starts_with("///")) {
                     prev_line_has_var_sig = false;
                 }
             }
