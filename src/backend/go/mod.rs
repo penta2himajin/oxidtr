@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let _cases = super::UnitVariantScope::new(ir);
     let ctx = GoContext::from_ir(ir);
     let mut files = Vec::new();
 
@@ -459,6 +460,10 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
 }
 
 fn mult_to_go_type(target: &str, mult: &Multiplicity, is_indirect: bool) -> String {
+    // A case of an iota enum is a constant, not a type: the field holds the
+    // enum (#154).
+    let parent = super::constant_enum_of(target);
+    let target = parent.as_deref().unwrap_or(target);
     match mult {
         Multiplicity::One => {
             if is_indirect {
@@ -1368,6 +1373,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &GoContext) -> String {
     let needed_variants = super::variants_used_as_field_targets(ir);
     for s in &ir.structures {
         if (ctx.is_variant(&s.name) && !needed_variants.contains(&s.name)) || s.is_enum { continue; }
+        // A case of an iota enum is a constant; it has no type to construct.
+        if super::constant_enum_of(&s.name).is_some() { continue; }
         // A fieldless sig still needs a factory: any field targeting it emits
         // `DefaultX()`, which would otherwise be an undefined reference.
         if s.fields.is_empty() {
@@ -1567,6 +1574,14 @@ fn go_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &Hash
     // factory, and no Go type by that name either — `[]Int{}` does not compile.
     let go_ty = resolve_type(TargetLang::Go, target);
     let native = is_native_type_alias(target);
+    // A case of an iota enum is its own value, typed as the enum (#154).
+    if let Some(parent) = super::constant_enum_of(target) {
+        return match mult {
+            Multiplicity::Lone => "nil".to_string(),
+            Multiplicity::Set | Multiplicity::Seq => format!("[]{parent}{{}}"),
+            Multiplicity::One => target.to_string(),
+        };
+    }
     match mult {
         Multiplicity::Lone => "nil".to_string(),
         Multiplicity::Set | Multiplicity::Seq => {

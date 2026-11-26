@@ -63,6 +63,7 @@ impl JvmLang for KotlinLang {
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let escaped = crate::backend::escape_keyword_idents(ir, crate::backend::is_kotlin_keyword);
     let ir = &escaped;
+    let _cases = crate::backend::UnitVariantScope::new(ir);
     let ctx = JvmContext::from_ir(ir);
     let mut files = Vec::new();
 
@@ -444,6 +445,10 @@ fn generate_sealed_class(out: &mut String, s: &StructureNode, ctx: &JvmContext) 
 }
 
 fn mult_to_kt_type(target: &str, mult: &Multiplicity) -> String {
+    // A case of an `enum class` is a constant, not a type: the field holds
+    // the enum (#154).
+    let parent = crate::backend::constant_enum_of(target);
+    let target = parent.as_deref().unwrap_or(target);
     match mult {
         Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target}?"),
@@ -1269,6 +1274,36 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             }
             writeln!(out).unwrap();
         }
+
+        // A case that carries data is a class of its own; a field declared
+        // with it calls `default{Case}()`, which no enum factory above
+        // provides (#154).
+        let mut needed: Vec<String> = crate::backend::variants_used_as_field_targets(ir).into_iter().collect();
+        needed.sort();
+        for v in needed {
+            if crate::backend::constant_enum_of(&v).is_some() { continue; }
+            let Some(parent) = ctx.struct_map.get(v.as_str())
+                .and_then(|c| c.parent.as_deref()).and_then(|p| ctx.struct_map.get(p)) else { continue };
+            if !terminating.contains(&parent.name) { continue; }
+            let fields = ctx.variant_fields(parent, &v);
+            writeln!(out, "/** Factory: `{}` as the `{v}` case it was declared as */", parent.name).unwrap();
+            if fields.is_empty() {
+                writeln!(out, "fun default{v}(): {v} = {v}").unwrap();
+            } else {
+                let args: Vec<String> = fields.iter()
+                    .map(|f| {
+                        let val = if f.value_type.is_some() {
+                            "emptyMap()".to_string()
+                        } else {
+                            kt_default_value(&f.target, &f.mult)
+                        };
+                        format!("{} = {val}", f.name)
+                    })
+                    .collect();
+                writeln!(out, "fun default{v}(): {v} = {v}({})", args.join(", ")).unwrap();
+            }
+            writeln!(out).unwrap();
+        }
     }
 
     for s in &ir.structures {
@@ -1478,6 +1513,10 @@ fn kt_native_zero(target: &str) -> Option<&'static str> {
 }
 
 fn kt_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    // A case of an `enum class` is its own value (#154).
+    if let (Multiplicity::One, Some(parent)) = (mult, crate::backend::constant_enum_of(target)) {
+        return format!("{parent}.{target}");
+    }
     if let Some(zero) = kt_native_zero(target) {
         return match mult {
             Multiplicity::Lone => "null".to_string(),

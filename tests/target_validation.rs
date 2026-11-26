@@ -157,6 +157,11 @@ fn rust_self_hosted_split_crate_compiles() {
 fn rust_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. Rust already typed both as the parent and checked the case; pinned so the other targets' fix keeps company (#154).
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "matches!(value.red, Color::Red { .. })"),
         // Map fields keyed by a primitive and by a struct sig. The fixtures build it with `BTreeMap::new()`, which needs its own import (#153).
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
@@ -436,6 +441,11 @@ fn ts_self_hosted_tests_pass() {
 fn ts_adversarial_models_typecheck() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. `Red` is a string literal, not a type; `Circle` is an interface whose factory the fixtures had to define (#154).
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "readonly red: \"Red\""),
         // Map fields keyed by a primitive and by a struct sig. (#153)
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
@@ -635,6 +645,13 @@ fact KwFact { all k: Kw | k.class = k.long }
 
 sig Holder { table: one Str -> Int, lookup: set Holder -> Kw, name: one Str }
 fact LookupStable { all h: Holder | h.lookup = h.lookup }
+
+abstract sig Hue {}
+one sig Crimson extends Hue {}
+one sig Teal extends Hue {}
+abstract sig Figure { tag2: one Int }
+sig Disc extends Figure { r: one Int }
+sig Plate { disc: one Disc, hue: one Crimson }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -654,6 +671,11 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     ("keyword_field_names", "class_"),
     // Type arguments are references: `Map<String, long>` did not parse (#153).
     ("map_fields", "Map<String, Long>"),
+    // A field declared with a case of an enum of constants holds the enum
+    // and defaults to the constant; one declared with a case that carries
+    // data needs that case's factory (#154).
+    ("field_declared_with_a_constant_case", "Hue.Crimson"),
+    ("field_declared_with_a_data_case", "defaultDisc()"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -913,6 +935,11 @@ fn go_self_hosted_compiles_and_tests_pass() {
 fn go_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. `Red` is an iota constant, not a type (#154).
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "Red: Red,"),
         // Map fields keyed by a primitive and by a struct sig. `Holder` holds maps, so it is not comparable: the key is a pointer (#153).
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
@@ -1117,6 +1144,11 @@ fn swift_self_hosted_compiles() {
 #[ignore]
 fn swift_adversarial_models_compile() {
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. (#154)
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "if case .red = value.red"),
         // Map fields keyed by a primitive and by a struct sig. Every fixture gives a map an empty dictionary (#153).
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
@@ -1407,6 +1439,11 @@ fn cs_self_hosted_compiles() {
 fn cs_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. `Red` is an enum member, not a type, and has no factory of its own (#154).
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "Red = Color.Red,"),
         // Map fields keyed by a primitive and by a struct sig. It used to lose its value type and become `string` (#153).
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
@@ -2037,6 +2074,11 @@ fn lean_self_hosted_compiles() {
 fn lean_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // Fields declared with a case of an enum: one that carries data and
+        // one that is a constant. (#154)
+        ("fields_declared_with_a_case",
+         "abstract sig Shape { label: one Str }\nsig Circle extends Shape { radius: one Int }\nsig Square extends Shape {}\nabstract sig Color {}\none sig Red extends Color {}\none sig Green extends Color {}\nsig Holder { circle: one Circle, red: one Red, squares: set Square }",
+         "red : Color"),
         // Map fields keyed by a primitive and by a struct sig. (#153)
         ("map_fields",
          "abstract sig Color {}\none sig Red extends Color {}\nsig Holder { table: one Str -> Int, lookup: set Holder -> Color, name: one Str }\nfact LookupStable { all h: Holder | h.lookup = h.lookup }",
