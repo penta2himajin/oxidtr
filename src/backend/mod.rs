@@ -422,6 +422,21 @@ pub fn flatten_concrete_inheritance(ir: &OxidtrIR) -> OxidtrIR {
     out
 }
 
+/// Marker lines for every `seq` field in `ir`, for a target that writes `set`
+/// and `seq` as the same type (Lean's `List`, #158).
+pub fn seq_field_markers(ir: &OxidtrIR, comment: &str) -> String {
+    let mut out = String::new();
+    for s in &ir.structures {
+        for f in s.fields.iter().filter(|f| f.mult == Multiplicity::Seq && f.value_type.is_none()) {
+            out.push_str(&format!(
+                "{comment} oxidtr: field {}.{}: seq {} — `List` is also how a set is written\n",
+                s.name, f.name, f.target,
+            ));
+        }
+    }
+    out
+}
+
 /// `content` with the multiplicity markers for `ir` appended, if any.
 pub fn with_model_markers(content: String, ir: &OxidtrIR, comment: &str) -> String {
     append_markers(content, &model_markers(ir, &|_| true, comment))

@@ -60,12 +60,18 @@ fn extract_raw(source: &str) -> MinedModel {
         // public class Foo : Bar
         // public class Foo
         if let Some((name, is_abstract, parent)) = parse_cs_class(trimmed) {
-            let fields = if trimmed.contains('{') && trimmed.contains('}') {
+            let (fields, has_members) = if trimmed.contains('{') && trimmed.contains('}') {
                 // Single-line class: `public class Foo : Bar {}`
-                vec![]
+                (vec![], false)
             } else {
                 collect_cs_class_fields(&mut lines)
             };
+            // A class with no property but methods, static members or test
+            // attributes holds behaviour, not data — the generator's test
+            // class is of that kind (#158).
+            if fields.is_empty() && parent.is_none() && has_members {
+                continue;
+            }
             sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                 name,
                 fields,
@@ -141,10 +147,24 @@ fn parse_cs_class(line: &str) -> Option<(String, bool, Option<String>)> {
     Some((name, is_abstract, parent))
 }
 
+/// A test attribute, or a method that is `static`. A fieldless class that
+/// declares only these holds behaviour, not data — the generator's test class
+/// is of that kind (#158). An instance method does not count: a fieldless
+/// domain class may still have one. Nor does the singleton's
+/// `static readonly X Instance = new X();`, whose `(` follows the `=`.
+fn is_behaviour_member(line: &str) -> bool {
+    if line.starts_with("[Fact") || line.starts_with("[Test") || line.starts_with("[Theory") {
+        return true;
+    }
+    let before_init = line.split('=').next().unwrap_or(line);
+    before_init.contains('(') && before_init.contains("static ")
+}
+
 fn collect_cs_class_fields(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-) -> Vec<MinedField> {
+) -> (Vec<MinedField>, bool) {
     let mut fields = Vec::new();
+    let mut has_members = false;
     let mut depth = 0i32;
     let mut started = false;
     let mut prev_line_has_var = false;
@@ -167,6 +187,10 @@ fn collect_cs_class_fields(
             fields.push(field);
             prev_line_has_var = false;
             prev_line_has_seq = false;
+        } else if depth == 1 && !trimmed.starts_with("//") && is_behaviour_member(trimmed) {
+            has_members = true;
+            prev_line_has_var = false;
+            prev_line_has_seq = false;
         } else if trimmed.contains("@alloy: var") && !trimmed.contains("@alloy: var sig") {
             prev_line_has_var = true;
         } else if trimmed.contains("@alloy: seq") {
@@ -177,7 +201,7 @@ fn collect_cs_class_fields(
         }
     }
 
-    fields
+    (fields, has_members)
 }
 
 fn parse_cs_property(line: &str) -> Option<MinedField> {

@@ -17,7 +17,10 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 
     files.push(GeneratedFile {
         path: "Types.lean".to_string(),
-        content: super::with_model_markers(generate_types(ir, &ctx), ir, "--"),
+        content: super::append_markers(
+            super::with_model_markers(generate_types(ir, &ctx), ir, "--"),
+            &super::seq_field_markers(ir, "--"),
+        ),
     });
 
     // `assert`s become theorems in the same file, so a model with properties but
