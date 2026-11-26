@@ -157,6 +157,11 @@ fn rust_self_hosted_split_crate_compiles() {
 fn rust_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "combine(&a, &b) == a"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",
@@ -446,6 +451,11 @@ fn ts_self_hosted_tests_pass() {
 fn ts_adversarial_models_typecheck() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "import { combine } from './operations'"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",
@@ -666,6 +676,10 @@ sig Plate { disc: one Disc, hue: one Crimson }
 sig Account { owner: one Int }
 sig Savings extends Account { rate: one Int }
 fact SavingsOwners { all s: Savings | s.owner = s.owner }
+
+sig Coin { value: one Int }
+fun combine[a, b: Coin]: Coin { a }
+fact CombineLeft { all a, b: Coin | combine[a, b] = a }
 ";
 
 /// The fragments that prove the resolution, not merely a clean build.
@@ -692,6 +706,9 @@ const JVM_ADVERSARIAL_EXPECTED: &[(&str, &str)] = &[
     ("field_declared_with_a_data_case", "defaultDisc()"),
     // A field inherited from a concrete parent, read through the child (#157).
     ("field_inherited_from_a_concrete_parent", "s.owner"),
+    // A fact calling a top-level `fun`: Java's is a static method of
+    // `Operations`, which the test must qualify (#165).
+    ("fact_calls_a_fun", "combine(a, b)"),
 ];
 
 /// Models Kotlin had no compile gate for. `models/oxidtr.als` declares no sig
@@ -951,6 +968,11 @@ fn go_self_hosted_compiles_and_tests_pass() {
 fn go_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "Combine(a, b)"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",
@@ -1165,6 +1187,11 @@ fn swift_self_hosted_compiles() {
 #[ignore]
 fn swift_adversarial_models_compile() {
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "combine(a, b)"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",
@@ -1465,6 +1492,11 @@ fn cs_self_hosted_compiles() {
 fn cs_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "Operations.Combine(a, b)"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",
@@ -2105,6 +2137,11 @@ fn lean_self_hosted_compiles() {
 fn lean_adversarial_models_compile() {
     // (name, model, expected substring proving the semantics, not just the syntax)
     let cases: &[(&str, &str, &str)] = &[
+        // A fact calling a top-level `fun` by its Alloy name, which each
+        // target must resolve to the operation it emitted (#165).
+        ("fact_calls_a_fun",
+         "sig Money { amount: one Int }\nfun combine[a, b: Money]: Money { a }\nfact CombineLeft { all a, b: Money | combine[a, b] = a }",
+         "def combine"),
         // A field inherited from a concrete parent, read through the child.
         // The child used to be emitted without the parent's fields (#157).
         ("field_inherited_from_a_concrete_parent",

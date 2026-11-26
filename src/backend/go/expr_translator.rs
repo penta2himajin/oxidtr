@@ -659,8 +659,9 @@ fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], transla
         let a: Vec<_> = args.iter().map(&translate).collect();
         return format!("{}.{name}({})", translate(recv), a.join(", "));
     }
+    // A top-level `fun` / `pred` is emitted exported, as `Add` (#165).
     let a: Vec<_> = args.iter().map(translate).collect();
-    format!("{name}({})", a.join(", "))
+    format!("{}({})", capitalize(name), a.join(", "))
 }
 
 fn needs_parens(expr: &Expr) -> bool {

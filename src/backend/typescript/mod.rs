@@ -625,6 +625,18 @@ fn generate_tests(ir: &OxidtrIR, test_runner: TsTestRunner) -> (String, Coverage
         writeln!(out, "import * as helpers from './helpers';").unwrap();
     }
     writeln!(out, "import * as fix from './fixtures';").unwrap();
+    // A fact may call a top-level `fun` / `pred` by its Alloy name; the
+    // function lives in operations.ts (#165).
+    let ops: Vec<String> = ir.operations.iter()
+        .filter(|op| op.receiver_sig.is_none())
+        .map(|op| {
+            let exported = to_camel_case(&op.name);
+            if exported == op.name { exported } else { format!("{exported} as {}", op.name) }
+        })
+        .collect();
+    if !ops.is_empty() {
+        writeln!(out, "import {{ {} }} from './operations';", ops.join(", ")).unwrap();
+    }
     writeln!(out).unwrap();
 
     writeln!(out, "describe('property tests', () => {{").unwrap();
