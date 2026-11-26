@@ -29,7 +29,7 @@ pub struct RustBackendConfig {
 }
 
 pub fn generate_with_config(ir: &OxidtrIR, config: &RustBackendConfig) -> Vec<GeneratedFile> {
-    let escaped = super::escape_keyword_idents(ir, super::is_rust_keyword);
+    let escaped = super::escape_keyword_idents(&super::flatten_concrete_inheritance(ir), super::is_rust_keyword);
     let ir = &escaped;
     // If any structure has a module, use module-based layout
     let has_modules = ir.structures.iter().any(|s| s.module.is_some());
@@ -1271,14 +1271,14 @@ fn expr_uses_tc(expr: &crate::parser::ast::Expr) -> bool {
 }
 
 /// `one sig X extends <concrete Y>` — a distinguished singleton VALUE of a
-/// non-abstract parent. oxidtr renders it as a standalone unit struct whose
-/// value it cannot construct (parent fields unknown), so any generated test that
-/// uses it as a `Y` would not typecheck. Collect these names so such tests are
+/// non-abstract parent. oxidtr renders it as a standalone struct (carrying the
+/// fields it inherits, #157) of its own type, so any generated test that uses
+/// it as a `Y` would not typecheck. Collect these names so such tests are
 /// skipped (as enum-variant references already are).
 fn concrete_parent_singletons(ir: &OxidtrIR, enum_parents: &HashSet<String>) -> HashSet<String> {
     ir.structures
         .iter()
-        .filter(|s| s.sig_multiplicity == SigMultiplicity::One && s.fields.is_empty())
+        .filter(|s| s.sig_multiplicity == SigMultiplicity::One)
         .filter(|s| s.parent.as_ref().is_some_and(|p| !enum_parents.contains(p)))
         .map(|s| s.name.clone())
         .collect()

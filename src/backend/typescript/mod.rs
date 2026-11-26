@@ -32,6 +32,8 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 }
 
 pub fn generate_with_config(ir: &OxidtrIR, config: &TsBackendConfig) -> Vec<GeneratedFile> {
+    let flattened = crate::backend::flatten_concrete_inheritance(ir);
+    let ir = &flattened;
     let _cases = crate::backend::UnitVariantScope::new(ir);
     let mut files = Vec::new();
 

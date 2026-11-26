@@ -552,7 +552,9 @@ fn rust_concrete_parent_singleton_test_skipped_not_broken() {
         fact Ident { all a: Money | add[a, Zero] = a and add[Zero, a] = a }
     "#);
     let models = find_file(&files, "models.rs");
-    assert!(models.contains("pub struct Zero;"), "singleton struct still emitted:\n{models}");
+    // `Zero` is a `Money` atom, so it carries `Money`'s fields (#157).
+    assert!(models.contains("pub struct Zero {\n    pub amount: i64,\n}"),
+        "singleton struct still emitted, with the fields it inherits:\n{models}");
     let tests = find_file(&files, "tests.rs");
     assert!(!tests.contains("&Zero"), "must not emit &Zero (type mismatch):\n{tests}");
     assert!(!tests.contains("invariant_ident"), "identity fact test must be skipped:\n{tests}");

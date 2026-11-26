@@ -639,15 +639,81 @@ pub fn normalize_primitive_types(model: &mut MinedModel, lang: crate::backend::T
     }
 }
 
-/// Set every sig's multiplicity from the generated code it came from.
+/// Recover from the `oxidtr:` markers in `sources` what the generated types
+/// cannot say, and set every sig's multiplicity.
 ///
-/// A sig starts at the multiplicity the code implies — `one` for a case of an
-/// abstract sig that carries no data, plain otherwise, the same rule as
-/// `backend::natural_sig_multiplicity` — and an `oxidtr: lone sig Cache`
-/// marker anywhere in `sources` overrides it. Markers name their sig, so
-/// this runs once over every file of a directory after its sigs are merged.
+/// In order:
+/// 1. `Derived extends Base`: the parent relation, and the removal of the
+///    fields `flatten_concrete_inheritance` repeated from `Base` (#157).
+/// 2. `Shape declares label`: the fields an abstract sig's cases repeat move
+///    back to it (#157).
+/// 3. The multiplicity the code implies — `one` for a case of an abstract sig
+///    that carries no data, plain otherwise, the same rule as
+///    `backend::natural_sig_multiplicity` (#156).
+/// 4. `lone sig Cache`: a multiplicity the code cannot imply (#156).
+/// 5. `field Holder.red: one Red`: a field's multiplicity and type where its
+///    generated type is wider — a map (#153), a case of an enum (#157).
+/// 6. `abstract sig Material`: an abstract sig with no case, which Go writes
+///    as a bare `type Material int` (#157).
+///
+/// Markers name what they are about, so this runs again over every file of
+/// a directory once its sigs are merged; every step is idempotent.
 pub fn apply_model_markers(model: &mut MinedModel, sources: &[&str]) {
     use crate::parser::ast::SigMultiplicity;
+    let markers: Vec<Marker> = sources.iter().flat_map(|s| model_markers(s)).collect();
+
+    for m in &markers {
+        if let Marker::Abstract { name } = m {
+            match model.sigs.iter_mut().find(|s| &s.name == name) {
+                Some(s) => s.is_abstract = true,
+                None => model.sigs.push(MinedSig {
+                    name: name.clone(),
+                    fields: vec![],
+                    is_abstract: true,
+                    is_var: false,
+                    multiplicity: SigMultiplicity::Default,
+                    parent: None,
+                    source_location: "oxidtr marker".to_string(),
+                    intersection_of: vec![],
+                    module: None,
+                }),
+            }
+        }
+    }
+
+    let declared: std::collections::HashMap<String, Vec<String>> = model.sigs.iter()
+        .map(|s| (s.name.clone(), s.fields.iter().map(|f| f.name.clone()).collect()))
+        .collect();
+    for m in &markers {
+        if let Marker::Extends { child, parent } = m {
+            let inherited = declared.get(parent).cloned().unwrap_or_default();
+            if let Some(s) = model.sigs.iter_mut().find(|s| &s.name == child) {
+                s.parent = Some(parent.clone());
+                s.fields.retain(|f| !inherited.contains(&f.name));
+            }
+        }
+    }
+
+    for m in &markers {
+        if let Marker::Declares { parent, fields } = m {
+            for name in fields {
+                let mut found: Option<MinedField> = None;
+                for s in model.sigs.iter_mut().filter(|s| s.parent.as_deref() == Some(parent.as_str())) {
+                    if let Some(i) = s.fields.iter().position(|f| &f.name == name) {
+                        let f = s.fields.remove(i);
+                        found.get_or_insert(f);
+                    }
+                }
+                let Some(p) = model.sigs.iter_mut().find(|s| &s.name == parent) else { continue };
+                if let Some(f) = found {
+                    if !p.fields.iter().any(|pf| &pf.name == name) {
+                        p.fields.push(f);
+                    }
+                }
+            }
+        }
+    }
+
     let natural: Vec<SigMultiplicity> = model.sigs.iter().map(|s| {
         let find = |name: &str| model.sigs.iter().find(|x| x.name == name);
         let Some(parent) = s.parent.as_deref().and_then(find) else {
@@ -670,26 +736,33 @@ pub fn apply_model_markers(model: &mut MinedModel, sources: &[&str]) {
     for (s, mult) in model.sigs.iter_mut().zip(natural) {
         s.multiplicity = mult;
     }
-    for source in sources {
-        for marker in model_markers(source) {
-            match marker {
-                Marker::Sig { name, mult } => {
-                    if let Some(s) = model.sigs.iter_mut().find(|s| s.name == name) {
-                        s.multiplicity = mult;
-                    }
+
+    for m in markers {
+        match m {
+            Marker::Sig { name, mult } => {
+                if let Some(s) = model.sigs.iter_mut().find(|s| s.name == name) {
+                    s.multiplicity = mult;
                 }
-                Marker::MapField { sig, field, mult } => {
-                    // The field is declared on `sig`, but a target that copies a
-                    // parent's fields into each case shows it on the children.
-                    for s in model.sigs.iter_mut()
-                        .filter(|s| s.name == sig || s.parent.as_deref() == Some(sig.as_str()))
+            }
+            Marker::Field { sig, field, mult, target, value } => {
+                // The field is declared on `sig`, but a target that copies a
+                // parent's fields into each case shows it on the children. A
+                // backend that escaped a keyword (`use_`) names it escaped.
+                for s in model.sigs.iter_mut()
+                    .filter(|s| s.name == sig || s.parent.as_deref() == Some(sig.as_str()))
+                {
+                    let exact = s.fields.iter().any(|f| f.name == field);
+                    let unescaped = field.strip_suffix('_').unwrap_or(&field);
+                    for f in s.fields.iter_mut()
+                        .filter(|f| f.name == field || (!exact && f.name == unescaped))
                     {
-                        for f in s.fields.iter_mut().filter(|f| f.name == field && f.value_type.is_some()) {
-                            f.mult = mult.clone();
-                        }
+                        f.mult = mult.clone();
+                        f.target = target.clone();
+                        f.value_type = value.clone();
                     }
                 }
             }
+            Marker::Abstract { .. } | Marker::Extends { .. } | Marker::Declares { .. } => {}
         }
     }
 }
@@ -697,38 +770,66 @@ pub fn apply_model_markers(model: &mut MinedModel, sources: &[&str]) {
 /// A fact about the model that a generated `oxidtr:` comment states.
 enum Marker {
     Sig { name: String, mult: crate::parser::ast::SigMultiplicity },
-    MapField { sig: String, field: String, mult: MinedMultiplicity },
+    Field { sig: String, field: String, mult: MinedMultiplicity, target: String, value: Option<String> },
+    Extends { child: String, parent: String },
+    Declares { parent: String, fields: Vec<String> },
+    Abstract { name: String },
 }
 
-/// The markers in `source`: `oxidtr: <mult> sig <Name>` and
-/// `oxidtr: field <Sig>.<field>: <mult> <K> -> <V>`.
+/// The markers in `source`. Each is an `oxidtr:` comment whose text up to an
+/// em dash is one of
+/// `<mult> sig <Name>`, `abstract sig <Name>`, `<Child> extends <Parent>`,
+/// `<Parent> declares <f>, <g>` or `field <Sig>.<f>: <mult> <T> [-> <V>]`.
 fn model_markers(source: &str) -> Vec<Marker> {
     use crate::parser::ast::SigMultiplicity;
     let mut out = Vec::new();
     for line in source.lines() {
         let Some(at) = line.find("oxidtr: ") else { continue };
-        let words: Vec<&str> = line[at + "oxidtr: ".len()..].split_whitespace().collect();
-        if let ["field", path, mult, ..] = words.as_slice() {
-            let Some((sig, field)) = path.trim_end_matches(':').split_once('.') else { continue };
-            let mult = match *mult {
-                "one" => MinedMultiplicity::One,
-                "lone" => MinedMultiplicity::Lone,
-                "set" => MinedMultiplicity::Set,
-                "seq" => MinedMultiplicity::Seq,
-                _ => continue,
-            };
-            out.push(Marker::MapField { sig: sig.to_string(), field: field.to_string(), mult });
-            continue;
-        }
-        let (mult, rest) = match words.as_slice() {
-            ["one", "sig", rest @ ..] => (SigMultiplicity::One, rest),
-            ["lone", "sig", rest @ ..] => (SigMultiplicity::Lone, rest),
-            ["some", "sig", rest @ ..] => (SigMultiplicity::Some, rest),
-            ["sig", rest @ ..] => (SigMultiplicity::Default, rest),
-            _ => continue,
-        };
-        if let Some(name) = rest.first().filter(|n| is_valid_sig_name(n)) {
-            out.push(Marker::Sig { name: name.to_string(), mult });
+        let text = &line[at + "oxidtr: ".len()..];
+        let text = text.split(" — ").next().unwrap_or(text);
+        let words: Vec<&str> = text.split_whitespace().collect();
+        match words.as_slice() {
+            ["field", path, mult, ty, rest @ ..] => {
+                let Some((sig, field)) = path.trim_end_matches(':').split_once('.') else { continue };
+                let mult = match *mult {
+                    "one" => MinedMultiplicity::One,
+                    "lone" => MinedMultiplicity::Lone,
+                    "set" => MinedMultiplicity::Set,
+                    "seq" => MinedMultiplicity::Seq,
+                    _ => continue,
+                };
+                let value = match rest {
+                    ["->", v, ..] => Some(v.to_string()),
+                    _ => None,
+                };
+                out.push(Marker::Field {
+                    sig: sig.to_string(), field: field.to_string(), mult,
+                    target: ty.to_string(), value,
+                });
+            }
+            ["abstract", "sig", name, ..] if is_valid_sig_name(name) => {
+                out.push(Marker::Abstract { name: name.to_string() });
+            }
+            [child, "extends", parent, ..] if is_valid_sig_name(child) && is_valid_sig_name(parent) => {
+                out.push(Marker::Extends { child: child.to_string(), parent: parent.to_string() });
+            }
+            [parent, "declares", ..] if is_valid_sig_name(parent) => {
+                let fields = text.split_once("declares").map(|(_, f)| f).unwrap_or("")
+                    .split(',').map(|f| f.trim().to_string()).filter(|f| !f.is_empty()).collect();
+                out.push(Marker::Declares { parent: parent.to_string(), fields });
+            }
+            _ => {
+                let (mult, rest) = match words.as_slice() {
+                    ["one", "sig", rest @ ..] => (SigMultiplicity::One, rest),
+                    ["lone", "sig", rest @ ..] => (SigMultiplicity::Lone, rest),
+                    ["some", "sig", rest @ ..] => (SigMultiplicity::Some, rest),
+                    ["sig", rest @ ..] => (SigMultiplicity::Default, rest),
+                    _ => continue,
+                };
+                if let Some(name) = rest.first().filter(|n| is_valid_sig_name(n)) {
+                    out.push(Marker::Sig { name: name.to_string(), mult });
+                }
+            }
         }
     }
     out

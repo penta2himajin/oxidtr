@@ -10,7 +10,7 @@ pub mod schema;
 pub mod coverage;
 
 use crate::parser::ast::{Expr, CompareOp, QuantKind, Multiplicity, SigMultiplicity};
-use crate::ir::nodes::{OxidtrIR, StructureNode};
+use crate::ir::nodes::{IRField, OxidtrIR, StructureNode};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,19 +350,74 @@ pub fn model_markers(
         out.push_str(&format!("{comment} oxidtr: {decl} {} — {meaning}\n", s.name));
     }
     for s in ir.structures.iter().filter(|s| include(s)) {
+        let Some(parent) = s.parent.as_deref() else { continue };
+        if ir.structures.iter().any(|p| p.name == parent && !p.is_enum) {
+            // `flatten_concrete_inheritance` repeated the parent's fields
+            // here; this line is what says they belong to the parent.
+            out.push_str(&format!("{comment} oxidtr: {} extends {parent} — the fields of {parent} are repeated here\n", s.name));
+        }
+    }
+    for s in ir.structures.iter().filter(|s| include(s) && s.is_enum && !s.fields.is_empty()) {
+        let names: Vec<&str> = s.fields.iter().map(|f| f.name.as_str()).collect();
+        out.push_str(&format!("{comment} oxidtr: {} declares {} — each case repeats them\n", s.name, names.join(", ")));
+    }
+    for s in ir.structures.iter().filter(|s| include(s)) {
         for f in &s.fields {
-            let Some(value) = &f.value_type else { continue };
+            let case_of = ir.structures.iter().find(|t| t.name == f.target)
+                .and_then(|t| t.parent.as_deref())
+                .is_some_and(|p| ir.structures.iter().any(|q| q.name == p && q.is_enum));
+            let unstated_map = f.value_type.is_some() && f.mult != Multiplicity::Set;
+            if !case_of && !unstated_map {
+                continue;
+            }
             let mult = match f.mult {
-                Multiplicity::Set => continue,
                 Multiplicity::One => "one",
                 Multiplicity::Lone => "lone",
+                Multiplicity::Set => "set",
                 Multiplicity::Seq => "seq",
             };
-            out.push_str(&format!(
-                "{comment} oxidtr: field {}.{}: {mult} {} -> {value} — a map type cannot state this multiplicity\n",
-                s.name, f.name, f.target,
-            ));
+            let ty = match &f.value_type {
+                Some(value) => format!("{} -> {value}", f.target),
+                None => f.target.clone(),
+            };
+            let why = if case_of {
+                "a case of an enum, which the field's type cannot name"
+            } else {
+                "a map type cannot state this multiplicity"
+            };
+            out.push_str(&format!("{comment} oxidtr: field {}.{}: {mult} {ty} — {why}\n", s.name, f.name));
         }
+    }
+    out
+}
+
+/// `ir` with every sig that extends a non-abstract sig also carrying the
+/// fields it inherits, ancestors' first.
+///
+/// In Alloy an atom of `Derived extends Base` is an atom of `Base` and has
+/// its fields. No backend emits a subtype relation for a non-abstract parent,
+/// so the generated `Derived` lacked `Base`'s fields altogether, and a fact
+/// reading `d.id` did not compile. The relation itself is kept in an
+/// `oxidtr: Derived extends Base` marker (#157).
+pub fn flatten_concrete_inheritance(ir: &OxidtrIR) -> OxidtrIR {
+    let find = |name: &str| ir.structures.iter().find(|s| s.name == name);
+    let mut out = ir.clone();
+    for s in &mut out.structures {
+        let mut inherited: Vec<IRField> = Vec::new();
+        let mut parent = s.parent.as_deref().and_then(find);
+        let mut seen = 0;
+        while let Some(p) = parent.filter(|p| !p.is_enum) {
+            if seen > ir.structures.len() { break; }
+            seen += 1;
+            let mut fields = p.fields.clone();
+            fields.extend(inherited);
+            inherited = fields;
+            parent = p.parent.as_deref().and_then(find);
+        }
+        if inherited.is_empty() { continue; }
+        inherited.retain(|f| !s.fields.iter().any(|own| own.name == f.name));
+        inherited.extend(std::mem::take(&mut s.fields));
+        s.fields = inherited;
     }
     out
 }

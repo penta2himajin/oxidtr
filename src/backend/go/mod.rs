@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let flattened = super::flatten_concrete_inheritance(ir);
+    let ir = &flattened;
     let _cases = super::UnitVariantScope::new(ir);
     let ctx = GoContext::from_ir(ir);
     let mut files = Vec::new();
@@ -403,6 +405,11 @@ fn generate_enum(out: &mut String, s: &StructureNode, ctx: &GoContext) {
 
     if all_unit {
         // Go: interface + iota constants
+        if variants.map_or(true, |vs| vs.is_empty()) {
+            // Without a constant, `type X int` reads as any named integer;
+            // this line is what says it is an abstract sig (#157).
+            writeln!(out, "// oxidtr: abstract sig {} — it has no cases, so no value", s.name).unwrap();
+        }
         writeln!(out, "type {} int", s.name).unwrap();
         writeln!(out).unwrap();
         writeln!(out, "const (").unwrap();

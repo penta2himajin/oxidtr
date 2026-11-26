@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let flattened = backend::flatten_concrete_inheritance(ir);
+    let ir = &flattened;
     let _cases = backend::UnitVariantScope::new(ir);
     let ctx = CsContext::from_ir(ir);
     let mut files = Vec::new();
@@ -1563,6 +1565,10 @@ fn inherited_and_own_fields<'a>(ir: &'a OxidtrIR, s: &'a StructureNode) -> Vec<(
         out.extend(p.fields.iter().map(|f| (p.name.clone(), f)));
     }
     out.extend(s.fields.iter().map(|f| (s.name.clone(), f)));
+    // A sig under a concrete parent already carries the parent's fields
+    // (`flatten_concrete_inheritance`); set each property once (#157).
+    let mut seen = HashSet::new();
+    out.retain(|(_, f)| seen.insert(f.name.clone()));
     out
 }
 

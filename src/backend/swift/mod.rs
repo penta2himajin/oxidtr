@@ -9,6 +9,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let flattened = super::flatten_concrete_inheritance(ir);
+    let ir = &flattened;
     let ctx = SwiftContext::from_ir(ir);
     let mut files = Vec::new();
 

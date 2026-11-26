@@ -307,3 +307,65 @@ fn rendered_map_fields_parse_back() {
         assert_eq!(table.value_type.as_deref(), Some("Int"), "[{target}]:\n{als}");
     }
 }
+
+// ── #157: inheritance ────────────────────────────────────────────────────────
+
+/// Both kinds of parent: an abstract one whose fields every case repeats, and
+/// a concrete one, two levels deep, whose fields the generated child used to
+/// lack. Plus fields declared with a case (with and without data), and an
+/// abstract sig with no case at all.
+const INHERITANCE: &str = "\
+abstract sig Shape { label: one Str }
+sig Circle extends Shape { radius: one Int }
+sig Square extends Shape { side: one Int }
+
+sig Base { id: one Int }
+sig Derived extends Base { extra: lone Str }
+sig Leaf extends Derived { depth: one Int }
+
+abstract sig Color {}
+one sig Red extends Color {}
+one sig Green extends Color {}
+
+abstract sig Orphan {}
+
+sig Holder { circle: one Circle, red: one Red, squares: set Square, maybe: lone Circle }
+fact LeafIds { all l: Leaf | l.id = l.id and l.depth = l.depth }
+";
+
+#[test]
+fn inheritance_round_trips() {
+    for target in TARGETS {
+        let m = round_trip(INHERITANCE, target);
+        let names = |s: &str| -> Vec<String> {
+            sig(&m, target, s).fields.iter().map(|f| f.name.clone()).collect()
+        };
+        assert_eq!(names("Shape"), ["label"], "[{target}] Shape declares label");
+        assert_eq!(names("Circle"), ["radius"], "[{target}] Circle");
+        assert_eq!(names("Derived"), ["extra"], "[{target}] Derived");
+        assert_eq!(names("Leaf"), ["depth"], "[{target}] Leaf");
+        assert_eq!(sig(&m, target, "Derived").parent.as_deref(), Some("Base"), "[{target}] Derived extends Base");
+        assert_eq!(sig(&m, target, "Leaf").parent.as_deref(), Some("Derived"), "[{target}] Leaf extends Derived");
+        assert!(sig(&m, target, "Orphan").is_abstract, "[{target}] Orphan is abstract");
+        for (f, t) in [("circle", "Circle"), ("red", "Red"), ("squares", "Square"), ("maybe", "Circle")] {
+            assert_eq!(field(&m, target, "Holder", f).target, t, "[{target}] Holder.{f}");
+        }
+        let diffs: Vec<String> = check_diffs(INHERITANCE, target).into_iter()
+            .filter(|d| !d.starts_with("[DECLINED]")).collect();
+        assert!(diffs.is_empty(), "[{target}] check reported:\n{}", diffs.join("\n"));
+    }
+}
+
+/// A concrete child carries the fields it inherits, so a fact reading them
+/// through the child has something to read.
+#[test]
+fn a_concrete_child_carries_inherited_fields() {
+    let model = parser::parse(INHERITANCE).unwrap();
+    let ir = ir::lower(&model).unwrap();
+    let flat = oxidtr::backend::flatten_concrete_inheritance(&ir);
+    let leaf = flat.structures.iter().find(|s| s.name == "Leaf").unwrap();
+    let names: Vec<&str> = leaf.fields.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["id", "extra", "depth"]);
+    let circle = flat.structures.iter().find(|s| s.name == "Circle").unwrap();
+    assert_eq!(circle.fields.len(), 1, "a case of an abstract sig is left to each backend");
+}
