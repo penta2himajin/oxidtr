@@ -369,3 +369,56 @@ fn a_concrete_child_carries_inherited_fields() {
     let circle = flat.structures.iter().find(|s| s.name == "Circle").unwrap();
     assert_eq!(circle.fields.len(), 1, "a case of an abstract sig is left to each backend");
 }
+
+// ── #158: seq in Lean, helper classes in Java and C# ─────────────────────────
+
+const SEQUENCES: &str = "\
+sig Item {}
+sig Bag { ordered: seq Item, unordered: set Item, numbers: seq Int }
+fact OrderedKept { all b: Bag | #b.ordered = #b.ordered }
+";
+
+/// Lean writes `set` and `seq` as the same `List`; every other target has a
+/// distinct type for each.
+#[test]
+fn seq_and_set_stay_distinct() {
+    use oxidtr::extract::MinedMultiplicity::*;
+    for target in TARGETS {
+        let m = round_trip(SEQUENCES, target);
+        for (name, mult) in [("ordered", Seq), ("unordered", Set), ("numbers", Seq)] {
+            assert_eq!(field(&m, target, "Bag", name).mult, mult, "[{target}] Bag.{name}");
+        }
+    }
+}
+
+/// The classes a backend writes beside the model — fixtures, helpers,
+/// operations, tests — are not sigs.
+#[test]
+fn helper_classes_are_not_sigs() {
+    let src = format!("{SEQUENCES}pred addItem[b: one Bag, i: one Item] {{ i in b.unordered }}\n");
+    let model = parser::parse(&src).unwrap();
+    let declared: Vec<String> = ir::lower(&model).unwrap().structures.iter().map(|s| s.name.clone()).collect();
+    for target in TARGETS {
+        let m = round_trip(&src, target);
+        let extra: Vec<&str> = m.sigs.iter().map(|s| s.name.as_str())
+            .filter(|n| !declared.iter().any(|d| d == n)).collect();
+        assert!(extra.is_empty(), "[{target}] sigs the model does not declare: {extra:?}");
+    }
+}
+
+/// A hand-written class with no fields is still a sig when it has a parent or
+/// an instance method (a node class with `accept`); one with only static
+/// methods is not.
+#[test]
+fn a_fieldless_data_class_is_still_a_sig() {
+    let java = extract::java_extractor::extract(
+        "public class Marker {\n}\n\npublic class Leaf {\n    public void accept(Visitor v) { v.visit(this); }\n}\n\n\
+         public class Util {\n    static int twice(int x) { return 2 * x; }\n}\n");
+    let names: Vec<&str> = java.sigs.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Marker", "Leaf"], "java");
+    let cs = extract::csharp_extractor::extract(
+        "public class Marker\n{\n}\n\npublic class Leaf\n{\n    public void Accept(Visitor v) => v.Visit(this);\n}\n\n\
+         public class Util\n{\n    public static int Twice(int x) => 2 * x;\n}\n");
+    let names: Vec<&str> = cs.sigs.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["Marker", "Leaf"], "cs");
+}

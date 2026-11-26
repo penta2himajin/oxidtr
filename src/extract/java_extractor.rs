@@ -115,15 +115,16 @@ fn extract_raw(source: &str) -> MinedModel {
         // `var` fields as a class, and its helpers (`Fixtures`, `Helpers`)
         // as classes of static methods.
         if let Some((name, is_abstract, parent)) = parse_class_decl(trimmed) {
-            let fields = if trimmed.contains('{') && trimmed.contains('}') {
+            let (fields, members) = if trimmed.contains('{') && trimmed.contains('}') {
                 // Single-line class: `public abstract class Block extends Node {}`
-                vec![]
+                (vec![], Members::default())
             } else if trimmed.contains('{') {
                 collect_class_fields(&mut lines)
             } else {
-                vec![]
+                (vec![], Members::default())
             };
-            if !has_records || !fields.is_empty() {
+            let behaviour_only = fields.is_empty() && parent.is_none() && members.behaviour_only();
+            if (!has_records || !fields.is_empty()) && !behaviour_only {
                 sigs.push(MinedSig { multiplicity: crate::parser::ast::SigMultiplicity::Default,
                     name,
                     fields,
@@ -279,28 +280,70 @@ fn parse_class_decl(line: &str) -> Option<(String, bool, Option<String>)> {
 
 /// Collect fields from a Java class body.
 /// Looks for `private Type field;` patterns.
+/// What a class body declares besides fields.
+#[derive(Default)]
+struct Members {
+    /// A method that is not `static`.
+    instance_method: bool,
+    /// A `static` method.
+    static_method: bool,
+    /// A test annotation (`@Test`).
+    test: bool,
+}
+
+impl Members {
+    fn note(&mut self, line: &str) {
+        if line.starts_with("@Test") {
+            self.test = true;
+        }
+        // A static field — the singleton `static final X INSTANCE = new X();`
+        // — is not a method: its `(` follows the `=`.
+        let before_init = line.split('=').next().unwrap_or(line);
+        if before_init.contains('(') && !line.starts_with('@') {
+            if before_init.contains("static ") {
+                self.static_method = true;
+            } else {
+                self.instance_method = true;
+            }
+        }
+    }
+
+    /// A class with no field, no parent and only static methods or tests
+    /// holds behaviour, not data: the generator's `Fixtures`, `Helpers`,
+    /// `Operations` and test classes are of that kind (#158). A fieldless
+    /// class with instance methods (`SoftBreak.accept`) is still a sig.
+    fn behaviour_only(&self) -> bool {
+        self.test || (self.static_method && !self.instance_method)
+    }
+}
+
+/// Collect the instance fields of a Java class body, and what else it declares.
 fn collect_class_fields(
     lines: &mut std::iter::Peekable<std::iter::Enumerate<std::str::Lines<'_>>>,
-) -> Vec<MinedField> {
+) -> (Vec<MinedField>, Members) {
     let mut fields = Vec::new();
+    let mut members = Members::default();
     let mut depth = 1usize;
 
     for (_ln, line) in lines.by_ref() {
         let trimmed = line.trim();
+        let depth_before = depth;
         for ch in trimmed.chars() {
             match ch { '{' => depth += 1, '}' => depth -= 1, _ => {} }
         }
         if depth == 0 { break; }
 
         // Only parse field declarations at depth 1 (direct class body)
-        if depth == 1 {
+        if depth_before == 1 {
             if let Some(field) = parse_class_field(trimmed) {
                 fields.push(field);
+            } else {
+                members.note(trimmed);
             }
         }
     }
 
-    fields
+    (fields, members)
 }
 
 /// Parse an instance field declaration: `[modifiers] Type name;`.
