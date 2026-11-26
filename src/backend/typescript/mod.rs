@@ -32,6 +32,7 @@ pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
 }
 
 pub fn generate_with_config(ir: &OxidtrIR, config: &TsBackendConfig) -> Vec<GeneratedFile> {
+    let _cases = crate::backend::UnitVariantScope::new(ir);
     let mut files = Vec::new();
 
     files.push(GeneratedFile {
@@ -379,6 +380,14 @@ fn generate_union_type(
 }
 
 fn mult_to_ts_type(target: &str, mult: &Multiplicity) -> String {
+    // A case of an enum of constants is a string literal, not a type (#154).
+    let literal;
+    let target = if crate::backend::constant_enum_of(target).is_some() {
+        literal = format!("\"{target}\"");
+        literal.as_str()
+    } else {
+        target
+    };
     match mult {
         Multiplicity::One => target.to_string(),
         Multiplicity::Lone => format!("{target} | null"),
@@ -1178,6 +1187,34 @@ fn generate_fixtures(ir: &OxidtrIR) -> String {
         writeln!(out).unwrap();
     }
 
+    // A case that carries data is an interface of its own; a field declared
+    // with it calls `default{Case}()`, which no enum factory above provides
+    // (#154). A case of an enum of constants is a literal and needs none.
+    let (terminating_cases, _) = crate::backend::terminating_types(ir);
+    let mut needed: Vec<String> = crate::backend::variants_used_as_field_targets(ir).into_iter().collect();
+    needed.sort();
+    for v in needed {
+        if crate::backend::constant_enum_of(&v).is_some() { continue; }
+        let Some(case) = struct_map.get(v.as_str()) else { continue };
+        let Some(parent) = case.parent.as_deref().and_then(|p| struct_map.get(p)) else { continue };
+        if !terminating_cases.contains(&parent.name) { continue; }
+        writeln!(out, "/** Factory: `{}` as the `{v}` case it was declared as */", parent.name).unwrap();
+        writeln!(out, "export function default{v}(): M.{v} {{").unwrap();
+        writeln!(out, "  return {{").unwrap();
+        writeln!(out, "    kind: \"{v}\",").unwrap();
+        for f in parent.fields.iter().chain(case.fields.iter()) {
+            let val = if f.value_type.is_some() {
+                "new Map()".to_string()
+            } else {
+                ts_default_value(&f.target, &f.mult)
+            };
+            writeln!(out, "    {}: {val},", f.name).unwrap();
+        }
+        writeln!(out, "  }};").unwrap();
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+
     // Collect which types have fixture factories (for populating set/seq fields)
     let (terminating, _) = crate::backend::terminating_types(ir);
     let fixture_types: HashSet<String> = ir.structures.iter()
@@ -1395,6 +1432,10 @@ fn ts_native_zero(target: &str) -> Option<&'static str> {
 fn ts_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
     if let (Multiplicity::One, Some(zero)) = (mult, ts_native_zero(target)) {
         return zero.to_string();
+    }
+    // A case of an enum of constants is its own value (#154).
+    if *mult == Multiplicity::One && crate::backend::constant_enum_of(target).is_some() {
+        return format!("\"{target}\"");
     }
     match mult {
         Multiplicity::Lone => "null".to_string(),

@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
+    let _cases = backend::UnitVariantScope::new(ir);
     let ctx = CsContext::from_ir(ir);
     let mut files = Vec::new();
 
@@ -476,6 +477,8 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
         if s.is_enum { continue; }
         let is_variant = backend::variant_parent(ir, &s.name).is_some();
         if is_variant && s.fields.is_empty() && !needed_variants.contains(&s.name) { continue; }
+        // A case of a C# `enum` is a constant; it has no type to construct.
+        if backend::constant_enum_of(&s.name).is_some() { continue; }
 
         // Inherited fields are set through the object initialiser too — the
         // emitted class declares them on the abstract parent.
@@ -631,6 +634,10 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &CsContext) -> String {
 /// which have a usable parameterless `new` since they're either `abstract` or
 /// need their own fields populated), else a bare constructor call.
 fn one_value_for(target: &str, fixture_types: &HashSet<String>, ctx: &CsContext, ir: &OxidtrIR) -> String {
+    // A case of a C# `enum` is its own value (#154).
+    if let Some(parent) = backend::constant_enum_of(target) {
+        return format!("{}.{}", cs_ident(&parent), cs_ident(target));
+    }
     if is_native_type_alias(target) {
         return cs_zero_value(&resolve_type(TargetLang::CSharp, target)).to_string();
     }
@@ -1332,6 +1339,11 @@ pub(crate) fn compose_ident(prefix: &str, name: &str) -> String {
 /// sig named `object` → `@object`). Escaping the resolved string instead
 /// would turn a correct bare `long` into an unresolvable `@long` (CS0246).
 fn cs_type_name(target: &str) -> String {
+    // A case of a C# `enum` is a constant, not a type: the field holds the
+    // enum (#154).
+    if let Some(parent) = backend::constant_enum_of(target) {
+        return cs_ident(&parent);
+    }
     let resolved = resolve_type(TargetLang::CSharp, target);
     if is_native_type_alias(target) {
         resolved

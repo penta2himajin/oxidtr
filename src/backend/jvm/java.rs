@@ -77,6 +77,7 @@ impl JvmLang for JavaLang {
 pub fn generate(ir: &OxidtrIR) -> Vec<GeneratedFile> {
     let escaped = crate::backend::escape_keyword_idents(ir, crate::backend::is_java_keyword);
     let ir = &escaped;
+    let _cases = crate::backend::UnitVariantScope::new(ir);
     let ctx = JvmContext::from_ir(ir);
     let mut files = Vec::new();
 
@@ -522,6 +523,10 @@ fn java_boxed(target: &str) -> String {
 }
 
 fn mult_to_java_type(target: &str, mult: &Multiplicity) -> String {
+    // A case of an `enum` is a constant, not a type: the field holds the
+    // enum (#154).
+    let parent = crate::backend::constant_enum_of(target);
+    let target = parent.as_deref().unwrap_or(target);
     match mult {
         Multiplicity::One => target.to_string(),
         // A nullable primitive is a boxed one: `long x = null` does not compile.
@@ -1344,6 +1349,30 @@ fn generate_fixtures(ir: &OxidtrIR, ctx: &JvmContext) -> String {
             writeln!(out, "    }}").unwrap();
             writeln!(out).unwrap();
         }
+
+        // A case that carries data is a record of its own; a field declared
+        // with it calls `default{Case}()`, which no enum factory above
+        // provides (#154).
+        let mut needed: Vec<String> = crate::backend::variants_used_as_field_targets(ir).into_iter().collect();
+        needed.sort();
+        for v in needed {
+            if crate::backend::constant_enum_of(&v).is_some() { continue; }
+            let Some(parent) = ctx.struct_map.get(v.as_str())
+                .and_then(|c| c.parent.as_deref()).and_then(|p| ctx.struct_map.get(p)) else { continue };
+            if !terminating.contains(&parent.name) { continue; }
+            let args: Vec<String> = ctx.variant_fields(parent, &v).iter()
+                .map(|f| if f.value_type.is_some() {
+                    "Map.of()".to_string()
+                } else {
+                    java_default_value(&f.target, &f.mult)
+                })
+                .collect();
+            writeln!(out, "    /** Factory: `{}` as the `{v}` case it was declared as */", parent.name).unwrap();
+            writeln!(out, "    static {v} default{v}() {{").unwrap();
+            writeln!(out, "        return new {v}({});", args.join(", ")).unwrap();
+            writeln!(out, "    }}").unwrap();
+            writeln!(out).unwrap();
+        }
     }
 
     for s in &ir.structures {
@@ -1577,6 +1606,10 @@ fn java_native_zero(target: &str) -> Option<&'static str> {
 }
 
 fn java_default_value_inner(target: &str, mult: &Multiplicity, safe_targets: &HashSet<String>) -> String {
+    // A case of an `enum` is its own value (#154).
+    if let (Multiplicity::One, Some(parent)) = (mult, crate::backend::constant_enum_of(target)) {
+        return format!("{parent}.{target}");
+    }
     if let (Multiplicity::One, Some(zero)) = (mult, java_native_zero(target)) {
         return zero.to_string();
     }

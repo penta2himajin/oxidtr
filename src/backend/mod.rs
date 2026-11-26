@@ -235,6 +235,62 @@ fn rename_in_expr(e: &mut Expr, f: &dyn Fn(&str) -> String) {
     }
 }
 
+// ── Cases of an enum of constants ───────────────────────────────────────────
+//
+// An abstract sig whose cases carry no data — none of their own fields, none
+// on the parent — becomes an enum of constants (`enum class Color { Red }`,
+// a union of string literals, Go iota constants). A case is then a value, not
+// a type, so a field declared `red: one Red` cannot be typed `Red` (#154).
+// Each backend types it as the parent enum (TypeScript as the literal) and
+// gives it the constant as its default.
+//
+// The type and default-value helpers that need this are called from dozens
+// of sites that do not carry the IR, so the mapping is installed for the
+// duration of one `generate` call by `UnitVariantScope`.
+
+thread_local! {
+    static UNIT_VARIANTS: std::cell::RefCell<HashMap<String, String>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Every case of an enum of constants, mapped to its enum.
+pub fn constant_enum_cases(ir: &OxidtrIR) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for parent in ir.structures.iter().filter(|s| s.is_enum && s.fields.is_empty()) {
+        let cases: Vec<&StructureNode> = ir.structures.iter()
+            .filter(|c| c.parent.as_deref() == Some(parent.name.as_str()))
+            .collect();
+        if !cases.is_empty() && cases.iter().all(|c| c.fields.is_empty()) {
+            for c in cases {
+                out.insert(c.name.clone(), parent.name.clone());
+            }
+        }
+    }
+    out
+}
+
+/// Installs `constant_enum_cases(ir)` until dropped, restoring what was there.
+pub(crate) struct UnitVariantScope(HashMap<String, String>);
+
+impl UnitVariantScope {
+    pub fn new(ir: &OxidtrIR) -> Self {
+        let cases = constant_enum_cases(ir);
+        UnitVariantScope(UNIT_VARIANTS.with(|m| std::mem::replace(&mut *m.borrow_mut(), cases)))
+    }
+}
+
+impl Drop for UnitVariantScope {
+    fn drop(&mut self) {
+        let previous = std::mem::take(&mut self.0);
+        UNIT_VARIANTS.with(|m| *m.borrow_mut() = previous);
+    }
+}
+
+/// The enum `name` is a constant of, within the current `UnitVariantScope`.
+pub fn constant_enum_of(name: &str) -> Option<String> {
+    UNIT_VARIANTS.with(|m| m.borrow().get(name).cloned())
+}
+
 /// The multiplicity a reader of the generated code assumes for `s` when
 /// nothing says otherwise.
 ///
