@@ -561,8 +561,12 @@ fn translate_fun_app(name: &str, receiver: Option<&Expr>, args: &[Expr], transla
         let a: Vec<_> = args.iter().map(&translate).collect();
         return format!("{}.{name}({})", translate(recv), a.join(", "));
     }
+    // A top-level `fun` / `pred` is a static method of `Operations`, in
+    // PascalCase (#165).
     let a: Vec<_> = args.iter().map(translate).collect();
-    format!("{name}({})", a.join(", "))
+    let mut chars = name.chars();
+    let pascal = chars.next().map(|c| c.to_uppercase().collect::<String>() + chars.as_str()).unwrap_or_default();
+    format!("Operations.{pascal}({})", a.join(", "))
 }
 
 fn needs_parens(expr: &Expr) -> bool {

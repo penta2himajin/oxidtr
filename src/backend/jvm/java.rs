@@ -11,6 +11,9 @@ use std::fmt::Write;
 struct JavaLang;
 
 impl JvmLang for JavaLang {
+    fn operation_call(&self, name: &str) -> String {
+        format!("Operations.{name}")
+    }
     fn all_quantifier(&self, collection: &str, var: &str, body: &str) -> String {
         format!("{collection}.stream().allMatch({var} -> {body})")
     }

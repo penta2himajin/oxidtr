@@ -40,6 +40,12 @@ pub trait JvmLang {
     /// named in the emitted method. Kotlin uses an extension function, so it is
     /// `this`; Java passes the value as a leading `self` parameter.
     fn receiver_expr(&self) -> &str;
+    /// The name a test calls a top-level `fun` / `pred` by. Kotlin's are
+    /// top-level functions; Java's are static methods of `Operations`, and
+    /// the default package admits no static import (#165).
+    fn operation_call(&self, name: &str) -> String {
+        name.to_string()
+    }
     /// Field access syntax: Java records use `.field()`, Kotlin uses `.field`.
     ///
     /// `mutable_owner` says the declaring sig has a `var` field, which Java
@@ -524,7 +530,8 @@ fn translate_inner(
             format!("{l} && {r}")
         }
         Expr::FunApp { name, receiver, args } => {
-            translate_fun_app(name, receiver.as_deref(), args, |e| ti(e, false))
+            let called = if receiver.is_some() { name.clone() } else { lang.operation_call(name) };
+            translate_fun_app(&called, receiver.as_deref(), args, |e| ti(e, false))
         }
     };
 
