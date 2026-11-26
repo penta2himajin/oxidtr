@@ -188,6 +188,29 @@ error: target `cs` cannot distinguish 1 name(s) the model declares:
   field of `Box`: `item` and `Item` both become `Item`
 ```
 
+### 往復の忠実度とマーカー (#152〜#159)
+
+`extract` は生成物から、各 sig の abstract / 多重度 / `var` / 親と、各フィールドの
+名前・多重度・型・map の値型・`var` を元のモデルどおりに返す。
+`tests/round_trip_fidelity.rs` が `models/` の全モデル（重複した sig 名を持つ
+`oxidtr-internal.als` を除く）と機能別のモデルについて、全 8 言語で確かめる。
+fact / pred / assert は対象外で、各言語の式のまま fact 候補として出る。
+
+言語の型が表せないことは、生成物の末尾の `oxidtr:` で始まる行コメント（マーカー）で渡す。
+マーカーは名前を含むので、`extract` はディレクトリの全ファイルを読んでから
+適用する（`extract::apply_model_markers`）。CI が禁じる `@alloy:` の書式は使わない。
+
+| マーカー | 表すもの |
+|---|---|
+| `one sig Config` / `lone sig` / `some sig` / `sig Word` | 生成物の自然な読み（データを持たない case は `one`、ほかは多重度なし）と違う多重度 |
+| `Derived extends Base` | 非 abstract の親。子には親のフィールドを写して生成する（`backend::flatten_concrete_inheritance`） |
+| `Shape declares label` | abstract 親のフィールド。C# 以外は各 case に写して生成する |
+| `field Holder.red: one Red` | 生成物の型より狭い型や多重度（enum の case、`set` 以外の map、Lean の `seq`） |
+| `abstract sig Material` | case のない abstract sig（Go の `type Material int`） |
+
+キーワードと同名のフィールドは、Rust / Kotlin / Java で接尾辞 `_` を付けて生成し
+（`long` → `long_`、`long_` → `long__`）、extractor が 1 つ取り除く。
+
 ### セルフホスト検証
 
 oxidtr自身のドメインモデル `models/oxidtr.als` を使った検証:
@@ -234,6 +257,7 @@ cargo run -- extract generated/ -o /tmp/mined.als
 | `self_host_guarantees` | fact→テスト変換・cross-testマーカー・extract/check整合性・棄権ラチェット |
 | `coverage` | カバレッジ台帳 (render/parse・ランク・各バックエンドの記録) |
 | `round_trip`, `round_trip_jvm`, `round_trip_swift`, `round_trip_go`, `round_trip_enriched` | ラウンドトリップ検証 |
+| `round_trip_fidelity` | 全モデル × 全 8 言語の構造の往復（generate → extract → parse → lower が元の IR と一致） |
 | `commentless_round_trip`, `lossless_round_trip` | コメントなし逆変換 |
 | `extract_rust`, `extract_ts`, `extract_swift`, `extract_go` | extract抽出 (言語別) |
 | `extract_auto_detect`, `extract_multi_lang` | extract自動検出・multi-lang merge |

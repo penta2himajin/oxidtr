@@ -100,7 +100,7 @@ oxidtr takes an [Alloy](https://alloytools.org/) model (`.als`) as the single so
 It also provides:
 - **Structural consistency checking** between Alloy models and implementations (Rust / TypeScript / Kotlin / Java / Swift / Go), auto-detecting language
 - **Model mining** — extract Alloy model drafts from existing source code, JSON Schema, or mixed multi-language directories with conflict detection
-- **Lossless round-trip** — `@alloy:` comments preserve original expressions; reverse translation recovers Alloy from generated code
+- **Structural round-trip** — `extract` on generated code gives back every sig's abstractness, multiplicity, `var`, parent and fields (name, multiplicity, type, map value type, `var`) for all eight targets. What a target's types cannot state is carried in `// oxidtr:` marker comments. Facts, predicates and assertions come back only as fact candidates in the target's syntax, not as Alloy
 
 ## Design principles
 
@@ -224,24 +224,24 @@ Multi-language directories are merged: same-name sigs are unified, missing field
 
 Produces Alloy `.als` text with:
 - Sig/field/multiplicity extraction from type definitions
-- `@alloy:` comment recovery for lossless fact/assert/pred round-trip
-- Reverse expression translation (language code → Alloy expressions)
+- `// oxidtr:` marker recovery for what a target's types cannot state (sig multiplicity, the parent of a concrete sig, an abstract sig's fields, map and `seq` multiplicities, a field typed with an enum case)
+- Fact candidates from assertions and helper functions, partly reverse-translated to Alloy
 - Fact candidates with confidence levels (High / Medium / Low)
 
 ## Self-hosting
 
-oxidtr's own domain is modeled as a split module set in `models/oxidtr/` (main file `models/oxidtr-split.als`). The full round-trip is verified for all targets:
+oxidtr's own domain is modeled as a split module set in `models/oxidtr/` (main file `models/oxidtr-split.als`). The round-trip is verified for all targets, and `tests/round_trip_fidelity.rs` repeats the structural check for every model in `models/`:
 
 ```
 oxidtr-split.als → generate (Rust/TS/Kotlin/Java/Swift/Go/C#/Lean) → check → 0 diffs
-oxidtr-split.als → generate → extract → structural + expression match with original
+oxidtr-split.als → generate → extract → structural match with original (facts as candidates)
 oxidtr-split.als → generate (all languages) → extract (multi-lang merge) → unified Alloy model
 ```
 
 ## Development
 
 ```bash
-cargo test              # 909 tests
+cargo test              # 1287 tests
 cargo run -- generate models/oxidtr-split.als --target rust --output generated
 cargo run -- check --model models/oxidtr-split.als --impl generated
 cargo run -- extract generated/

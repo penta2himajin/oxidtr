@@ -14,6 +14,11 @@ const TARGETS: [&str; 8] = ["rust", "ts", "kt", "java", "swift", "go", "cs", "le
 fn generate(src: &str, target: &str) -> Vec<GeneratedFile> {
     let model = parser::parse(src).expect("model parses");
     let ir = ir::lower(&model).expect("model lowers");
+    generate_ir(&ir, target)
+}
+
+fn generate_ir(ir: &oxidtr::ir::nodes::OxidtrIR, target: &str) -> Vec<GeneratedFile> {
+    let ir = ir.clone();
     match target {
         "rust" => rust::generate(&ir),
         "ts" => typescript::generate(&ir),
@@ -427,4 +432,108 @@ fn a_fieldless_data_class_is_still_a_sig() {
          public class Util\n{\n    public static int Twice(int x) => 2 * x;\n}\n");
     let names: Vec<&str> = cs.sigs.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["Marker", "Leaf"], "cs");
+}
+
+// ── #159: every model, every target ──────────────────────────────────────────
+
+/// What a round trip must preserve of a sig: whether it is abstract, its
+/// multiplicity, `var`, its parent, and each field's name, multiplicity,
+/// type, value type and `var`. Facts, predicates, assertions and derived
+/// fields are not compared: `extract` reports facts as candidates in the
+/// target's own syntax, not as Alloy.
+fn structure(ir: &oxidtr::ir::nodes::OxidtrIR) -> std::collections::BTreeMap<String, String> {
+    ir.structures.iter().map(|s| {
+        let mut fields: Vec<String> = s.fields.iter().map(|f| format!(
+            "{}{}: {:?} {}{}",
+            if f.is_var { "var " } else { "" }, f.name, f.mult, f.target,
+            f.value_type.as_ref().map(|v| format!(" -> {v}")).unwrap_or_default(),
+        )).collect();
+        fields.sort();
+        (s.name.clone(), format!(
+            "abstract={} mult={:?} var={} parent={:?} {{ {} }}",
+            s.is_enum, s.sig_multiplicity, s.is_var, s.parent, fields.join(", "),
+        ))
+    }).collect()
+}
+
+/// The differences between `want` and what a round trip through `target`
+/// gives back, one line each.
+fn structural_diffs(want: &oxidtr::ir::nodes::OxidtrIR, target: &str) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    for f in generate_ir(want, target) {
+        let path = dir.path().join(&f.path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, &f.content).unwrap();
+    }
+    let mined = extract::run(dir.path().to_str().unwrap(), None)
+        .unwrap_or_else(|e| panic!("[{target}] extract failed: {e}"));
+    let als = extract::renderer::render(&mined);
+    let model = parser::parse(&als).unwrap_or_else(|e| panic!("[{target}] mined Alloy does not parse: {e:?}\n{als}"));
+    let got = structure(&ir::lower(&model).unwrap_or_else(|e| panic!("[{target}] mined Alloy does not lower: {e:?}")));
+    let want = structure(want);
+    let mut diffs = Vec::new();
+    for (name, w) in &want {
+        match got.get(name) {
+            None => diffs.push(format!("missing sig {name}")),
+            Some(g) if g != w => diffs.push(format!("{name}\n    want {w}\n    got  {g}")),
+            _ => {}
+        }
+    }
+    // Rust wraps a sig with a cardinality fact in a `Validated<Sig>` newtype,
+    // which the self-hosted model declares as a sig of its own
+    // (`models/oxidtr/validated.als`) and `extract` therefore reads.
+    let validated_wrapper = |n: &str| target == "rust"
+        && n.strip_prefix("Validated").is_some_and(|inner| want.contains_key(inner));
+    for name in got.keys().filter(|n| !want.contains_key(*n) && !validated_wrapper(n)) {
+        diffs.push(format!("extra sig {name}"));
+    }
+    diffs
+}
+
+/// `models/oxidtr-internal.als` declares `ParseError` twice — once abstract,
+/// once extending `CheckError` — so the model itself does not name one sig
+/// per name, and `check` reports it against its own output too.
+const UNROUNDTRIPPABLE_MODELS: &[&str] = &["oxidtr-internal.als"];
+
+#[test]
+fn every_model_round_trips_through_every_target() {
+    let mut failures = Vec::new();
+    let mut entries: Vec<_> = std::fs::read_dir("models").unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "als"))
+        .filter(|p| !UNROUNDTRIPPABLE_MODELS.contains(&p.file_name().unwrap().to_str().unwrap()))
+        .collect();
+    entries.sort();
+    assert!(entries.len() >= 10, "models/ should hold the benchmark and self-hosted models");
+    for path in &entries {
+        let model = parser::parse_from_path(path).unwrap_or_else(|e| panic!("{}: {e:?}", path.display()));
+        let ir = ir::lower(&model).unwrap();
+        for target in TARGETS {
+            let diffs = structural_diffs(&ir, target);
+            if !diffs.is_empty() {
+                failures.push(format!("{} [{target}]\n  {}", path.display(), diffs.join("\n  ")));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "round trips lost structure:\n{}", failures.join("\n"));
+}
+
+/// The models above exercise each feature on its own; the benchmark models
+/// mix them.
+#[test]
+fn every_feature_model_round_trips_through_every_target() {
+    let mut failures = Vec::new();
+    for (name, src) in [
+        ("PRIMITIVES", PRIMITIVES), ("MULTIPLICITIES", MULTIPLICITIES), ("KEYWORDS", KEYWORDS),
+        ("MAPS", MAPS), ("INHERITANCE", INHERITANCE), ("SEQUENCES", SEQUENCES),
+    ] {
+        let ir = ir::lower(&parser::parse(src).unwrap()).unwrap();
+        for target in TARGETS {
+            let diffs = structural_diffs(&ir, target);
+            if !diffs.is_empty() {
+                failures.push(format!("{name} [{target}]\n  {}", diffs.join("\n  ")));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "round trips lost structure:\n{}", failures.join("\n"));
 }
